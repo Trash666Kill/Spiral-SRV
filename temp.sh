@@ -441,6 +441,23 @@ EOF
 EOF
 }
 
+mount() {
+    printf "\e[32m*\e[0m SETTING MOUNT POINTS AND FILE SHARING\n"
+
+    # Install NFS and Samba sharing services
+    apt -y install nfs-kernel-server samba > /dev/null 2>&1
+
+    # Disable and stop NFS and Samba related services
+    systemctl disable --now nfs-kernel-server --quiet
+    systemctl disable --now smbd --quiet
+
+    # Adding Mount Configuration File
+    cp systemd/scripts/mount.sh /root/.services/ && chmod 700 /root/.services/mount.sh
+
+    # Create NFS export configuration
+    printf '#/mnt/Local/Container/A 172.16.0.0(rw,sync,crossmnt,no_subtree_check,no_root_squash)' > /etc/exports
+}
+
 hypervisor() {
     printf "\e[32m*\e[0m SETTING UP HYPERVISOR\n"
 
