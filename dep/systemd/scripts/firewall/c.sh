@@ -17,7 +17,6 @@ vm859224() {
 
     # Call
     3390
-
 }
 
 # Main function to orchestrate the setup
