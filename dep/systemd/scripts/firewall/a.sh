@@ -15,6 +15,7 @@ ip_forwarding() {
 # Restart nftables service
 restart_nftables() {
     local SERVICE=nftables
+    echo "Restarting $SERVICE..."
     systemctl restart "$SERVICE"
     if [[ $? -ne 0 ]]; then
         printf "\e[31m*\e[0m Error: Failed to restart $SERVICE.\n"
@@ -24,54 +25,52 @@ restart_nftables() {
 
 # Flush existing nftables rules
 flush_nftables() {
+    echo "Flushing ruleset..."
     nft flush ruleset
 }
 
 # Create main table
 main_table() {
+    echo "Creating table..."
     nft add table inet firelux
 }
 
-# Create chains
+# Create chains with default drop policy
 chains() {
+    echo "Creating chains..."
     nft add chain inet firelux forward { type filter hook forward priority filter \; policy drop \; }
     nft add chain inet firelux prerouting { type nat hook prerouting priority 0 \; policy accept \; }
     nft add chain inet firelux postrouting { type nat hook postrouting priority srcnat \; policy accept \; }
 }
 
-# Allow established and related connections
+# Allow established and related connections (essential for stateful firewall)
 established_related() {
-    # Filter Rules
+    echo "Allowing established/related connections..."
     nft add rule inet firelux forward ct state established,related accept
 }
 
-# Configure NAT and forwarding for Bridge (BR_TAP110)
-br_tap110() {
-    # Masquerade Rules
-    nft add rule inet firelux postrouting ip saddr 10.0.10.0/24 oifname "$WAN" masquerade
-
-    # Forward Rules
-    nft add rule inet firelux forward iifname "br_tap110" oifname "$WAN" accept
-}
-
-ct602294_3390() {
-    # DNAT Rules
-    nft add rule inet firelux prerouting ip protocol tcp tcp dport 3390 dnat to 10.0.10.240:3389
-
-    # Forward Rules
-    nft add rule inet firelux forward ip protocol tcp tcp dport 3390 accept
+# Setup logging for dropped packets
+setup_logging() {
+    echo "Setting up logging..."
+    nft add rule inet firelux forward log prefix \"FORWARD_DROP: \" level info
 }
 
 # Main function to orchestrate the setup
 main() {
+    RULES="
     ip_forwarding
     restart_nftables
     flush_nftables
     main_table
     chains
     established_related
-    br_tap110
-    #ct602294_3390
+    setup_logging
+    "
+
+    for RULE in $RULES
+    do
+        $RULE
+    done
 }
 
 # Execute main function
