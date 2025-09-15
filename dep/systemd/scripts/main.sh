@@ -5,7 +5,7 @@ set -e
 
 # Paths to the scripts
 NETWORK_SCRIPT="/root/.services/network.sh"
-FIREWALL_SCRIPT="/root/.services/firewall.sh"
+FIREWALL_FOLDER="/root/.services/firewall"
 MOUNT_SCRIPT="/root/.services/mount.sh"
 VIRTUAL_MACHINE_SCRIPT="/root/.services/virtual-machine.sh"
 CONTAINER_SCRIPT="/root/.services/container.sh"
