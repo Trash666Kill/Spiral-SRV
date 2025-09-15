@@ -307,7 +307,7 @@ directories() {
     printf "\e[32m*\e[0m CREATING DIRECTORIES\n"
 
     # Create directories for temporary services and data
-    mkdir -p /mnt/{Temp,Services} && chown "$TARGET_USER":"$TARGET_USER" -R /mnt/*
+    mkdir -p /mnt/{Temp,Local/{Container/{A,B},USB/{A,B}},Remote/Servers}
     mkdir -p /root/{Temp,.services/scheduled,.crypt} && chmod 600 /root/.crypt
 
     # Create directory for rsync logs and adjust permissions
