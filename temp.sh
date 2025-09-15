@@ -1,447 +1,615 @@
 #!/bin/bash
 
-# - Description: Starts a container using lxc and optionally restarts lxc.
-# - Defines a function to restart the lxc service, which exits on failure.
-# - Starts the CT named CT123456 using `lxc-start`.
-# - The `main` function calls the CT start routine; restart_lxc is defined but unused.
-# - To manage other CTs, duplicate and edit the CT123456 function accordingly.
+# Disable bash history
+unset HISTFILE
 
-# Restart lxc service
-restart_lxc() {
-    local SERVICE=lxc
-    systemctl restart "$SERVICE"
-    if [[ $? -ne 0 ]]; then
-        printf "\e[31m*\e[0m Error: Failed to restart $SERVICE.\n"
-        exit 1
-    fi
+# Execution directory
+cd $PWD/dep
+
+update() {
+    printf "\e[32m*\e[0m UPDATING EXISTING REPOSITORY AND PACKAGES\n"
+
+    # Updates the list of available packages
+    apt -y update > /dev/null 2>&1
+
+    # Performs the update of installed packages
+    apt -y upgrade > /dev/null 2>&1
 }
 
-CT212810() {
-    # Music Streaming - Navidrome
-    lxc-start --name CT212810
-}
+interface() {
+    # Install the required packages
+    apt -y install bc > /dev/null 2>&1
+    printf "\e[32m*\e[0m CHOOSING THE BEST AVAILABLE INTERFACE, WAIT...\n"
 
-CT915942() {
-    # Video Streaming - Jellyfin
-    lxc-start --name CT915942
-}
+    # Target IP for ping
+    TARGET_IP="8.8.8.8"
 
-CT879677() {
-    # Web P2P Client - Transmission
-    lxc-start --name CT879677
-}
+    # Variables to store the interface with the lowest latency
+    BEST_INTERFACE=""
+    BEST_LATENCY=100000  # High initial value to ensure comparison
 
-CT442878() {
-    # Music Streaming - MPD Server with USB DAC passthrough
-    lxc-start --name CT442878
-}
+    # Iterate over active interfaces (status UP) starting with eth, en, or eno
+    for INTERFACE in $(ip -o link show | awk -F': ' '/UP/ && ($2 ~ /^(eth|en)/) {sub(/@.*/, "", $2); print $2}'); do
+        # Test ping on the interface with 3 packets, capture average latency
+        LATENCY=$(ping -I "$INTERFACE" -4 -c 3 "$TARGET_IP" | awk -F'/' 'END {print $5}' 2>/dev/null)
 
-CT418656() {
-    # AI Code Editor - Windsurf
-    lxc-start --name CT418656
-}
+        # Get the MAC address and store it in a variable
+        MAC=$(ip link show "$INTERFACE" | awk '/ether/ {print $2}')
 
-# Main function to orchestrate the setup
-main() {
-    restart_lxc
+        # Check if the ping was successful (latency is not empty)
+        if [ -n "$LATENCY" ]; then
+            printf "\e[32m*\e[0m CHOSEN INTERFACE: \033[32m%s\033[0m, LATENCY OF \033[32m%s ms\033[0m FOR \033[32m%s\033[0m\n" "$INTERFACE" "$LATENCY" "$TARGET_IP"
 
-    containers="
-    CT212810
-    CT915942
-    CT879677
-    CT442878
-    CT418656
-    "
-
-    for container in $containers
-    do
-        $container
-        sleep 8
-    done
-}
-
-# Execute main function
-main
-
-#!/bin/bash
-
-# - Description: Starts a virtual machine using virsh and optionally restarts libvirtd.
-# - Defines a function to restart the libvirtd service, which exits on failure.
-# - Starts the VM named VM123456 using `virsh start`.
-# - The `main` function calls the VM start routine; restart_libvirtd is defined but unused.
-# - To manage other VMs, duplicate and edit the VM123456 function accordingly.
-
-# Restart libvirtd service
-restart_libvirtd() {
-    local SERVICE=libvirtd
-    systemctl restart "$SERVICE"
-    if [[ $? -ne 0 ]]; then
-        printf "\e[31m*\e[0m Error: Failed to restart $SERVICE.\n"
-        exit 1
-    fi
-}
-
-VM777095() {
-    # Media Converter - Handbrake / noVNC
-    virsh start VM777095
-}
-
-# Main function to orchestrate the setup
-main() {
-    restart_lxc
-
-    vmachines="
-    VM777095
-    "
-
-    for vmachine in $vmachines
-    do
-        $vmachine
-        sleep 16
-    done
-}
-
-# Execute main function
-main
-
-#!/bin/bash
-
-# - Description: Mounts a device by UUID, an NFS share, or an SMB share to specified mount points.
-# - Optionally decrypts a LUKS device before mounting for mount_unit if USE_LUKS is set to 'yes'.
-# - Creates the mount point directories if they do not exist and mounts the device or share using provided UUID, source, and options.
-# - Uses 'mount -U' for UUID-based mounts (non-LUKS in mount_unit) and 'mount' for NFS, SMB, or LUKS-mapped devices.
-# - The nfs_mount_unit and smb_mount_unit functions are designed for network file systems and do not support LUKS decryption.
-# - The OPTIONS variable is empty by default in all functions; specify custom mount options as needed.
-# - Exits on any error using set -e.
-# - To modify mount parameters, edit the DEVICE_UUID, NFS_SOURCE, SMB_SOURCE, MOUNT_POINT, or OPTIONS variables in the respective functions.
-# - To enable LUKS decryption for mount_unit, set USE_LUKS="yes" before running the script.
-
-# Close on any error
-set -e
-
-pool_a() {
-    50026B7785D3588D() {
-        local USE_LUKS="yes"  # Enable LUKS if USE_LUKS="yes"
-        local DEVICE_UUID=""  # UUID for non-LUKS case
-        local MOUNT_POINT="/mnt/Local/Container/A"
-        local OPTIONS=""
-        local LUKS_DEVICE="/dev/disk/by-uuid/ca52541c-b2e3-41e5-9c31-3048833fa08b"
-        local LUKS_NAME="Container-A_crypt"
-        local LUKS_KEY_FILE="/root/.crypt/ca52541c-b2e3-41e5-9c31-3048833fa08b.key"
-
-        # Handle LUKS decryption if enabled
-        if [ "$USE_LUKS" = "yes" ]; then
-            if [ ! -e "/dev/mapper/$LUKS_NAME" ]; then
-                cryptsetup luksOpen "$LUKS_DEVICE" "$LUKS_NAME" --key-file "$LUKS_KEY_FILE"
-            fi
-            DEVICE_UUID="/dev/mapper/$LUKS_NAME"
-        fi
-
-        # Create mount point if it doesn't exist
-        [ -d "$MOUNT_POINT" ] || mkdir -p "$MOUNT_POINT"
-
-        # Perform the mount
-        if [ "$USE_LUKS" = "yes" ]; then
-            if [ -n "$OPTIONS" ]; then
-                mount "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-            else
-                mount "$DEVICE_UUID" "$MOUNT_POINT"
+            # If the current latency is lower than the lowest recorded, update the best interface
+            if (( $(echo "$LATENCY < $BEST_LATENCY" | bc -l) )); then
+                BEST_LATENCY="$LATENCY"
             fi
         else
-            if [ -n "$OPTIONS" ]; then
-                mount -U "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-            else
-                mount -U "$DEVICE_UUID" "$MOUNT_POINT"
-            fi
+            printf "\033[31m*\033[0m ERROR: INTERFACE \033[32m%s\033[0m WAS UNABLE TO PING ADDRESS \033[32m%s\033[0m\n" "$INTERFACE" "$TARGET_IP"
         fi
+    done
+}
+
+global() {
+    # Calls the function that sets the best available network interface
+    interface
+
+    # Self-explanatory
+    TIMEZONE="America/Sao_Paulo"
+}
+
+hostname() {
+    # Install the required packages
+    apt -y install uuid uuid-runtime > /dev/null 2>&1
+
+    # Generates a new hostname
+    HOSTNAME="srv$(shuf -i 10000-99999 -n 1)"
+
+    printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
+
+    # Remove o arquivo /etc/hostname e escreve o novo nome de host nele
+    rm /etc/hostname
+    printf "$HOSTNAME" > /etc/hostname
+
+    # Remove the /etc/hostname file and write the new hostname
+    rm /etc/hosts
+    printf "127.0.0.1       localhost
+    127.0.1.1       "$HOSTNAME"
+
+    ::1     localhost ip6-localhost ip6-loopback
+    ff02::1 ip6-allnodes
+    ff02::2 ip6-allrouters" > /etc/hosts
+}
+
+target_user() {
+    # Install the sudo package
+    apt -y install sudo > /dev/null 2>&1
+
+    # Modify /etc/profile to disable command history
+    sed -i '$ a unset HISTFILE\nexport HISTSIZE=0\nexport HISTFILESIZE=0\nexport HISTCONTROL=ignoreboth' /etc/profile
+
+    printf "\e[32m*\e[0m CREATING USER \e[32mSysOp\e[0m\n"
+
+    # Create the sysop group with GID 1001
+    groupadd -g 1001 sysop
+
+    # Create the sysop user with UID 1001, sysop group, and bash shell
+    useradd -m -u 1001 -g 1001 -c "SysOp" -s /bin/bash sysop
+
+    # Get the name of the created user
+    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
+
+    # Add the user to the sudo group
+    /sbin/usermod -aG sudo "$TARGET_USER"
+}
+
+passwords() {
+    # Install the package required for password generation
+    apt -y install pwgen > /dev/null 2>&1
+
+    # Generate two secure passwords with special characters and 18 characters
+    PASSWORD_ROOT=$(pwgen -s 18 1)
+    PASSWORD_TARGET=$(pwgen -s 18 1)
+
+    # Check if the TARGET_USER exists in the system
+    if ! id "$TARGET_USER" &>/dev/null; then
+        printf "\e[31m* ERROR:\e[0m USER '$TARGET_USER' DOES NOT EXIST. TERMINATING SCRIPT.\n"
+        exit 1
+    fi
+
+    # Change the root user's password
+    echo "root:$PASSWORD_ROOT" | chpasswd
+    if [ $? -ne 0 ]; then
+        printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE ROOT PASSWORD.\n"
+        exit 1
+    fi
+
+    # Change the TARGET_USER's password
+    echo "$TARGET_USER:$PASSWORD_TARGET" | chpasswd
+    if [ $? -ne 0 ]; then
+        printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE PASSWORD FOR USER '$TARGET_USER'.\n"
+        exit 1
+    fi
+
+    echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mSysOp\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
+    echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mRoot\033[0m USER: \033[32m\"$PASSWORD_ROOT\"\033[0m"
+}
+
+packages() {
+    text_editor() {
+        # Install text editor package
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: TEXT EDITOR\n"
+        EDITOR="vim"
+        apt -y install $EDITOR > /dev/null 2>&1
     }
 
-    50026B7785D35B0D() {
-        local USE_LUKS="yes"  # Enable LUKS if USE_LUKS="yes"
-        local DEVICE_UUID=""  # UUID for non-LUKS case
-        local MOUNT_POINT="/mnt/Local/Container/B"
-        local OPTIONS=""
-        local LUKS_DEVICE="/dev/disk/by-uuid/f515527f-eb65-424c-b88b-652e84609c5e"
-        local LUKS_NAME="Container-B_crypt"
-        local LUKS_KEY_FILE="/root/.crypt/f515527f-eb65-424c-b88b-652e84609c5e.key"
+    network_tools() {
+        # Install network tools packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: NETWORK TOOLS\n"
+        NETWORK="nfs-common tcpdump traceroute iperf ethtool geoip-bin socat speedtest-cli bridge-utils"
+        apt -y install $NETWORK > /dev/null 2>&1
+    }
 
-        # Handle LUKS decryption if enabled
-        if [ "$USE_LUKS" = "yes" ]; then
-            if [ ! -e "/dev/mapper/$LUKS_NAME" ]; then
-                cryptsetup luksOpen "$LUKS_DEVICE" "$LUKS_NAME" --key-file "$LUKS_KEY_FILE"
-            fi
-            DEVICE_UUID="/dev/mapper/$LUKS_NAME"
-        fi
+    security() {
+        # Install security tools
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SECURITY TOOLS\n"
+        SECURITY="apparmor-utils"
+        apt -y install $SECURITY > /dev/null 2>&1
+    }
 
-        # Create mount point if it doesn't exist
-        [ -d "$MOUNT_POINT" ] || mkdir -p "$MOUNT_POINT"
+    compression() {
+        # Install compression and archiving packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: COMPRESSION AND ARCHIVING\n"
+        COMPRESSION="unzip xz-utils bzip2 pigz"
+        apt -y install $COMPRESSION > /dev/null 2>&1
+    }
 
-        # Perform the mount
-        if [ "$USE_LUKS" = "yes" ]; then
-            if [ -n "$OPTIONS" ]; then
-                mount "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-            else
-                mount "$DEVICE_UUID" "$MOUNT_POINT"
-            fi
-        else
-            if [ -n "$OPTIONS" ]; then
-                mount -U "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-            else
-                mount -U "$DEVICE_UUID" "$MOUNT_POINT"
-            fi
-        fi
+    scripting() {
+        # Install scripting and automation support packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SCRIPTING AND AUTOMATION SUPPORT\n"
+        SCRIPTING="sshpass python3-apt"
+        apt -y install $SCRIPTING > /dev/null 2>&1
+    }
+
+    monitoring() {
+        # Install system monitoring and diagnostics packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SYSTEM MONITORING AND DIAGNOSTICS\n"
+        MONITORING="screen htop sysstat stress lm-sensors nload smartmontools"
+        apt -y install $MONITORING > /dev/null 2>&1
+    }
+
+    fs_utils() {
+        # Install disk and file system utilities packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: DISK AND FILE SYSTEM UTILITIES\n"
+        FS_UTILS="hdparm ntfs-3g dosfstools btrfs-progs mergerfs cryptsetup uuid rsync"
+        apt -y install $FS_UTILS > /dev/null 2>&1
+    }
+
+    connectivity() {
+        # Install connectivity utilities packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: CONNECTIVITY UTILITIES\n"
+        CONNECTIVITY="curl wget net-tools"
+        apt -y install $CONNECTIVITY > /dev/null 2>&1
+    }
+
+    power_management() {
+        # Install power and system management utilities packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: POWER AND SYSTEM MANAGEMENT UTILITIES\n"
+        POWER_MGMT="pm-utils acpi acpid fwupd"
+        apt -y install $POWER_MGMT > /dev/null 2>&1
+    }
+
+    resource_control() {
+        # Install resource limiting and control packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: RESOURCE LIMITING AND CONTROL\n"
+        RESOURCE_CTRL="cpulimit"
+        apt -y install $RESOURCE_CTRL > /dev/null 2>&1
+    }
+
+    graphics_network() {
+        # Install graphics and network drivers and firmware packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: GRAPHICS AND NETWORK DRIVERS AND FIRMWARE\n"
+        MISC="firmware-misc-nonfree"
+        NETWORK="firmware-realtek firmware-atheros"
+        GRAPHICS="firmware-amd-graphics"
+        apt -y install $MISC $NETWORK > /dev/null 2>&1
+    }
+
+    extra_utils() {
+        # Install additional utilities packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: ADDITIONAL UTILITIES\n"
+        EXTRA_UTILS="tree"
+        apt -y install $EXTRA_UTILS > /dev/null 2>&1
     }
 
     # Call
-    50026B7785D3588D
-    50026B7785D35B0D
-    mergerfs -o defaults,allow_other,category.create=mfs,minfreespace=8G /mnt/Local/Container/A:/mnt/Local/Container/B /mnt/Local/Pool/A
+    text_editor
+    network_tools
+    security
+    compression
+    scripting
+    monitoring
+    fs_utils
+    connectivity
+    power_management
+    resource_control
+    graphics_network
+    extra_utils
 }
 
-container_c() {
-    local USE_LUKS="yes"  # Enable LUKS if USE_LUKS="yes"
-    local DEVICE_UUID=""  # UUID for non-LUKS case
-    local MOUNT_POINT="/mnt/Local/Container/C"
-    local OPTIONS=""
-    local LUKS_DEVICE="/dev/disk/by-uuid/0842a224-fa02-4707-a6b3-d8ade5f4d2fd"
-    local LUKS_NAME="Container-C_crypt"
-    local LUKS_KEY_FILE="/root/.crypt/0842a224-fa02-4707-a6b3-d8ade5f4d2fd.key"
+directories() {
+    printf "\e[32m*\e[0m CREATING DIRECTORIES\n"
 
-    # Handle LUKS decryption if enabled
-    if [ "$USE_LUKS" = "yes" ]; then
-        if [ ! -e "/dev/mapper/$LUKS_NAME" ]; then
-            cryptsetup luksOpen "$LUKS_DEVICE" "$LUKS_NAME" --key-file "$LUKS_KEY_FILE"
-        fi
-        DEVICE_UUID="/dev/mapper/$LUKS_NAME"
-    fi
+    # Create directories for temporary services and data
+    mkdir -p /mnt/{Temp,Local/{Container/{A,B},USB/{A,B}},Remote/Servers}
+    mkdir -p /root/{Temp,.services/scheduled,.crypt} && chmod 600 /root/.crypt
 
-    # Create mount point if it doesn't exist
-    [ -d "$MOUNT_POINT" ] || mkdir -p "$MOUNT_POINT"
+    # Create directory for rsync logs and adjust permissions
+    mkdir /var/log/rsync && chown "$TARGET_USER":"$TARGET_USER" -R /var/log/rsync
 
-    # Perform the mount
-    if [ "$USE_LUKS" = "yes" ]; then
-        if [ -n "$OPTIONS" ]; then
-            mount "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-        else
-            mount "$DEVICE_UUID" "$MOUNT_POINT"
-        fi
+    # Create specific directories for the target user
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Temp,.services/scheduled,.crypt}"
+}
+
+trigger() {
+    printf "\e[32m*\e[0m SETTING UP MAIN SYSTEMD SERVICE\n"
+
+    # Adding the main start service
+    cp systemd/trigger.service /etc/systemd/system && systemctl enable trigger --quiet
+
+    # Adding central configuration file
+    cp systemd/scripts/main.sh /root/.services && chmod 700 /root/.services/main.sh
+}
+
+network() {
+    printf "\e[32m*\e[0m SETTING UP NETWORK\n"
+
+    # Adding Network Configuration File
+    cp systemd/scripts/network.sh /root/.services/ && chmod 700 /root/.services/network.sh
+
+    # Install the required packages
+    apt -y install dhcpcd > /dev/null 2>&1
+
+    # Disabling services
+    systemctl disable networking --quiet && systemctl disable ModemManager --quiet &&  systemctl disable wpa_supplicant --quiet && systemctl disable dhcpcd --quiet && systemctl disable NetworkManager-wait-online --quiet && systemctl disable NetworkManager.service --quiet
+
+
+    # Configuring dhcpcd
+    sed -i -e '$a\' -e '\n# Custom\n#Try DHCP on all interfaces\nallowinterfaces br_vlan710\n\n# Waiting time to try to get an IP (in seconds)\ntimeout 0  # 0 means try indefinitely' /etc/dhcpcd.conf
+
+    # Collects the MAC address and stores it in the variable
+    MAC=$(ip link show "$INTERFACE" | awk '/ether/ {print $2}')
+
+    # Setting the primary interface
+    sed -i "s/NIC0=.*/NIC0=\"$INTERFACE\"/" /root/.services/network.sh
+    sed -i "/ip link set dev br_vlan710 address/s/$/ $MAC/" /root/.services/network.sh
+
+    ntp() {
+        # Install and configure the 'systemd-timesyncd' time synchronization service
+        apt -y install systemd-timesyncd > /dev/null 2>&1
+
+        # Disables and stops the systemd-timesyncd service
+        systemctl disable --now systemd-timesyncd --quiet
+
+        # Set the time zone
+        export TZ=${TIMEZONE}
+
+        # Remove the current time zone setting
+        rm /etc/localtime
+
+        # Copy time zone setting
+        cp /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
+
+        # Update the system configuration to use the correct time zone
+        timedatectl set-timezone ${TIMEZONE}
+    }
+
+    dns() {
+        # Install and configure the 'dnsmasq' DNS Server
+        apt -y install dnsmasq dnsutils tcpdump > /dev/null 2>&1
+
+        # Disables and stops the dnsmasq service
+        systemctl disable --now dnsmasq --quiet
+
+        # Removing the default dnsmasq configuration
+        rm /etc/dnsmasq.conf
+
+        # Adding central configuration file
+        cp systemd/scripts/main.conf /etc/dnsmasq.d/
+
+        # Defining domain based on host
+        sed -i "s/domain=.*/domain=$HOSTNAME.local/" /etc/dnsmasq.d/main.conf
+
+        # Creating dnsmasq configuration directories
+        mkdir /etc/dnsmasq.d/config
+
+        # Adding the hostname to the hosts file
+        printf '10.0.10.254 %s.local' "$HOSTNAME" > /etc/dnsmasq.d/config/hosts
+
+        # Creates the Upstream DNS server declaration file that will be used by dnsmasq
+        grep '^nameserver' /etc/resolv.conf | awk '{print "nameserver " $2}' | tee -a /etc/dnsmasq.d/config/resolv > /dev/null
+
+        # Creating the dnsmasq IP reservations file
+        touch /etc/dnsmasq.d/config/reservations
+    }
+
+    # Call
+    ntp
+    dns
+}
+
+firewall() {
+    printf "\e[32m*\e[0m SETTING UP FIREWALL\n"
+
+    # Install nftables
+    apt -y install nftables > /dev/null 2>&1
+
+    # Disable the nftables service
+    systemctl disable --now nftables --quiet
+
+    # Adding central configuration file
+    cp systemd/scripts/firewall.sh /root/.services/ && chmod 700 /root/.services/firewall.sh
+
+    # Setting the default interface
+    sed -i "s/WAN=''/WAN='br_vlan710'/" /root/.services/firewall.sh
+}
+
+mount() {
+    printf "\e[32m*\e[0m SETTING MOUNT POINTS AND FILE SHARING\n"
+
+    # Install NFS and Samba sharing services
+    apt -y install nfs-kernel-server samba > /dev/null 2>&1
+
+    # Disable and stop NFS and Samba related services
+    systemctl disable --now nfs-kernel-server --quiet
+    systemctl disable --now smbd --quiet
+
+    # Adding Mount Configuration File
+    cp systemd/scripts/mount.sh /root/.services/ && chmod 700 /root/.services/mount.sh
+
+    # Create NFS export configuration
+    printf '#/mnt/Local/Container/A 172.16.0.0(rw,sync,crossmnt,no_subtree_check,no_root_squash)' > /etc/exports
+}
+
+hypervisor() {
+    printf "\e[32m*\e[0m SETTING UP HYPERVISOR\n"
+
+    kvm() {
+        # Identifies the processor manufacturer
+        CPU=$(lscpu | grep -E 'Vendor ID|ID de fornecedor' | cut -f 2 -d ":" | sed -n 1p | awk '{$1=$1}1')
+
+        # Install KVM and required dependencies
+        apt -y install qemu-kvm libvirt0 libvirt-daemon-system > /dev/null 2>&1
+
+        # Disable and stop libvirt service to configure manually
+        systemctl disable --now libvirtd --quiet
+
+        # Adds target user to 'libvirt' group for management permissions
+        gpasswd libvirt -a "$TARGET_USER" > /dev/null 2>&1
+
+        # Configures the kernel module with nested virtualization support.
+        touch /etc/modprobe.d/kvm.conf
+        case "$CPU" in
+            GenuineIntel)
+                printf 'options kvm_intel nested=1' > /etc/modprobe.d/kvm.conf
+                /sbin/modprobe -r kvm_intel
+                /sbin/modprobe kvm_intel
+                ;;
+            AuthenticAMD)
+                printf 'options kvm_amd nested=1' > /etc/modprobe.d/kvm.conf
+                /sbin/modprobe -r kvm_amd
+                /sbin/modprobe kvm_amd
+                ;;
+            *)
+                printf "\e[32m** UNKNOWN OR UNSUPPORTED CPU ARCHITECTURE **\e[0m\n"
+                ;;
+            esac
+
+        # Creating directories for scripts and logs
+        mkdir /var/log/virsh && chown "$TARGET_USER":"$TARGET_USER" -R /var/log/virsh
+
+        # Add startup script to start libvirt service and start virtual machines
+        cp systemd/scripts/virtual-machine.sh /root/.services/ && chmod 700 /root/.services/virtual-machine.sh
+    }
+
+    lxc() {
+        # Install LXC and required dependencies
+        apt -y install lxc > /dev/null 2>&1
+
+        # Allow custom storage path
+        sed -i '/^\s*}$/i \ \ /mnt\/Local\/Container\/A\/lxc\/** rw,\n\ \ mount options=(rw, move) -> /mnt\/Local\/Container\/A\/lxc\/**,' /etc/apparmor.d/usr.bin.lxc-copy
+        apparmor_parser -r /etc/apparmor.d/usr.bin.lxc-copy
+
+        # Disable and stop lxc and lxc-net services
+        systemctl disable --now lxc --quiet
+        systemctl disable --now lxc-net --quiet; systemctl mask lxc-net --quiet
+
+        # Remove lxc-net related configuration files
+        rm /etc/default/lxc-net && rm /etc/lxc/default.conf
+
+        # Create the LXC configuration file
+        printf 'lxc.net.0.type = veth
+lxc.net.0.link = br_tap110
+lxc.net.0.flags = up
+
+lxc.apparmor.profile = generated
+lxc.apparmor.allow_nesting = 1' > /etc/lxc/default.conf
+
+        # Create log directory and adjust permissions
+        mkdir /var/log/lxc; chown "$TARGET_USER":"$TARGET_USER" -R /var/log/lxc
+
+        # Add startup script to start lxc service and start containers
+        cp systemd/scripts/container.sh /root/.services/ && chmod 700 /root/.services/container.sh
+    }
+
+    # Call
+    kvm
+    lxc
+}
+
+ssh() {
+    printf "\e[32m*\e[0m SETTING UP SSH\n"
+
+    # Install the required packages
+    apt -y install openssh-server sshfs autossh > /dev/null 2>&1
+
+    # Remove existing SSH configuration
+    rm /etc/ssh/sshd_config
+
+    # Add new SSH configuration file with custom parameters
+    cp sshd_config /etc/ssh/ && chmod 644 /etc/ssh/sshd_config
+
+    # Remove the old motd file and create a new empty one
+    rm /etc/motd && touch /etc/motd
+
+    # Adjust root .ssh folder permissions to ensure security
+    chmod 600 /root/.ssh
+
+    # Create root SSH key and adjust permissions of authorized keys folder
+    touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+    ssh-keygen -t rsa -b 4096 -N '' <<<$'\n' > /dev/null 2>&1
+
+    # Create SSH key for specified user and adjust permissions of .ssh folder
+    su - "$TARGET_USER" -c "echo | ssh-keygen -t rsa -b 4096 -N '' <<<$'\n'" > /dev/null 2>&1
+    chmod 700 /home/"$TARGET_USER"/.ssh
+
+    # Create the user's authorized_keys file and adjust permissions
+    su - "$TARGET_USER" -c "echo | touch /home/"$TARGET_USER"/.ssh/authorized_keys"
+    chmod 600 /home/"$TARGET_USER"/.ssh/authorized_keys
+}
+
+de() {
+    printf "\e[32m*\e[0m SETTING UP DESKTOP ENVIRONMENT\n"
+
+    # Installs the packages required for the desktop environment
+    apt -y install gnome-core gdm3 virt-manager ssh-askpass > /dev/null 2>&1
+
+    # Configure specific directories and files for the target user
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Pictures/{Wallpapers,Screenshots},Music,Documents,Videos,.virt/{ISO,Temp}}"
+
+    sandbox_pkg() {
+    printf "\e[32m*\e[0m SETTING UP SANDBOX PACKAGES\n"
+
+    # Install and configure Flatpak core
+    apt -y install flatpak gnome-software-plugin-flatpak > /dev/null 2>&1
+
+    # Add the Flathub repository
+    flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+    # Packages
+    flatpak -y install flathub org.mozilla.firefox com.freerdp.FreeRDP
+}
+
+    # Call
+    sandbox_pkg
+}
+
+spawn() {
+    printf "\e[32m*\e[0m CONFIGURING SPAWN SERVICE\n"
+
+    # Copy the necessary files to the service directory
+    cp -r spawn /etc/ && chmod 700 /etc/spawn/CT/*.sh
+    ln -s /etc/spawn/CT/spawn.sh /home/"$TARGET_USER"/.spawn
+    ln -s /etc/spawn/CT/spawn.sh /root/.spawn && chown sysop:sysop /root/.spawn
+}
+
+grub() {
+    printf "\e[32m*\e[0m SETTING UP GRUB\n"
+
+    # Remove the current GRUB configuration file (if it exists)
+    rm -f /etc/default/grub
+
+    # Create a new GRUB configuration file with custom parameters
+    printf 'GRUB_DEFAULT=0
+GRUB_TIMEOUT=0
+GRUB_DISTRIBUTOR=`lsb_release -i -s 2> /dev/null || echo Debian`
+GRUB_CMDLINE_LINUX_DEFAULT=""
+GRUB_CMDLINE_LINUX=""' > /etc/default/grub && chmod 644 /etc/default/grub
+
+    # Update GRUB configuration
+    update-grub
+
+    # Completion message
+    if [ $? -eq 0 ]; then
+        printf "\e[32m*\e[0m GRUB CONFIGURATION UPDATED SUCCESSFULLY\n"
     else
-        if [ -n "$OPTIONS" ]; then
-            mount -U "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-        else
-            mount -U "$DEVICE_UUID" "$MOUNT_POINT"
-        fi
+        printf "\e[31m*\e[0m ERROR: FAILED TO UPDATE GRUB CONFIGURATION\n"
     fi
 }
 
-container_d() {
-    local USE_LUKS="yes"  # Enable LUKS if USE_LUKS="yes"
-    local DEVICE_UUID=""  # UUID for non-LUKS case
-    local MOUNT_POINT="/mnt/Local/Container/D"
-    local OPTIONS=""
-    local LUKS_DEVICE="/dev/disk/by-uuid/a58059c1-1254-4b8f-893d-220e8d9b6b6b"
-    local LUKS_NAME="Container-D_crypt"
-    local LUKS_KEY_FILE="/root/.crypt/a58059c1-1254-4b8f-893d-220e8d9b6b6b.key"
+later() {
+    printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART\n"
 
-    # Handle LUKS decryption if enabled
-    if [ "$USE_LUKS" = "yes" ]; then
-        if [ ! -e "/dev/mapper/$LUKS_NAME" ]; then
-            cryptsetup luksOpen "$LUKS_DEVICE" "$LUKS_NAME" --key-file "$LUKS_KEY_FILE"
-        fi
-        DEVICE_UUID="/dev/mapper/$LUKS_NAME"
-    fi
+    # Gets the name of the user with UID 1000, usually the first user created
+    TARGET_USER=$(grep 1000 /etc/passwd | cut -f 1 -d ":")
 
-    # Create mount point if it doesn't exist
-    [ -d "$MOUNT_POINT" ] || mkdir -p "$MOUNT_POINT"
+    # Creates the startup script that will be executed after reboot
+    printf '#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          later
+# Required-Start:    $all
+# Required-Stop:     
+# Default-Start:     2 3 4 5
+# Default-Stop:      
+# Short-Description: Procedures subsequent to instance construction only possible after reboot
+### END INIT INFO
 
-    # Perform the mount
-    if [ "$USE_LUKS" = "yes" ]; then
-        if [ -n "$OPTIONS" ]; then
-            mount "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-        else
-            mount "$DEVICE_UUID" "$MOUNT_POINT"
-        fi
+# End all processes for user TARGET USER
+pkill -u %s
+
+# Remove the user TARGET USER and its home directory
+userdel -r %s
+
+# Remove the WS folder from the /root directory
+rm -rf /root/WS
+
+# Remove the init.d script after it is executed
+rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later; chmod +x /etc/init.d/later
+
+    # Add the script to the services that will start at boot
+    update-rc.d later defaults
+}
+
+finish() {
+    # Remove unused packages and unnecessary dependencies
+    apt -y autoremove > /dev/null 2>&1
+
+    # Remove default network configuration file to avoid conflicts
+    rm /etc/network/interfaces
+
+    printf "\e[32m*\e[0m INSTALLATION COMPLETED SUCCESSFULLY!\n"
+
+    read -p "DO YOU WANT TO RESTART? (Y/N): " response
+    response=${response^^}
+    if [[ "$response" == "Y" ]]; then
+        printf "\e[32m*\e[0m RESTARTING...\n"
+        systemctl reboot
+    elif [[ "$response" == "N" ]]; then
+        printf "\e[32m*\e[0m WILL NOT BE RESTARTED.\n"
     else
-        if [ -n "$OPTIONS" ]; then
-            mount -U "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-        else
-            mount -U "$DEVICE_UUID" "$MOUNT_POINT"
-        fi
+        printf "\e[31m*\e[0m ERROR: PLEASE ANSWER WITH 'Y' FOR YES OR 'N' FOR NO.\n"
     fi
 }
 
-container_e() {
-    local USE_LUKS="yes"  # Enable LUKS if USE_LUKS="yes"
-    local DEVICE_UUID=""  # UUID for non-LUKS case
-    local MOUNT_POINT="/mnt/Local/Container/E"
-    local OPTIONS=""
-    local LUKS_DEVICE="/dev/disk/by-uuid/bac62242-f1ff-43dc-bf18-cfedfbc1f1ff"
-    local LUKS_NAME="Container-E_crypt"
-    local LUKS_KEY_FILE="/root/.crypt/bac62242-f1ff-43dc-bf18-cfedfbc1f1ff.key"
-
-    # Handle LUKS decryption if enabled
-    if [ "$USE_LUKS" = "yes" ]; then
-        if [ ! -e "/dev/mapper/$LUKS_NAME" ]; then
-            cryptsetup luksOpen "$LUKS_DEVICE" "$LUKS_NAME" --key-file "$LUKS_KEY_FILE"
-        fi
-        DEVICE_UUID="/dev/mapper/$LUKS_NAME"
-    fi
-
-    # Create mount point if it doesn't exist
-    [ -d "$MOUNT_POINT" ] || mkdir -p "$MOUNT_POINT"
-
-    # Perform the mount
-    if [ "$USE_LUKS" = "yes" ]; then
-        if [ -n "$OPTIONS" ]; then
-            mount "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-        else
-            mount "$DEVICE_UUID" "$MOUNT_POINT"
-        fi
-    else
-        if [ -n "$OPTIONS" ]; then
-            mount -U "$DEVICE_UUID" "$MOUNT_POINT" -o "$OPTIONS"
-        else
-            mount -U "$DEVICE_UUID" "$MOUNT_POINT"
-        fi
-    fi
-}
-
-# Main function to orchestrate the setup
 main() {
-    pool_a
-    container_c
-    container_d
-    container_e
-}
-
-# Execute main function
-main
-
-#!/bin/bash
-
-# - Description: Configures nftables firewall for workstations.
-# - Enables IP forwarding, restarts nftables, and sets up tables, chains, and rules
-# for filtering, NAT, and connection tracking (e.g., established connections).
-# - Includes optional rules (e.g., zabbix). Exits on any error using set -e.
-# - To add new rules or configurations, copy and edit functions like chains or zabbix.
-
-# Close on any error
-set -e
-
-# Interfaces
-WAN='enp4s0'
-
-# Enable IP forwarding
-ip_forwarding() {
-    sysctl -w net.ipv4.ip_forward=1
-    if [[ $? -ne 0 ]]; then
-        printf "\e[31m*\e[0m Error: Failed to enable IP forwarding.\n"
-        exit 1
-    fi
-}
-
-# Restart nftables service
-restart_nftables() {
-    local SERVICE=nftables
-    systemctl restart "$SERVICE"
-    if [[ $? -ne 0 ]]; then
-        printf "\e[31m*\e[0m Error: Failed to restart $SERVICE.\n"
-        exit 1
-    fi
-}
-
-# Flush existing nftables rules
-flush_nftables() {
-    nft flush ruleset
-}
-
-# Create main table
-main_table() {
-    nft add table inet firelux
-}
-
-# Create chains
-chains() {
-    nft add chain inet firelux forward { type filter hook forward priority filter \; policy drop \; }
-    nft add chain inet firelux prerouting { type nat hook prerouting priority 0 \; policy accept \; }
-    nft add chain inet firelux postrouting { type nat hook postrouting priority srcnat \; policy accept \; }
-}
-
-# Allow established and related connections
-established_related() {
-    # Filter Rules
-    nft add rule inet firelux forward ct state established,related accept
-}
-
-# Configure NAT and forwarding for Bridge (BR_TAP110)
-br_tap110() {
-    # Masquerade Rules
-    nft add rule inet firelux postrouting ip saddr 10.0.10.0/24 oifname "$WAN" masquerade
-
-    # Forward Rules
-    nft add rule inet firelux forward iifname "br_tap110" oifname "$WAN" accept
-}
-
-ct212810_4533() {
-    # Music Streaming - Navidrome
-    # DNAT Rules
-    nft add rule inet firelux prerouting ip protocol tcp tcp dport 4533 dnat to 10.0.10.2:4533
-
-    # Forward Rules
-    nft add rule inet firelux forward ip protocol tcp tcp dport 4533 accept
-}
-
-ct915942_8096() {
-    # Video Streaming - Jellyfin
-    # DNAT Rules
-    nft add rule inet firelux prerouting ip protocol tcp tcp dport 8096 dnat to 10.0.10.3:8096
-
-    # Forward Rules
-    nft add rule inet firelux forward ip protocol tcp tcp dport 8096 accept
-}
-
-9091() {
-    # Web P2P Client - Transmission
-    # DNAT Rules
-    nft add rule inet firelux prerouting ip protocol tcp tcp dport 9091 dnat to 10.0.10.4:9091
-
-    # Forward Rules
-    nft add rule inet firelux forward ip protocol tcp tcp dport 9091 accept
-}
-
-ct442878() {
-    # Music Streaming - MPD Server with USB DAC passthrough
-    # DNAT Rules
-    nft add rule inet firelux prerouting ip protocol tcp tcp dport 5644 dnat to 10.0.10.5:5644
-    nft add rule inet firelux prerouting ip protocol tcp tcp dport 6600 dnat to 10.0.10.5:6600
-
-    # Forward Rules
-    nft add rule inet firelux forward ip protocol tcp tcp dport 5644 accept
-    nft add rule inet firelux forward ip protocol tcp tcp dport 6600 accept
-}
-
-ct418656_6081() {
-    # AI Code Editor - Windsurf
-    # DNAT Rules
-    nft add rule inet firelux prerouting ip protocol tcp tcp dport 6081 dnat to 10.0.10.6:6080
-
-    # Forward Rules
-    nft add rule inet firelux forward ip protocol tcp tcp dport 6080 accept
-}
-
-# Main function to orchestrate the setup
-main() {
-    ip_forwarding
-    restart_nftables
-    flush_nftables
-    main_table
-    chains
-    established_related
-    br_tap110
-    ct212810_4533
-    ct915942_8096
-    ct442878
-    ct418656_6081
+    update
+    global
+    hostname
+    target_user
+    passwords
+    packages
+    directories
+    trigger
+    firewall
+    mount
+    hypervisor
+    ssh
+    #de
+    spawn
+    grub
+    network
+    later
+    finish
 }
 
 # Execute main function
