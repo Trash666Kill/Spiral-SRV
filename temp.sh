@@ -361,6 +361,9 @@ network() {
         # Disables and stops the systemd-timesyncd service
         systemctl disable --now systemd-timesyncd --quiet
 
+        # Fixing NTP Server
+        sed -i 's/#NTP=/NTP=10.0.6.62/' /etc/systemd/timesyncd.conf
+
         # Set the time zone
         export TZ=${TIMEZONE}
 
@@ -396,7 +399,8 @@ network() {
         # Adding the hostname to the hosts file
         printf '10.0.10.254 %s.local' "$HOSTNAME" > /etc/dnsmasq.d/config/hosts
 
-        # 
+        # Fixing DNS Server
+        chattr -i /etc/resolv.conf
 
         # Creates the Upstream DNS server declaration file that will be used by dnsmasq
         grep '^nameserver' /etc/resolv.conf | awk '{print "nameserver " $2}' | tee -a /etc/dnsmasq.d/config/resolv > /dev/null
