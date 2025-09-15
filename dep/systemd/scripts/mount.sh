@@ -1,15 +1,5 @@
 #!/bin/bash
 
-# - Description: Mounts a device by UUID, an NFS share, or an SMB share to specified mount points.
-# - Optionally decrypts a LUKS device before mounting for mount_unit if USE_LUKS is set to 'yes'.
-# - Creates the mount point directories if they do not exist and mounts the device or share using provided UUID, source, and options.
-# - Uses 'mount -U' for UUID-based mounts (non-LUKS in mount_unit) and 'mount' for NFS, SMB, or LUKS-mapped devices.
-# - The nfs_mount_unit and smb_mount_unit functions are designed for network file systems and do not support LUKS decryption.
-# - The OPTIONS variable is empty by default in all functions; specify custom mount options as needed.
-# - Exits on any error using set -e.
-# - To modify mount parameters, edit the DEVICE_UUID, NFS_SOURCE, SMB_SOURCE, MOUNT_POINT, or OPTIONS variables in the respective functions.
-# - To enable LUKS decryption for mount_unit, set USE_LUKS="yes" before running the script.
-
 # Close on any error
 set -e
 

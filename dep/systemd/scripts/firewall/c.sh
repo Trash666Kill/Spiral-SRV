@@ -1,9 +1,9 @@
 #!/bin/bash
 
-#LAN0=enp1s0
-
 # Close on any error (Optional)
 #set -e
+
+#LAN0=enp1s0
 
 vm859224() {
     3390() {

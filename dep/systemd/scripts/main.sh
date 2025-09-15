@@ -1,10 +1,5 @@
 #!/bin/bash
 
-# - Description: Orchestrates network and firewall configuration for virtual machines.
-# - Executes network.sh and firewall.sh, with an optional function to restart services.
-# - Ensures each script has execute permission and exits on errors using set -e.
-# - To add new scripts or services, copy and edit functions like network or others.
-
 # Close on any error
 set -e
 
