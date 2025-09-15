@@ -665,10 +665,24 @@ rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later && ch
 }
 
 finish() {
-   # Remove pacotes não utilizados e dependências não necessárias
-   apt-get -y autoremove > /dev/null 2>&1
+    # Remove unused packages and unnecessary dependencies
+    apt-get -y autoremove > /dev/null 2>&1
 
-   printf "\e[32m*\e[0m YOUR VPS IS ALMOST READY! FOR EVERYTHING TO WORK CORRECTLY, REBOOT IT.\n"
+    # Remove default network configuration file to avoid conflicts
+    rm /etc/network/interfaces
+
+    printf "\e[32m*\e[0m INSTALLATION COMPLETED SUCCESSFULLY!\n"
+
+    read -p "DO YOU WANT TO RESTART? (Y/N): " response
+    response=${response^^}
+    if [[ "$response" == "Y" ]]; then
+        printf "\e[32m*\e[0m RESTARTING...\n"
+        systemctl reboot
+    elif [[ "$response" == "N" ]]; then
+        printf "\e[32m*\e[0m WILL NOT BE RESTARTED.\n"
+    else
+        printf "\e[31m*\e[0m ERROR: PLEASE ANSWER WITH 'Y' FOR YES OR 'N' FOR NO.\n"
+    fi
 }
 
 main() {
