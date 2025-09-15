@@ -554,7 +554,7 @@ ssh() {
     printf "\e[32m*\e[0m SETTING UP SSH\n"
 
     # Install the required packages
-    apt-get-get -y install openssh-server sshfs autossh > /dev/null 2>&1
+    apt-get -y install openssh-server sshfs autossh > /dev/null 2>&1
 
     # Remove existing SSH configuration
     rm /etc/ssh/sshd_config
@@ -619,7 +619,7 @@ rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" "$TARGET_USER" "$TARGET_U
 
 finish() {
    # Remove pacotes não utilizados e dependências não necessárias
-   apt-get-get -y autoremove > /dev/null 2>&1
+   apt-get -y autoremove > /dev/null 2>&1
 
    printf "\e[32m*\e[0m YOUR VPS IS ALMOST READY! FOR EVERYTHING TO WORK CORRECTLY, REBOOT IT.\n"
 }
