@@ -80,6 +80,15 @@ ntp() {
     fi
 }
 
+nfs() {
+    local SERVICE=nfs-kernel-server
+    systemctl restart "$SERVICE"
+    if [[ $? -ne 0 ]]; then
+        printf "\e[31m*\e[0m Error: Failed to restart $SERVICE.\n"
+        exit 1
+    fi
+}
+
 mount() {
     if [[ -f "$MOUNT_SCRIPT" ]]; then
         if [[ -x "$MOUNT_SCRIPT" ]]; then
