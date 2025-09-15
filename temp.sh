@@ -541,15 +541,6 @@ lxc.apparmor.allow_nesting = 1' > /etc/lxc/default.conf
     lxc
 }
 
-spawn() {
-    printf "\e[32m*\e[0m CONFIGURING SPAWN SERVICE\n"
-
-    # Copy the necessary files to the service directory
-    cp -r spawn /etc/ && chmod 700 /etc/spawn/CT/*.sh
-    ln -s /etc/spawn/CT/spawn.sh /home/"$TARGET_USER"/.spawn
-    ln -s /etc/spawn/CT/spawn.sh /root/.spawn && chown sysop:sysop /root/.spawn
-}
-
 ssh() {
     printf "\e[32m*\e[0m SETTING UP SSH\n"
 
@@ -581,14 +572,72 @@ ssh() {
     chmod 600 /home/"$TARGET_USER"/.ssh/authorized_keys
 }
 
+de() {
+    printf "\e[32m*\e[0m SETTING UP DESKTOP ENVIRONMENT\n"
+
+    # Installs the packages required for the desktop environment
+    apt -y install gnome-core gdm3 virt-manager ssh-askpass > /dev/null 2>&1
+
+    # Configure specific directories and files for the target user
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Pictures/{Wallpapers,Screenshots},Music,Documents,Videos,.virt/{ISO,Temp}}"
+
+    sandbox_pkg() {
+    printf "\e[32m*\e[0m SETTING UP SANDBOX PACKAGES\n"
+
+    # Install and configure Flatpak core
+    apt -y install flatpak gnome-software-plugin-flatpak > /dev/null 2>&1
+
+    # Add the Flathub repository
+    flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+    # Packages
+    flatpak -y install flathub org.mozilla.firefox com.freerdp.FreeRDP
+}
+
+    # Call
+    sandbox_pkg
+}
+
+spawn() {
+    printf "\e[32m*\e[0m CONFIGURING SPAWN SERVICE\n"
+
+    # Copy the necessary files to the service directory
+    cp -r spawn /etc/ && chmod 700 /etc/spawn/CT/*.sh
+    ln -s /etc/spawn/CT/spawn.sh /home/"$TARGET_USER"/.spawn
+    ln -s /etc/spawn/CT/spawn.sh /root/.spawn && chown sysop:sysop /root/.spawn
+}
+
+grub() {
+    printf "\e[32m*\e[0m SETTING UP GRUB\n"
+
+    # Remove the current GRUB configuration file (if it exists)
+    rm -f /etc/default/grub
+
+    # Create a new GRUB configuration file with custom parameters
+    printf 'GRUB_DEFAULT=0
+GRUB_TIMEOUT=0
+GRUB_DISTRIBUTOR=`lsb_release -i -s 2> /dev/null || echo Debian`
+GRUB_CMDLINE_LINUX_DEFAULT=""
+GRUB_CMDLINE_LINUX=""' > /etc/default/grub && chmod 644 /etc/default/grub
+
+    # Update GRUB configuration
+    update-grub
+
+    # Completion message
+    if [ $? -eq 0 ]; then
+        printf "\e[32m*\e[0m GRUB CONFIGURATION UPDATED SUCCESSFULLY\n"
+    else
+        printf "\e[31m*\e[0m ERROR: FAILED TO UPDATE GRUB CONFIGURATION\n"
+    fi
+}
+
 later() {
-printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART\n"
+    printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART\n"
 
     # Gets the name of the user with UID 1000, usually the first user created
     TARGET_USER=$(grep 1000 /etc/passwd | cut -f 1 -d ":")
-    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
 
-    # Cria o script de inicialização que será executado após o reinício
+    # Creates the startup script that will be executed after reboot
     printf '#!/bin/bash
 ### BEGIN INIT INFO
 # Provides:          later
@@ -601,17 +650,15 @@ printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART
 
 # End all processes for user TARGET USER
 pkill -u %s
-pkill -u %s
 
 # Remove the user TARGET USER and its home directory
 userdel -r %s
-userdel -r %s
 
-# Remove the VPS folder from the /root directory
-rm -rf /root/Spiral-VPS-main
+# Remove the WS folder from the /root directory
+rm -rf /root/Spiral-SRV-main
 
 # Remove the init.d script after it is executed
-rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later && chmod +x /etc/init.d/later
+rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later && chmod +x /etc/init.d/later
 
     # Add the script to the services that will start at boot
     update-rc.d later defaults
