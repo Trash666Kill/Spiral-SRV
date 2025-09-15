@@ -16,10 +16,6 @@ update() {
     apt-get -y upgrade > /dev/null 2>&1
 }
 
-#!/bin/bash
-
-#!/bin/bash
-
 interface() {
     # Installing required packages
     apt-get -y install bc > /dev/null 2>&1
@@ -122,6 +118,12 @@ interface() {
         printf "\033[31m*\033[0m ERROR: COULD NOT DETERMINE IP, NETMASK, OR GATEWAY FOR INTERFACE \033[32m%s\033[0m\n" "$NIC0"
         exit 1
     fi
+}
+
+global() {
+
+    # Self-explanatory
+    
 }
 
 hostname() {
@@ -334,7 +336,7 @@ network() {
     cp systemd/scripts/network.sh /root/.services/ && chmod 700 /root/.services/network.sh
 
     # Install the required packages
-    apt -y install dhcpcd > /dev/null 2>&1
+    apt-get -y install dhcpcd > /dev/null 2>&1
 
     # Disabling services
     systemctl disable networking --quiet && systemctl disable ModemManager --quiet &&  systemctl disable wpa_supplicant --quiet && systemctl disable dhcpcd --quiet && systemctl disable NetworkManager-wait-online --quiet && systemctl disable NetworkManager.service --quiet
@@ -351,8 +353,10 @@ network() {
     sed -i "/ip link set dev br_vlan710 address/s/$/ $MAC/" /root/.services/network.sh
 
     ntp() {
+        TIMEZONE="America/Sao_Paulo"
+
         # Install and configure the 'systemd-timesyncd' time synchronization service
-        apt -y install systemd-timesyncd > /dev/null 2>&1
+        apt-get -y install systemd-timesyncd > /dev/null 2>&1
 
         # Disables and stops the systemd-timesyncd service
         systemctl disable --now systemd-timesyncd --quiet
@@ -372,7 +376,7 @@ network() {
 
     dns() {
         # Install and configure the 'dnsmasq' DNS Server
-        apt -y install dnsmasq dnsutils tcpdump > /dev/null 2>&1
+        apt-get -y install dnsmasq dnsutils tcpdump > /dev/null 2>&1
 
         # Disables and stops the dnsmasq service
         systemctl disable --now dnsmasq --quiet
@@ -392,6 +396,8 @@ network() {
         # Adding the hostname to the hosts file
         printf '10.0.10.254 %s.local' "$HOSTNAME" > /etc/dnsmasq.d/config/hosts
 
+        # 
+
         # Creates the Upstream DNS server declaration file that will be used by dnsmasq
         grep '^nameserver' /etc/resolv.conf | awk '{print "nameserver " $2}' | tee -a /etc/dnsmasq.d/config/resolv > /dev/null
 
@@ -408,7 +414,7 @@ firewall() {
     printf "\e[32m*\e[0m SETTING UP FIREWALL\n"
 
     # Install required dependencies
-    apt-get-get -y install nftables rsyslog > /dev/null 2>&1
+    apt-get -y install nftables rsyslog > /dev/null 2>&1
 
     # Configure firewall services and scripts
     systemctl disable --now nftables --quiet
@@ -442,12 +448,11 @@ EOF
 mount() {
     printf "\e[32m*\e[0m SETTING MOUNT POINTS AND FILE SHARING\n"
 
-    # Install NFS and Samba sharing services
-    apt -y install nfs-kernel-server samba > /dev/null 2>&1
+    # Install NFS sharing service
+    apt-get -y install nfs-kernel-server > /dev/null 2>&1
 
-    # Disable and stop NFS and Samba related services
+    # Disable and stop NFS related service
     systemctl disable --now nfs-kernel-server --quiet
-    systemctl disable --now smbd --quiet
 
     # Adding Mount Configuration File
     cp systemd/scripts/mount.sh /root/.services/ && chmod 700 /root/.services/mount.sh
@@ -459,9 +464,51 @@ mount() {
 hypervisor() {
     printf "\e[32m*\e[0m SETTING UP HYPERVISOR\n"
 
+    kvm() {
+        # Identifies the processor manufacturer
+        CPU=$(lscpu | grep -E 'Vendor ID|ID de fornecedor' | cut -f 2 -d ":" | sed -n 1p | awk '{$1=$1}1')
+
+        # Install KVM and required dependencies
+        apt-get -y install qemu-kvm libvirt0 libvirt-daemon-system > /dev/null 2>&1
+
+        # Disable and stop libvirt service to configure manually
+        systemctl disable --now libvirtd --quiet
+
+        # Adds target user to 'libvirt' group for management permissions
+        gpasswd libvirt -a "$TARGET_USER" > /dev/null 2>&1
+
+        # Configures the kernel module with nested virtualization support.
+        touch /etc/modprobe.d/kvm.conf
+        case "$CPU" in
+            GenuineIntel)
+                printf 'options kvm_intel nested=1' > /etc/modprobe.d/kvm.conf
+                /sbin/modprobe -r kvm_intel
+                /sbin/modprobe kvm_intel
+                ;;
+            AuthenticAMD)
+                printf 'options kvm_amd nested=1' > /etc/modprobe.d/kvm.conf
+                /sbin/modprobe -r kvm_amd
+                /sbin/modprobe kvm_amd
+                ;;
+            *)
+                printf "\e[32m** UNKNOWN OR UNSUPPORTED CPU ARCHITECTURE **\e[0m\n"
+                ;;
+            esac
+
+        # Creating directories for scripts and logs
+        mkdir /var/log/virsh && chown "$TARGET_USER":"$TARGET_USER" -R /var/log/virsh
+
+        # Add startup script to start libvirt service and start virtual machines
+        cp systemd/scripts/virtual-machine.sh /root/.services/ && chmod 700 /root/.services/virtual-machine.sh
+    }
+
     lxc() {
         # Install LXC and required dependencies
-        apt-get-get -y install lxc > /dev/null 2>&1
+        apt-get -y install lxc > /dev/null 2>&1
+
+        # Allow custom storage path
+        sed -i '/^\s*}$/i \ \ /mnt\/Local\/Container\/A\/lxc\/** rw,\n\ \ mount options=(rw, move) -> /mnt\/Local\/Container\/A\/lxc\/**,' /etc/apparmor.d/usr.bin.lxc-copy
+        apparmor_parser -r /etc/apparmor.d/usr.bin.lxc-copy
 
         # Disable and stop lxc and lxc-net services
         systemctl disable --now lxc --quiet
@@ -472,97 +519,22 @@ hypervisor() {
 
         # Create the LXC configuration file
         printf 'lxc.net.0.type = veth
-lxc.net.0.link = br_tap111
+lxc.net.0.link = br_tap110
 lxc.net.0.flags = up
 
 lxc.apparmor.profile = generated
 lxc.apparmor.allow_nesting = 1' > /etc/lxc/default.conf
 
         # Create log directory and adjust permissions
-        mkdir /var/log/lxc && chown "$TARGET_USER":"$TARGET_USER" -R /var/log/lxc
+        mkdir /var/log/lxc; chown "$TARGET_USER":"$TARGET_USER" -R /var/log/lxc
 
         # Add startup script to start lxc service and start containers
         cp systemd/scripts/container.sh /root/.services/ && chmod 700 /root/.services/container.sh
-
-        # Work variable
-        LXC_PATH="/var/lib/lxc"
     }
 
     # Call
+    kvm
     lxc
-}
-
-network() {
-    printf "\e[32m*\e[0m SETTING UP NETWORK\n"
-
-    # Adding Network Configuration File
-    cp systemd/scripts/network.sh /root/.services/ && chmod 700 /root/.services/network.sh
-
-    dns() {
-        # Primary Public DNS (Google)
-        PDNSS1=8.8.8.8
-
-        # Geração de um nome de container aleatório e definição da arquitetura
-        DNSSHOSTNAME="ct$(shuf -i 100000-999999 -n 1)"
-        local ARCH=amd64
-        local RELEASE=trixie
-
-        printf "CREATING DNS SERVER CONTAINER: \033[32m%s\033[0m\n" "$DNSSHOSTNAME"
-
-        # Criação do container com a imagem do Debian Bookworm
-        if ! lxc-create --name "${DNSSHOSTNAME}" --template download -- --dist debian --release "${RELEASE}" --arch "${ARCH}"; then
-            printf "\e[31m*\e[0m ERROR: CONTAINER \033[32m%s\033[0m WAS NOT CREATED CORRECTLY.\n" "$DNSSHOSTNAME"
-            exit 1
-        fi
-
-        # Inicia o container após a criação
-        printf "\e[32m*\e[0m STARTING THE CONTAINER\n"
-        if ! lxc-start --name "${DNSSHOSTNAME}"; then
-            printf "\e[31m*\e[0m ERROR: CONTAINER \033[32m%s\033[0m FAILED TO START.\n" "$DNSSHOSTNAME"
-            exit 1
-        fi
-
-        # Geração de um endereço MAC aleatório para o container
-        local uuid=$(uuidgen | tr -d '-' | cut -c 1-12)
-        local MAC_ADDRESS="00:16:3e:${uuid:0:2}:${uuid:2:2}:${uuid:4:2}"
-
-        # Remove qualquer configuração anterior de endereço MAC e adiciona o novo endereço
-        sed -i '/lxc.net.0.hwaddr/d' "${LXC_PATH}"/"${DNSSHOSTNAME}"/config
-        echo "lxc.net.0.hwaddr = $MAC_ADDRESS" >> "${LXC_PATH}"/"${DNSSHOSTNAME}"/config
-        sleep 5
-
-        # Envia o script de construção principal
-        cp DNS/dnsserver.sh "${LXC_PATH}"/"${DNSSHOSTNAME}"/rootfs/root/ && lxc-attach --name "${DNSSHOSTNAME}" -- chmod +x /root/dnsserver.sh
-        sleep 8
-
-        # Executa o script "dnsserver.sh" dentro do container
-        lxc-attach --name "${DNSSHOSTNAME}" -- /root/dnsserver.sh
-        lxc-attach --name "${DNSSHOSTNAME}" -- mkdir -p /root/.services/scheduled
-        cp systemd/trigger.service "${LXC_PATH}"/"${DNSSHOSTNAME}"/rootfs/etc/systemd/system && lxc-attach --name "${DNSSHOSTNAME}" -- systemctl enable trigger --quiet
-        DESTINATION="${LXC_PATH}/${DNSSHOSTNAME}/rootfs/root/.services"
-        for file in "DNS/dns.sh" "DNS/main.sh" "DNS/network.sh"; do
-          if [ -f "$file" ]; then
-            cp "$file" "$DESTINATION"
-            chmod 700 "$DESTINATION/$(basename "$file")"
-          fi
-        done
-        lxc-attach --name "${DNSSHOSTNAME}" -- chmod 700 -R /root/.services/*.sh
-        rm -r "${LXC_PATH}"/"${DNSSHOSTNAME}"/rootfs/etc/dnsmasq.d/* && lxc-attach --name "${DNSSHOSTNAME}" -- mkdir -p /etc/dnsmasq.d/config
-        cp DNS/main.conf "${LXC_PATH}"/"${DNSSHOSTNAME}"/rootfs/etc/dnsmasq.d && lxc-attach --name "${DNSSHOSTNAME}" -- sed -i "s/domain=.*/domain=${DNSSHOSTNAME}.local/" /etc/dnsmasq.d/main.conf
-        lxc-attach --name "${DNSSHOSTNAME}" -- touch /etc/dnsmasq.d/config/resolv && lxc-attach --name "${DNSSHOSTNAME}" --set-var PDNSS1="${PDNSS1}" -- bash -c 'printf "nameserver %s\n" "$PDNSS1" > /etc/dnsmasq.d/config/resolv'
-        lxc-attach --name "${DNSSHOSTNAME}" -- touch /etc/dnsmasq.d/config/hosts && lxc-attach --name "${DNSSHOSTNAME}" --set-var HOSTNAME="${HOSTNAME}" -- bash -c 'printf "10.0.11.254 %s.local\n" "$HOSTNAME" > /etc/dnsmasq.d/config/hosts'
-        lxc-attach --name "${DNSSHOSTNAME}" --set-var DNSSHOSTNAME="${DNSSHOSTNAME}" -- bash -c 'printf "10.0.11.1 %s.local\n" "$DNSSHOSTNAME" >> /etc/dnsmasq.d/config/hosts'
-        lxc-attach --name "${DNSSHOSTNAME}" -- touch /etc/dnsmasq.d/config/reservations
-        mv spawn/CT/grepip.sh "${LXC_PATH}"/"${DNSSHOSTNAME}"/rootfs/etc/dnsmasq.d/config && lxc-attach --name "${DNSSHOSTNAME}" -- chmod 700 /etc/dnsmasq.d/config/grepip.sh
-
-        # Adding the container to the autostart queue
-        sed -i -e "s/ct123456/${DNSSHOSTNAME}/g" -e "/${DNSSHOSTNAME}() {/{n;s/#/# DNS Server/}" /root/.services/container.sh
-    }
-
-    # Call
-    /root/.services/network.sh
-    chmod 700 DNS/fw_ct_build_temp.sh && DNS/fw_ct_build_temp.sh
-    dns
 }
 
 spawn() {
