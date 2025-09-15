@@ -6,13 +6,13 @@ AllowTcpForwarding no
 GatewayPorts no
 
 PubkeyAuthentication yes
-PermitRootLogin no
+PermitRootLogin prohibit-password
 
 ChallengeResponseAuthentication no
 
 UsePAM yes
 
-X11Forwarding yes
+X11Forwarding no
 PrintMotd no
 PrintLastLog no
 
