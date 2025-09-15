@@ -35,7 +35,7 @@ main_table() {
     nft add table inet firelux
 }
 
-# Create chains with default drop policy
+# Create chains with default accept policy
 chains() {
     echo "Creating chains..."
     nft add chain inet firelux forward { type filter hook forward priority filter \; policy drop \; }
