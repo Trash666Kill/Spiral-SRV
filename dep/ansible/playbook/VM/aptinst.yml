@@ -1,0 +1,11 @@
+---
+- hosts: Virtual
+  remote_user: sysop
+  become: yes  # Add this line to use sudo
+  tasks:
+    - name: "installing zabbix-agent"
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - zabbix-agent

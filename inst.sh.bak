@@ -1,0 +1,811 @@
+#!/bin/bash
+#SCRIPT TO BUILD A PRODUCTION AND DEVELOPMENT SERVER FOLLOWING THE SPIRAL PATTERN
+
+# Desativa histórico bash
+unset HISTFILE
+
+# Diretório de execução
+cd $PWD/dep
+
+repositore() {
+printf "\e[32m*\e[0m UPDATING EXISTING REPOSITORY AND PACKAGES\n"
+
+# Remove os repositórios padrão
+rm /etc/apt/sources.list
+
+# Adiciona os novos respositórios non-free
+printf '#
+deb http://deb.debian.org/debian/ bookworm main non-free non-free-firmware
+deb-src http://deb.debian.org/debian/ bookworm main non-free non-free-firmware
+#
+deb http://security.debian.org/debian-security bookworm-security main non-free non-free-firmware
+deb-src http://security.debian.org/debian-security bookworm-security main non-free non-free-firmware
+#
+deb http://deb.debian.org/debian/ bookworm-updates main non-free non-free-firmware
+deb-src http://deb.debian.org/debian/ bookworm-updates main non-free non-free-firmware
+#
+#deb http://deb.debian.org/debian bookworm-backports main non-free
+#' > /etc/apt/sources.list
+
+# Atualiza a lista de pacotes disponíveis
+apt -y update > /dev/null 2>&1
+
+# Realiza a atualização dos pacotes instalados
+apt -y upgrade > /dev/null 2>&1
+}
+
+interface() {
+# Instala os pacotes necessários
+apt -y install bc > /dev/null 2>&1
+printf "\e[32m*\e[0m CHOOSING THE BEST AVAILABLE INTERFACE, WAIT...\n"
+
+# Alvo do ping
+TARGET_IP="8.8.8.8"
+
+# Variáveis para armazenar a interface com menor latência
+BEST_INTERFACE=""
+BEST_LATENCY=100000  # Valor inicial alto para garantir comparação
+
+# Itera sobre as interfaces ativas (status UP) que começam com eth, en ou eno
+for INTERFACE in $(ip -o link show | awk -F': ' '/UP/ && ($2 ~ /^(eth|en)/) {sub(/@.*/, "", $2); print $2}'); do
+
+    # Testa o ping na interface com 3 pacotes, captura a média de latência
+    LATENCY=$(ping -I "$INTERFACE" -4 -c 3 "$TARGET_IP" | awk -F'/' 'END {print $5}' 2>/dev/null)
+
+    # Pega o endereço MAC e armazena na variável
+    MAC=$(ip link show "$INTERFACE" | awk '/ether/ {print $2}')
+
+    # Verifica se o ping teve sucesso (latência não vazia)
+    if [ -n "$LATENCY" ]; then
+        printf "\e[32m*\e[0m CHOSEN INTERFACE: \033[32m%s\033[0m, LATENCY OF \033[32m%s ms\033[0m FOR \033[32m%s\033[0m\n" "$INTERFACE" "$LATENCY" "$TARGET_IP"
+
+        # Se a latência atual é menor que a menor já registrada, atualiza a melhor interface
+        if (( $(echo "$LATENCY < $BEST_LATENCY" | bc -l) )); then
+         BEST_LATENCY="$LATENCY"
+        fi
+    else
+        printf "\033[31m*\033[0m ERROR: INTERFACE \033[32m%s\033[0m WAS UNABLE TO PING ADDRESS \033[32m%s\033[0m\n" "$INTERFACE" "$TARGET_IP"
+    fi
+done
+}
+
+global() {
+# Definição de variáveis
+SUBNET=172.16.10        # Sub-rede
+MASK=24                 # Máscara de rede
+GW=${SUBNET}.254        # Gateway
+interface               # Chama a função que define a melhor interface de rede disponível
+TIMEZONE="America/Sao_Paulo" # Autoexplicativo
+
+# Configurações específicas do serviço DHCP
+TAG=VMCT                # Tag identificadora
+RANGE=10.0.10.1,10.0.10.253  # Intervalo de endereços IP alocados
+LEASE=12h               # Tempo de concessão do DHCP
+
+# Captura o primeiro octeto da sub-rede
+FIRST_OCTET=$(echo "$SUBNET" | cut -d '.' -f 1)
+
+# Verifica o comprimento do primeiro octeto e seleciona o caractere apropriado
+if [ ${#FIRST_OCTET} -eq 2 ]; then
+    SELECTED_CHAR=$(echo "$FIRST_OCTET" | cut -c 1) # Seleciona o primeiro caractere (se tiver dois dígitos)
+elif [ ${#FIRST_OCTET} -eq 3 ]; then
+      SELECTED_CHAR=$(echo "$FIRST_OCTET" | cut -c 2) # Seleciona o segundo caractere (se tiver três dígitos)
+else
+      SELECTED_CHAR=$FIRST_OCTET                        # Usa o próprio valor (se tiver apenas um dígito)
+fi
+
+# Captura o terceiro componente da sub-rede
+THIRD_PART=$(echo "$SUBNET" | cut -d '.' -f 3)
+
+# Concatena os valores para criar um ID único
+ID="${SELECTED_CHAR}${THIRD_PART}"
+
+#UPSTRNTPS="a.st1.ntp.br"     # Servidor DNS Upstream
+#UPSTRNTPSIP=$(ping -c 1 "$UPSTRNTPS" | grep -oP '\(\K[0-9.]+(?=\))' | head -n 1)
+#UPSTRDOMAIN=exemplo.local.br # Servidor de domínio Upstream
+#UPSTRDOMAINIP=$(ping -c 1 "$UPSTRDOMAIN" | grep -oP '\(\K[0-9.]+(?=\))' | head -n 1) # Servidor de domínio Upstream resolvido
+#ID=vlan711 # Especifique a vlan manualmente caso a sua sub-rede tenha três digitos ou mais
+}
+
+hostname() {
+# Instala os pacotes necessários
+apt -y install uuid uuid-runtime > /dev/null 2>&1
+
+# Gera um novo nome de host
+HOSTNAME="SRV$(shuf -i 10000-99999 -n 1)"
+
+printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
+
+# Remove o arquivo /etc/hostname e escreve o novo nome de host nele
+rm /etc/hostname
+printf "$HOSTNAME" > /etc/hostname
+
+# Remove o arquivo /etc/hosts e escreve as novas entradas de hosts
+rm /etc/hosts
+printf "127.0.0.1       localhost
+127.0.1.1       "$HOSTNAME"
+
+::1     localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters" > /etc/hosts
+}
+
+target_user() {
+# Instala o pacote sudo
+apt -y install sudo > /dev/null 2>&1
+
+# Modifica o arquivo /etc/profile para desabilitar o histórico de comandos
+sed -i '$ a unset HISTFILE\nexport HISTSIZE=0\nexport HISTFILESIZE=0\nexport HISTCONTROL=ignoreboth' /etc/profile
+
+printf "\e[32m*\e[0m CREATING USER \e[32mSysOp\e[0m\n"
+
+# Cria o grupo sysop com GID 1001
+groupadd -g 1001 sysop
+
+# Cria o usuário sysop com UID 1001, grupo sysop e shell bash
+useradd -m -u 1001 -g 1001 -c "SysOp" -s /bin/bash sysop
+
+# Obtém o nome do usuário criado
+TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
+
+# Adiciona o usuário ao grupo sudo
+/sbin/usermod -aG sudo "$TARGET_USER"
+}
+
+passwords() {
+# Instala o pacote necessário para criação das senhas
+apt -y install pwgen > /dev/null 2>&1
+# Gera duas senhas seguras com caracteres especiais e 12 caracteres
+PASSWORD_ROOT=$(pwgen -s 18 1)
+PASSWORD_TARGET=$(pwgen -s 18 1)
+
+# Verifica se o usuário TARGET_USER existe no sistema
+if ! id "$TARGET_USER" &>/dev/null; then
+    printf "\e[31m* ERROR:\e[0m USER '$TARGET_USER' DOES NOT EXIST. TERMINATING SCRIPT.\n"
+    exit 1
+fi
+
+# Altera a senha do usuário root
+echo "root:$PASSWORD_ROOT" | chpasswd
+if [ $? -ne 0 ]; then
+    printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE ROOT PASSWORD.\n"
+    exit 1
+fi
+
+# Altera a senha do usuário TARGET_USER
+echo "$TARGET_USER:$PASSWORD_TARGET" | chpasswd
+if [ $? -ne 0 ]; then
+    printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE PASSWORD FOR USER '$TARGET_USER'.\n"
+    exit 1
+fi
+
+echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mSysOp\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
+echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mRoot\033[0m USER: \033[32m\"$PASSWORD_ROOT\"\033[0m"
+}
+
+packages() {
+printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORIES: TEXT EDITOR\n"
+EDITOR="vim"
+apt -y install $EDITOR > /dev/null 2>&1
+
+printf "\e[32m*\e[0m NETWORK TOOLS\n"
+NETWORK="nfs-common tcpdump traceroute iperf ethtool geoip-bin socat speedtest-cli bridge-utils"
+apt -y install $NETWORK > /dev/null 2>&1
+
+printf "\e[32m*\e[0m COMPRESSION AND ARCHIVING\n"
+COMPRESSION="unzip xz-utils bzip2 pigz"
+apt -y install $COMPRESSION > /dev/null 2>&1
+
+printf "\e[32m*\e[0m SCRIPTING AND AUTOMATION SUPPORT\n"
+SCRIPTING="sshpass python3-apt"
+apt -y install $SCRIPTING > /dev/null 2>&1
+
+printf "\e[32m*\e[0m SYSTEM MONITORING AND DIAGNOSTICS\n"
+MONITORING="screen htop sysstat stress lm-sensors nload smartmontools"
+apt -y install $MONITORING > /dev/null 2>&1
+
+printf "\e[32m*\e[0m DISK AND FILE SYSTEM UTILITIES\n"
+FS_UTILS="hdparm ntfs-3g dosfstools btrfs-progs cryptsetup uuid rsync"
+apt -y install $FS_UTILS > /dev/null 2>&1
+
+printf "\e[32m*\e[0m CONNECTIVITY UTILITIES\n"
+CONNECTIVITY="curl wget net-tools"
+apt -y install $CONNECTIVITY > /dev/null 2>&1
+
+printf "\e[32m*\e[0m POWER AND SYSTEM MANAGEMENT UTILITIES\n"
+POWER_MGMT="pm-utils acpi acpid fwupd"
+apt -y install $POWER_MGMT > /dev/null 2>&1
+
+printf "\e[32m*\e[0m RESOURCE LIMITING AND CONTROL\n"
+RESOURCE_CTRL="cpulimit"
+apt -y install $RESOURCE_CTRL > /dev/null 2>&1
+
+printf "\e[32m*\e[0m GRAPHICS AND NETWORK DRIVERS AND FIRMWARE\n"
+GRAPHICS="firmware-amd-graphics"
+NETWORK="firmware-realtek firmware-atheros"
+GRAPHICS="firmware-misc-nonfree"
+apt -y install $GRAPHICS $NETWORK $GRAPHICS > /dev/null 2>&1
+
+printf "\e[32m*\e[0m ADDITIONAL UTILITIES\n"
+EXTRA_UTILS="x11-xkb-utils tree"
+apt -y install $EXTRA_UTILS > /dev/null 2>&1
+}
+
+directories() {
+printf "\e[32m*\e[0m CREATING DIRECTORIES\n"
+
+# Cria diretórios para serviços e dados temporários
+mkdir -p /mnt/{Temp,Local/{Container/{A,B},USB/{A,B}},Remote/Servers}
+mkdir -p /root/{Temp,.services/scheduled,.crypt}; chmod 600 /root/.crypt
+
+# Cria diretório para logs do rsync e ajusta as permissões
+mkdir /var/log/rsync; chown "$TARGET_USER":"$TARGET_USER" -R /var/log/rsync
+
+# Cria diretórios específicos para o usuário alvo
+su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Temp,.services/scheduled,.crypt}"
+}
+
+trigger() {
+printf '[Unit]
+Description=The beginning
+
+[Service]
+ExecStartPre=/bin/sleep 10
+Type=oneshot
+ExecStart=/root/.services/trigger.sh
+RemainAfterExit=true
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target' > /etc/systemd/system/trigger.service; systemctl enable trigger --quiet
+
+printf '#!/bin/bash
+
+# Network
+#Trunk Interfaces
+ip link set dev %s up
+
+#BR_TAP110
+ip tuntap add tap110 mode tap
+ip link set dev tap110 up
+brctl addbr br_tap110
+brctl stp br_tap110 on
+brctl addif br_tap110 tap110
+ip link set dev br_tap110 up
+ip addr add 10.0.10.254/24 dev br_tap110
+
+#BR_VLAN966
+ip link add link %s name vlan966 type vlan id 966
+ip link set dev vlan966 up
+brctl addbr br_vlan966
+brctl stp br_vlan966 on
+brctl addif br_vlan966 vlan966
+ip link set dev br_vlan966 up
+
+
+#BR_VLAN%s
+ip link add link %s name vlan%s type vlan id %s
+ip link set dev vlan%s up
+brctl addbr br_vlan%s
+ip link set dev br_vlan%s address %s
+brctl stp br_vlan%s on
+brctl addif br_vlan%s vlan%s
+dhclient -r br_vlan%s
+
+shots() {
+# Shots
+/root/.services/firewall.sh
+/root/.services/mount.sh
+#/root/.services/filesharing.sh
+/root/.services/dns.sh
+/root/.services/ntp.sh
+/root/.services/kvm.sh
+/root/.services/lxc.sh
+#others.sh
+}
+
+dhcploop() {
+# Network interface
+INTERFACE=br_vlan%s
+
+# Contador de tentativas
+ATTEMPTS=0
+
+# Sub-rede desejada
+DESIRED_SUBNET=%s
+
+# Loop infinito para tentar obter um IP válido
+while true; do
+    ATTEMPTS=$(($ATTEMPTS + 1))
+    printf "\\033[33m*\\033[0m ATTEMPT: $ATTEMPTS...\\n"
+
+    # Solicita um IP com dhclient
+    dhclient -v $INTERFACE
+
+    # Verifica se um IP válido foi obtido (apenas IPv4)
+    IP_OBTAINED=$(ip -4 addr show $INTERFACE | grep inet | awk '\''{print $2}'\'' | cut -d'\''/'\'' -f1)
+
+    if [[ -n $IP_OBTAINED ]]; then
+        # Verifica se o IP pertence à sub-rede desejada
+        if [[ $IP_OBTAINED == $DESIRED_SUBNET* ]]; then
+            printf "\\033[32m*\\033[0m SUCCESSFULLY OBTAINED IP IN DESIRED SUBNET: $IP_OBTAINED\\n"
+            printf "\\033[32m*\\033[0m PRESSING THE TRIGGER...\\n"
+            shots # Chama a função para continuação da inicialização
+            exit 0
+        else
+            printf "\\033[33m*\\033[0m ATTENTION: OBTAINED IP $IP_OBTAINED, NOT IN DESIRED SUBNET. RELEASING...\\n"
+            # Libera o IP obtido
+            dhclient -r $INTERFACE
+        fi
+    else
+        printf "\\033[31m*\\033[0m ERROR: NO IP OBTAINED. RETRYING...\\n"
+    fi
+
+    sleep 5
+done
+}
+
+# Sequence
+dhcploop' "$INTERFACE" "$INTERFACE" "$ID" "$INTERFACE" "$ID" "$ID" "$ID" "$ID" "$ID" "$MAC" "$ID" "$ID" "$ID" "$ID" "$ID" "$SUBNET" > /root/.services/trigger.sh; chmod 700 /root/.services/trigger.sh
+}
+
+time_sync() {
+printf "\e[32m*\e[0m SETTING UP TIME ZONE AND CLOCK\n"
+
+# Instala e configura o serviço de sincronização de tempo 'systemd-timesyncd'
+apt -y install systemd-timesyncd > /dev/null 2>&1
+
+# Desabilita e para o serviço systemd-timesyncd para não interferir com a configuração manual
+systemctl disable --now systemd-timesyncd --quiet
+
+# Configura o fuso horário
+export TZ=${TIMEZONE}
+
+# Remove a configuração de fuso horário atual
+rm /etc/localtime
+
+# Copia a configuração do fuso horário
+cp /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
+
+# Atualiza a configuração do sistema para usar o fuso horário correto
+timedatectl set-timezone ${TIMEZONE}
+
+# Adiciona o script de inicialização do serviço
+printf '#!/bin/bash
+
+# Service
+systemctl restart systemd-timesyncd' > /root/.services/ntp.sh; chmod 700 /root/.services/ntp.sh
+
+# Substituindo o arquivo timesyncd para o Servidor NTP Upstream manualmente
+#printf '[Time]\nNTP=%s' "$UPSTRNTPS" > /etc/systemd/timesyncd.conf
+}
+
+dnsserver() {
+printf "\e[32m*\e[0m SETTING UP DNS SERVER\n"
+
+# Instalando pacotes necessários
+apt -y install dnsmasq dnsutils tcpdump > /dev/null 2>&1
+
+# Desabilitando e parando o serviço dnsmasq
+systemctl disable --now dnsmasq --quiet
+
+# Removendo a configuração padrão do dnsmasq
+rm /etc/dnsmasq.conf
+
+# Criando o arquivo de configuração principal do dnsmasq
+printf 'listen-address=10.0.10.254
+domain=%s.local
+# Virtual Machines and Containers
+dhcp-range=set:%s,%s,%s
+dhcp-option=tag:%s,3,10.0.10.254 # Gateway
+dhcp-option=tag:%s,6,10.0.10.254 # DNS Server
+dhcp-option=tag:%s,42,
+server=
+expand-hosts
+no-hosts
+domain-needed
+bogus-priv
+dnssec
+cache-size=1024
+dhcp-sequential-ip
+conf-file=/usr/share/dnsmasq-base/trust-anchors.conf
+resolv-file=/etc/dnsmasq.d/config/resolv
+addn-hosts=/etc/dnsmasq.d/config/hosts
+dhcp-hostsfile=/etc/dnsmasq.d/config/reservations
+log-queries
+log-facility=/var/log/dnsmasq.log' "$HOSTNAME" "$TAG" "$RANGE" "$LEASE" "$TAG" "$TAG" "$TAG" > /etc/dnsmasq.d/main.conf
+
+# Criando diretórios de configuração do dnsmasq
+mkdir /etc/dnsmasq.d/config
+
+# Criando arquivo de declaração do servidor DNS Upstream que será usado pelo dnsmasq
+#printf 'nameserver 8.8.8.8
+#nameserver 1.1.1.1' > /etc/dnsmasq.d/config/resolv
+
+# Moficando manualmente o arquivo dnsmasq.d/main.conf para adicionar um servidor NTP Upstream
+#sed -i "s|^dhcp-option=tag:$TAG,42,.*|dhcp-option=tag:$TAG,42,$UPSTRNTPSIP # NTP Server|" /etc/dnsmasq.d/main.conf
+
+# Moficando manualmente o arquivo dnsmasq.d/main.conf para adicionar uma bypass de domínio Upstream
+#sed -i "s|^server=.*|server=/$UPSTRDOMAIN/$UPSTRDOMAINIP # Bypass for domain lookup on specific upstream DNS server.|" /etc/dnsmasq.d/main.conf
+
+# Adicionando o hostname ao arquivo de hosts
+printf '10.0.10.254 %s.local' "$HOSTNAME" > /etc/dnsmasq.d/config/hosts
+
+# Criando o arquivo de reservas de IP do dnsmasq
+touch /etc/dnsmasq.d/config/reservations
+
+# Adiciona o script de atualização de upstream e inicialização do serviço em questão
+cp scripts/dnsservice.sh /root/.services/dns.sh; chmod 700 /root/.services/dns.sh
+
+# Sobrescrevendo manualmente o script de inicialização padrão para suportar as configuração de DNS efetuadas manualmente
+#printf '#!/bin/bash
+
+# Service
+#systemctl restart dnsmasq' > /root/.services/dns.sh; chmod 700 /root/.services/dns.sh
+}
+
+firewall() {
+printf "\e[32m*\e[0m SETTING UP FIREWALL\n"
+
+# Instala o nftables
+apt -y install nftables > /dev/null 2>&1
+
+# Desabilita o serviço nftables e o para
+systemctl disable --now nftables --quiet
+
+printf '#!/bin/bash
+
+# Interfaces
+WAN=br_vlan%s
+
+# Kernel forward
+sysctl -w net.ipv4.ip_forward=1
+# Service
+systemctl restart nftables
+
+# Nftables
+nft flush ruleset
+#Main table
+nft add table inet firelux
+#Chains
+nft add chain inet firelux forward { type filter hook forward priority filter \; policy drop \; }
+nft add chain inet firelux prerouting { type nat hook prerouting priority 0 \; policy accept \; }
+nft add chain inet firelux postrouting { type nat hook postrouting priority srcnat \; policy accept \; }
+#Allow established and related connections
+nft add rule inet firelux forward ct state established,related accept
+
+#NAT
+#BR_TAP110
+nft add rule inet firelux postrouting ip saddr 10.0.10.0/24 oifname "$WAN" masquerade
+nft add rule inet firelux forward iifname "br_tap110" oifname "$WAN" accept
+
+#Redirection of requests coming from external addresses(WAN) to services encapsulated in Virtual Machines or Containers
+#Grafana - CT850598
+nft add rule inet firelux prerouting ip protocol tcp tcp dport 3000 dnat to 10.0.10.5:3000
+nft add rule inet firelux forward ip protocol tcp tcp dport 3000 accept' "$ID" > /root/.services/firewall.sh; chmod 700 /root/.services/firewall.sh
+}
+
+mount() {
+printf "\e[32m*\e[0m SETTING MOUNT POINTS\n"
+
+printf '#!/bin/bash
+
+# Swap
+#sysctl vm.swappiness=22 #=405,24MiB
+#swapon -U 8fb9e3fd
+
+# Physical units
+#cryptsetup luksOpen /dev/disk/by-uuid/7ea8d2ec Container-A_crypt --key-file /root/.crypt/7ea8d2ec.key
+#mount /dev/mapper/Container-A_crypt /mnt/Local/Container/A' > /root/.services/mount.sh; chmod 700 /root/.services/mount.sh
+
+# Adiciona script para extração de percentual da quantidade de memória ram total
+cp scripts/swappiness.sh /root/.services/swappiness.sh; chmod 700 /root/.services/swappiness.sh
+}
+
+filesharing() {
+printf "\e[32m*\e[0m SETTING UP FILE SHARING\n"
+
+# Instala os serviços de compartilhamento NFS e Samba
+apt -y install nfs-kernel-server samba > /dev/null 2>&1
+
+# Desativa e interrompe os serviços relacionados ao NFS e Samba
+systemctl disable --now nfs-kernel-server --quiet
+systemctl disable --now smbd --quiet
+
+# Cria a configuração de exportação do NFS
+printf '#/mnt/Local/Container/A 172.16.0.0(rw,sync,crossmnt,no_subtree_check,no_root_squash)' > /etc/exports
+
+# Cria o script de configuração e reinicialização dos serviços em questão
+printf '#!/bin/bash
+
+# Services
+#systemctl restart nfs-kernel-server
+#systemctl restart smbd' > /root/.services/filesharing.sh; chmod 700 /root/.services/filesharing.sh
+}
+
+kvm() {
+printf "\e[32m*\e[0m SETTING UP KVM\n"
+
+# Identifica o fabricante do processador
+CPU=$(lscpu | grep 'Vendor ID' | cut -f 2 -d ":" | sed -n 1p | awk '{$1=$1}1')
+
+# Instala o KVM e as dependências necessárias
+apt -y install qemu-kvm libvirt0 libvirt-daemon-system > /dev/null 2>&1
+
+# Desabilita e interrompe o serviço libvirtd para configurar manualmente
+systemctl disable --now libvirtd --quiet
+
+# Adiciona o usuário alvo ao grupo 'libvirt' para permissões de gerenciamento
+gpasswd libvirt -a "$TARGET_USER" > /dev/null 2>&1
+
+# Configura o módulo do kernel com suporte a virtualização aninhada (nested)
+touch /etc/modprobe.d/kvm.conf
+case "$CPU" in
+    GenuineIntel)
+        printf 'options kvm_intel nested=1' > /etc/modprobe.d/kvm.conf
+        /sbin/modprobe -r kvm_intel
+        /sbin/modprobe kvm_intel
+        ;;
+    AuthenticAMD)
+        printf 'options kvm_amd nested=1' > /etc/modprobe.d/kvm.conf
+        /sbin/modprobe -r kvm_amd
+        /sbin/modprobe kvm_amd
+        ;;
+    *)
+        printf "\e[32m** UNKNOWN OR UNSUPPORTED CPU ARCHITECTURE **\e[0m\n"
+        ;;
+    esac
+
+# Criação de diretórios para scripts e logs
+mkdir /var/log/virsh; chown "$TARGET_USER":"$TARGET_USER" -R /var/log/virsh
+
+# Adiciona o script de backup online
+cp scripts/sync.sh /root/.services/scheduled/; chmod 700 /root/.services/scheduled/sync.sh
+
+# Cria um script de inicialização para reiniciar o serviço libvirtd e iniciar VMs
+printf '#!/bin/bash
+
+# Service
+systemctl restart libvirtd
+
+VM123456() {
+virsh start VM123456
+}
+
+# Sequence
+#VM123456' > /root/.services/kvm.sh; chmod 700 /root/.services/kvm.sh
+}
+
+lxc() {
+printf "\e[32m*\e[0m SETTING UP LXC\n"
+
+LXC_PATH="/var/lib/lxc"
+
+# Instala o LXC
+apt -y install lxc > /dev/null 2>&1
+
+# Desativa e interrompe os serviços lxc e lxc-net
+systemctl disable --now lxc --quiet
+systemctl disable --now lxc-net --quiet; systemctl mask lxc-net --quiet
+
+# Remove arquivos de configuração relacionados ao lxc-net
+rm /etc/default/lxc-net; rm /etc/lxc/default.conf
+
+# Cria o arquivo de configuração do LXC
+printf 'lxc.net.0.type = veth
+lxc.net.0.link = br_tap110
+lxc.net.0.flags = up
+
+lxc.apparmor.profile = generated
+lxc.apparmor.allow_nesting = 1' > /etc/lxc/default.conf
+
+# Cria diretório de logs e ajusta permissões
+mkdir /var/log/lxc; chown "$TARGET_USER":"$TARGET_USER" -R /var/log/lxc
+
+# Criação do script de inicialização do container e configuração de rede
+printf '#!/bin/bash
+
+# Service
+systemctl restart lxc
+
+CT123456() {
+lxc-start --name CT123456
+}
+
+# Sequence
+#CT123456' > /root/.services/lxc.sh; chmod 700 /root/.services/lxc.sh
+}
+
+others() {
+printf "\e[32m*\e[0m CONFIGURING VARIOUS SERVICES\n"
+
+# Cria um script que reinicia o serviço especificado
+printf '#!/bin/bash
+
+# Services
+#systemctl restart  ¯\_(ヅ)_/¯' > /root/.services/others.sh; chmod 700 /root/.services/others.sh
+}
+
+ssh() {
+printf "\e[32m*\e[0m SETTING UP SSH\n"
+
+# Instala os pacotes necessários
+apt -y install openssh-server sshfs autossh > /dev/null 2>&1
+
+# Remove a configuração existente do SSH
+rm /etc/ssh/sshd_config
+
+# Cria a nova configuração do SSH com parâmetros personalizados
+printf 'Include /etc/ssh/sshd_config.d/*.conf
+
+#ListenAddress 172.16.0.0
+Port 4242
+AllowTcpForwarding no
+GatewayPorts no
+
+PubkeyAuthentication yes
+PermitRootLogin no
+
+ChallengeResponseAuthentication no
+
+UsePAM yes
+
+X11Forwarding yes
+PrintMotd no
+PrintLastLog no
+
+AcceptEnv LANG LC_*
+
+Subsystem       sftp    /usr/lib/openssh/sftp-server' > /etc/ssh/sshd_config; chmod 644 /etc/ssh/sshd_config
+
+# Remove o arquivo motd antigo e cria um novo vazio
+rm /etc/motd; touch /etc/motd
+
+# Ajusta as permissões da pasta .ssh do root para garantir segurança
+chmod 600 /root/.ssh
+
+# Cria a chave SSH do root e ajusta as permissões da pasta de chaves autorizadas
+touch /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys
+ssh-keygen -t rsa -b 4096 -N '' <<<$'\n' > /dev/null 2>&1
+
+# Cria a chave SSH do usuário especificado e ajusta as permissões da pasta .ssh
+su - "$TARGET_USER" -c "echo | ssh-keygen -t rsa -b 4096 -N '' <<<$'\n'" > /dev/null 2>&1
+chmod 700 /home/"$TARGET_USER"/.ssh
+
+# Cria o arquivo authorized_keys do usuário e ajusta suas permissões
+su - "$TARGET_USER" -c "echo | touch /home/"$TARGET_USER"/.ssh/authorized_keys"
+chmod 600 /home/"$TARGET_USER"/.ssh/authorized_keys
+}
+
+de() {
+printf "\e[32m*\e[0m SETTING UP DESKTOP ENVIRONMENT\n"
+
+# Instala os pacotes necessários para o ambiente desktop
+apt -y install xorg xserver-xorg-input-libinput xserver-xorg-input-evdev brightnessctl \
+xserver-xorg-input-mouse xserver-xorg-input-synaptics xscreensaver dbus-x11 lightdm \
+openbox obconf lxterminal lxpanel lxhotkey-gtk lxtask lxsession-logout lxappearance \
+lxrandr numlockx progress arc-theme nitrogen ffmpegthumbnailer gpicview evince \
+galculator gnome-screenshot l3afpad alacarte gpick compton pcmanfm firefox-esr \
+engrampa gparted gnome-disk-utility baobab virt-manager ssh-askpass caffeine > /dev/null 2>&1
+
+# Configura o LightDM com o arquivo de greeter personalizado
+rm /etc/lightdm/lightdm-gtk-greeter.conf; cp de/lightdm-gtk-greeter.conf /etc/lightdm/
+
+# Configuração de entrada do X11 para dispositivos de entrada
+mkdir -p /etc/X11/xorg.conf.d; cp de/40-libinput.conf /etc/X11/xorg.conf.d/
+
+# Configuração de papel de parede e ícones padrão
+mkdir -p /usr/share/wallpapers; cp de/default.jpg /usr/share/wallpapers; chown "$TARGET_USER":"$TARGET_USER" /usr/share/wallpapers/default.jpg
+cp de/debian-swirl.png /usr/share/icons/default
+
+# Instala temas e ícones para o ambiente desktop
+tar -xvf de/01-Qogir.tar.xz -C /usr/share/icons > /dev/null 2>&1
+tar -xvf de/Arc-Dark.tar.xz -C /usr/share/themes > /dev/null 2>&1
+
+# Configura diretórios e arquivos específicos para o usuário alvo
+su - "$TARGET_USER" -c "rm -r /home/$TARGET_USER/.config" > /dev/null 2>&1
+cp -r de/config /home/$TARGET_USER/.config; chown "$TARGET_USER":"$TARGET_USER" -R /home/$TARGET_USER/.config
+cp de/gtkrc-2.0 /home/$TARGET_USER/.gtkrc-2.0; chown "$TARGET_USER":"$TARGET_USER" /home/$TARGET_USER/.gtkrc-2.0
+su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Pictures/{Wallpapers,Screenshots},Music,Documents,Videos,.virt/{ISO,Temp}}"
+
+# Permite o controlhe do brilho da tela
+/sbin/usermod -aG video $TARGET_USER
+
+# Adiciona e disponibiliza um arquivo de texto plano com comandos úteis
+cp de/useful /etc/useful; ln -s /etc/useful /root/.useful; ln -s /etc/useful /home/$TARGET_USER/.useful
+}
+
+spawn() {
+printf "\e[32m*\e[0m CONFIGURING SPAWN SERVICE\n"
+
+# Copia os arquivos necessários para o diretório do serviço
+cp -r spawn /root/.services/; chmod 700 /root/.services/spawn/CT/*.sh
+mv /root/.services/spawn/CT/grepip.sh /etc/dnsmasq.d/config/
+}
+
+grub() {
+printf "\e[32m*\e[0m SETTING UP GRUB\n"
+
+# Remove o arquivo de configuração atual do GRUB (se existir)
+rm -f /etc/default/grub
+
+# Cria um novo arquivo de configuração do GRUB com parâmetros personalizados
+printf 'GRUB_DEFAULT=0
+GRUB_TIMEOUT=0
+GRUB_DISTRIBUTOR=`lsb_release -i -s 2> /dev/null || echo Debian`
+GRUB_CMDLINE_LINUX_DEFAULT=""
+GRUB_CMDLINE_LINUX=""' > /etc/default/grub; chmod 644 /etc/default/grub
+
+# Atualiza a configuração do GRUB
+update-grub
+
+# Mensagem de conclusão
+if [ $? -eq 0 ]; then
+    printf "\e[32m*\e[0m GRUB CONFIGURATION UPDATED SUCCESSFULLY\n"
+else
+    printf "\e[31m*\e[0m ERROR: FAILED TO UPDATE GRUB CONFIGURATION\n"
+fi
+}
+
+later() {
+printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART\n"
+
+# Obtém o nome do usuário com UID 1000, geralmente o primeiro usuário criado
+TARGET_USER=$(grep 1000 /etc/passwd | cut -f 1 -d ":")
+
+# Cria o script de inicialização que será executado após o reinício
+printf '#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          later
+# Required-Start:    $all
+# Required-Stop:     
+# Default-Start:     2 3 4 5
+# Default-Stop:      
+# Short-Description: Procedures subsequent to instance construction only possible after reboot
+### END INIT INFO
+
+# Finaliza todos os processos do usuário TARGET_USER
+pkill -u %s
+
+# Remove o usuário TARGET_USER e seu diretório home
+userdel -r %s
+
+# Remove a pasta SRV do diretório /root
+rm -rf /root/SRV
+
+# Remove o script init.d depois que ele for executado
+rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later; chmod +x /etc/init.d/later
+
+# Adiciona o script aos serviços que serão iniciados no boot
+update-rc.d later defaults
+}
+
+finish() {
+# Remove pacotes não utilizados e dependências não necessárias
+apt -y autoremove > /dev/null 2>&1
+
+# Remove arquivo de configuração de rede padrão para evitar conflitos
+rm /etc/network/interfaces
+
+printf "\e[32m*\e[0m INSTALLATION COMPLETED SUCCESSFULLY!\n"
+
+read -p "DO YOU WANT TO RESTART? (Y/N): " response
+    response=${response^^}
+if [[ "$response" == "Y" ]]; then
+    printf "\e[32m*\e[0m RESTARTING...\n"
+    systemctl reboot
+elif [[ "$response" == "N" ]]; then
+    printf "\e[32m*\e[0m WILL NOT BE RESTARTED.\n"
+else
+    printf "\e[31m*\e[0m ERROR: PLEASE ANSWER WITH 'Y' FOR YES OR 'N' FOR NO.\n"
+fi
+}
+
+# Sequence
+repositore; global; hostname; target_user;
+passwords; packages; directories; trigger;
+time_sync; dnsserver; firewall; mount;
+filesharing; kvm; lxc; others;
+ssh; spawn; grub;
+later; finish

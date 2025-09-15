@@ -1,0 +1,13 @@
+[Unit]
+Description=The beginning
+
+[Service]
+ExecStartPre=/bin/sleep 10
+Type=oneshot
+ExecStart=/root/.services/main.sh
+RemainAfterExit=true
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

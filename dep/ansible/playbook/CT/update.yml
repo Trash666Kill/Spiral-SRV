@@ -1,0 +1,41 @@
+---
+- hosts: "{{ groups['Containers'] }}"
+  gather_facts: no
+  connection: local
+  tasks:
+    - name: Perform a dist-upgrade in each container
+      ansible.builtin.shell:
+        cmd: lxc-attach -n {{ inventory_hostname }} -- /bin/bash -c "apt-get update && apt-get dist-upgrade -y"
+      register: dist_upgrade_result
+      changed_when: dist_upgrade_result.stdout | regex_search('^(Setting up|Unpacking|Processing triggers).*', multiline=True)
+
+    - name: Check if a reboot is required in each container
+      ansible.builtin.shell:
+        cmd: lxc-attach -n {{ inventory_hostname }} -- /bin/bash -c "test -f /var/run/reboot-required || (command -v needrestart >/dev/null && needrestart -k | grep -q 'Kernel.*restart')"
+      register: reboot_required_check
+      failed_when: false
+      changed_when: false
+
+    - name: Reboot the container (if required)
+      ansible.builtin.command:
+        cmd: lxc-attach -n {{ inventory_hostname }} -- reboot
+      when: reboot_required_check.rc == 0
+      register: reboot_result
+      changed_when: reboot_result.rc == 0
+
+    - name: Wait for container to come back online after reboot
+      ansible.builtin.command:
+        cmd: lxc-attach -n {{ inventory_hostname }} -- true
+      when: reboot_required_check.rc == 0
+      register: wait_result
+      retries: 30
+      delay: 10
+      until: wait_result.rc == 0
+      changed_when: false
+      no_log: true
+
+    - name: Remove dependencies that are no longer required in each container
+      ansible.builtin.shell:
+        cmd: lxc-attach -n {{ inventory_hostname }} -- /bin/bash -c "apt-get autoremove -y"
+      register: autoremove_result
+      changed_when: autoremove_result.stdout | regex_search('^(Removing|Purging).*', multiline=True)

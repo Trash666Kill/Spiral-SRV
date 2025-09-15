@@ -1,0 +1,2 @@
+ansible-inventory --list --yaml
+ansible-playbook /etc/ansible/playbook/CT/update.yml
