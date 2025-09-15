@@ -327,6 +327,83 @@ trigger() {
     cp systemd/scripts/main.sh /root/.services && chmod 700 /root/.services/main.sh
 }
 
+network() {
+    printf "\e[32m*\e[0m SETTING UP NETWORK\n"
+
+    # Adding Network Configuration File
+    cp systemd/scripts/network.sh /root/.services/ && chmod 700 /root/.services/network.sh
+
+    # Install the required packages
+    apt -y install dhcpcd > /dev/null 2>&1
+
+    # Disabling services
+    systemctl disable networking --quiet && systemctl disable ModemManager --quiet &&  systemctl disable wpa_supplicant --quiet && systemctl disable dhcpcd --quiet && systemctl disable NetworkManager-wait-online --quiet && systemctl disable NetworkManager.service --quiet
+
+
+    # Configuring dhcpcd
+    sed -i -e '$a\' -e '\n# Custom\n#Try DHCP on all interfaces\nallowinterfaces br_vlan710\n\n# Waiting time to try to get an IP (in seconds)\ntimeout 0  # 0 means try indefinitely' /etc/dhcpcd.conf
+
+    # Collects the MAC address and stores it in the variable
+    MAC=$(ip link show "$INTERFACE" | awk '/ether/ {print $2}')
+
+    # Setting the primary interface
+    sed -i "s/NIC0=.*/NIC0=\"$INTERFACE\"/" /root/.services/network.sh
+    sed -i "/ip link set dev br_vlan710 address/s/$/ $MAC/" /root/.services/network.sh
+
+    ntp() {
+        # Install and configure the 'systemd-timesyncd' time synchronization service
+        apt -y install systemd-timesyncd > /dev/null 2>&1
+
+        # Disables and stops the systemd-timesyncd service
+        systemctl disable --now systemd-timesyncd --quiet
+
+        # Set the time zone
+        export TZ=${TIMEZONE}
+
+        # Remove the current time zone setting
+        rm /etc/localtime
+
+        # Copy time zone setting
+        cp /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
+
+        # Update the system configuration to use the correct time zone
+        timedatectl set-timezone ${TIMEZONE}
+    }
+
+    dns() {
+        # Install and configure the 'dnsmasq' DNS Server
+        apt -y install dnsmasq dnsutils tcpdump > /dev/null 2>&1
+
+        # Disables and stops the dnsmasq service
+        systemctl disable --now dnsmasq --quiet
+
+        # Removing the default dnsmasq configuration
+        rm /etc/dnsmasq.conf
+
+        # Adding central configuration file
+        cp systemd/scripts/main.conf /etc/dnsmasq.d/
+
+        # Defining domain based on host
+        sed -i "s/domain=.*/domain=$HOSTNAME.local/" /etc/dnsmasq.d/main.conf
+
+        # Creating dnsmasq configuration directories
+        mkdir /etc/dnsmasq.d/config
+
+        # Adding the hostname to the hosts file
+        printf '10.0.10.254 %s.local' "$HOSTNAME" > /etc/dnsmasq.d/config/hosts
+
+        # Creates the Upstream DNS server declaration file that will be used by dnsmasq
+        grep '^nameserver' /etc/resolv.conf | awk '{print "nameserver " $2}' | tee -a /etc/dnsmasq.d/config/resolv > /dev/null
+
+        # Creating the dnsmasq IP reservations file
+        touch /etc/dnsmasq.d/config/reservations
+    }
+
+    # Call
+    ntp
+    dns
+}
+
 firewall() {
     printf "\e[32m*\e[0m SETTING UP FIREWALL\n"
 

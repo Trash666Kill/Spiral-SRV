@@ -361,10 +361,6 @@ firewall() {
     # Adding central configuration file
     cp systemd/scripts/firewall.sh /root/.services/ && chmod 700 /root/.services/firewall.sh
 
-    # Setting the default interface
-    sed -i "s/WAN=''/WAN='br_vlan710'/" /root/.services/firewall.sh
-}
-
 mount() {
     printf "\e[32m*\e[0m SETTING MOUNT POINTS AND FILE SHARING\n"
 
