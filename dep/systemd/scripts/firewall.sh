@@ -1,11 +1,5 @@
 #!/bin/bash
 
-# - Description: Configures nftables firewall for workstations.
-# - Enables IP forwarding, restarts nftables, and sets up tables, chains, and rules
-# for filtering, NAT, and connection tracking (e.g., established connections).
-# - Includes optional rules (e.g., zabbix). Exits on any error using set -e.
-# - To add new rules or configurations, copy and edit functions like chains or zabbix.
-
 # Close on any error
 set -e
 
