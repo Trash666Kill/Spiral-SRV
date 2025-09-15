@@ -1,17 +1,11 @@
 #!/bin/bash
 
-# - Description: Configures network interfaces for workstation.
-# - Sets up interfaces (e.g., tap110 in bridge mode with static IP).
-# - Exits with an error if any configuration fails, using set -e.
-# - To add new interfaces, copy and edit functions like br_tap110.
-
 # Close on any error
 set -e
 
 # Physical interfaces
 physical() {
     nic0() {
-        NIC0=eth0
         ip link set dev "$NIC0" up
     }
 
@@ -48,6 +42,10 @@ virtual() {
         brctl stp br_vlan710 on
         brctl addif br_vlan710 vlan710
         ip link set dev br_vlan710 up
+        # NIC0_CONFIG
+        ifconfig "$NIC0" 0.0.0.0 netmask 0.0.0.0
+        # NIC0_DEFAULT_ROUTE
+        ip route add default via 0.0.0.0 dev "$NIC0"
     }
 
     # Call

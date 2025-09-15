@@ -17,37 +17,48 @@ update() {
 }
 
 interface() {
-    # Install the required packages
-    apt -y install bc > /dev/null 2>&1
+    # Install required packages
+    apt-get -y install bc > /dev/null 2>&1
     printf "\e[32m*\e[0m CHOOSING THE BEST AVAILABLE INTERFACE, WAIT...\n"
 
     # Target IP for ping
     TARGET_IP="8.8.8.8"
 
-    # Variables to store the interface with the lowest latency
+    # Variables to store the interface with the lowest latency and its altname
     BEST_INTERFACE=""
-    BEST_LATENCY=100000  # High initial value to ensure comparison
+    BEST_LATENCY=100000  # High initial value for comparison
+    BEST_ALTNAME=""
 
     # Iterate over active interfaces (status UP) starting with eth, en, or eno
     for INTERFACE in $(ip -o link show | awk -F': ' '/UP/ && ($2 ~ /^(eth|en)/) {sub(/@.*/, "", $2); print $2}'); do
+
         # Test ping on the interface with 3 packets, capture average latency
         LATENCY=$(ping -I "$INTERFACE" -4 -c 3 "$TARGET_IP" | awk -F'/' 'END {print $5}' 2>/dev/null)
 
-        # Get the MAC address and store it in a variable
-        MAC=$(ip link show "$INTERFACE" | awk '/ether/ {print $2}')
-
-        # Check if the ping was successful (latency is not empty)
+        # Check if ping was successful (non-empty latency)
         if [ -n "$LATENCY" ]; then
             printf "\e[32m*\e[0m CHOSEN INTERFACE: \033[32m%s\033[0m, LATENCY OF \033[32m%s ms\033[0m FOR \033[32m%s\033[0m\n" "$INTERFACE" "$LATENCY" "$TARGET_IP"
 
-            # If the current latency is lower than the lowest recorded, update the best interface
+            # If current latency is lower than the lowest recorded, update best interface and altname
             if (( $(echo "$LATENCY < $BEST_LATENCY" | bc -l) )); then
                 BEST_LATENCY="$LATENCY"
+                BEST_INTERFACE="$INTERFACE"
+                # Extract the first altname of the interface
+                BEST_ALTNAME=$(ip addr show "$INTERFACE" | awk '/altname/ {print $2; exit}')
             fi
         else
             printf "\033[31m*\033[0m ERROR: INTERFACE \033[32m%s\033[0m WAS UNABLE TO PING ADDRESS \033[32m%s\033[0m\n" "$INTERFACE" "$TARGET_IP"
         fi
     done
+
+    # If a valid interface is found, write the altname and interface name to /etc/environment
+    if [ -n "$BEST_ALTNAME" ] && [ -n "$BEST_INTERFACE" ]; then
+        printf "\e[32m*\e[0m WRITING ALTNAME \033[32m%s\033[0m AND INTERFACE \033[32m%s\033[0m TO /etc/environment\n" "$BEST_ALTNAME" "$BEST_INTERFACE"
+        echo "WAN0=$BEST_INTERFACE" > /etc/environment
+        echo "WAN0_ALT=$BEST_ALTNAME" >> /etc/environment
+    else
+        printf "\033[31m*\033[0m ERROR: NO VALID INTERFACE FOUND TO WRITE TO /etc/environment\n"
+    fi
 }
 
 global() {
@@ -60,25 +71,25 @@ global() {
 
 hostname() {
     # Install the required packages
-    apt -y install uuid uuid-runtime > /dev/null 2>&1
+    apt-get -y install uuid uuid-runtime > /dev/null 2>&1
 
-    # Generates a new hostname
+    # Generates a new hostname based on the chassis type and a random value
     HOSTNAME="srv$(shuf -i 10000-99999 -n 1)"
 
     printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
 
-    # Remove o arquivo /etc/hostname e escreve o novo nome de host nele
+    # Remove the /etc/hostname file and write the new hostname
     rm /etc/hostname
     printf "$HOSTNAME" > /etc/hostname
 
-    # Remove the /etc/hostname file and write the new hostname
+    # Remove the /etc/hosts file and writes the new hosts entries
     rm /etc/hosts
     printf "127.0.0.1       localhost
-    127.0.1.1       "$HOSTNAME"
+127.0.1.1       "$HOSTNAME"
 
-    ::1     localhost ip6-localhost ip6-loopback
-    ff02::1 ip6-allnodes
-    ff02::2 ip6-allrouters" > /etc/hosts
+::1     localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters" > /etc/hosts
 }
 
 target_user() {
