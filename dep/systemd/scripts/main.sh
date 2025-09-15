@@ -30,22 +30,16 @@ network() {
 }
 
 firewall() {
-    if [[ -f "$FIREWALL_SCRIPT" ]]; then
-        if [[ -x "$FIREWALL_SCRIPT" ]]; then
-            printf "\e[33m*\e[0m Running $FIREWALL_SCRIPT...\n"
-            bash "$FIREWALL_SCRIPT"
-            if [[ $? -ne 0 ]]; then
-                printf "\e[31m*\e[0m Error: $FIREWALL_SCRIPT failed to execute successfully.\n"
-                exit 1
-            fi
-        else
-            printf "\e[31m*\e[0m Error: $FIREWALL_SCRIPT does not have execute permission.\n"
-            exit 1
-        fi
-    else
-        printf "\e[31m*\e[0m Error: $FIREWALL_SCRIPT not found.\n"
-        exit 1
-    fi
+    scripts=(
+        "$FIREWALL_FOLDER/a.sh"
+        "$FIREWALL_FOLDER/b.sh"
+        "$FIREWALL_FOLDER/c.sh"
+    )
+
+    for script in "${scripts[@]}"; do
+        bash "$script"
+        sleep 6
+    done
 }
 
 dhcp() {
