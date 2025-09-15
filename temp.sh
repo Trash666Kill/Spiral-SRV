@@ -49,7 +49,7 @@ interface() {
 
     # Iterate over active interfaces (status UP) starting with eth, en, or enp
     for IFACE in $(ip -o link show | awk -F': ' '/state UP/ && ($2 ~ /^(eth|en|enp)/) {sub(/@.*/, "", $2); print $2}'); do
-        # Test ping on the interface with 3 packets, capture average latency
+        # Test ping on the interface with 3 packets, capt-geture average latency
         LATENCY=$(ping -I "$IFACE" -4 -c 3 "$TARGET_IP" 2>/dev/null | awk -F'/' 'END {print $5}') || continue
 
         # Compare current latency with the best found so far
@@ -129,7 +129,7 @@ hostname() {
     apt-get -y install uuid uuid-runtime > /dev/null 2>&1
 
     # Generates a new hostname based on the chassis type and a random value
-    HOSTNAME="vps$(shuf -i 10000-99999 -n 1)"
+    HOSTNAME="srv$(shuf -i 10000-99999 -n 1)"
 
     printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
 
@@ -156,14 +156,14 @@ target_user() {
 
     printf "\e[32m*\e[0m CREATING USER \e[32mSysOp\e[0m\n"
 
-    # Create the sysop group with GID 1004
-    groupadd -g 1004 sysop
+    # Create the sysop group with GID 1001
+    groupadd -g 1001 sysop
 
-    # Create the sysop user with UID 1004, sysop group, and bash shell
-    useradd -m -u 1004 -g 1004 -c "SysOp" -s /bin/bash sysop
+    # Create the sysop user with UID 1001, sysop group, and bash shell
+    useradd -m -u 1001 -g 1001 -c "SysOp" -s /bin/bash sysop
 
     # Get the name of the created user
-    TARGET_USER=$(grep 1004 /etc/passwd | cut -f 1 -d ":")
+    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
 
     # Add the user to the sudo group
     /sbin/usermod -aG sudo "$TARGET_USER"
@@ -216,6 +216,13 @@ packages() {
         apt-get -y install $NETWORK > /dev/null 2>&1
     }
 
+    security() {
+        # Install security tools
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SECURITY TOOLS\n"
+        SECURITY="apparmor-utils"
+        apt-get -y install $SECURITY > /dev/null 2>&1
+    }
+
     compression() {
         # Install compression and archiving packages
         printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: COMPRESSION AND ARCHIVING\n"
@@ -226,21 +233,21 @@ packages() {
     scripting() {
         # Install scripting and automation support packages
         printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SCRIPTING AND AUTOMATION SUPPORT\n"
-        SCRIPTING="sshpass python3-apt"
+        SCRIPTING="sshpass python3-apt-get"
         apt-get -y install $SCRIPTING > /dev/null 2>&1
     }
 
     monitoring() {
         # Install system monitoring and diagnostics packages
         printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SYSTEM MONITORING AND DIAGNOSTICS\n"
-        MONITORING="screen htop sysstat nload"
+        MONITORING="screen htop sysstat stress lm-sensors nload smartmontools"
         apt-get -y install $MONITORING > /dev/null 2>&1
     }
 
     fs_utils() {
         # Install disk and file system utilities packages
         printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: DISK AND FILE SYSTEM UTILITIES\n"
-        FS_UTILS="cryptsetup rsync"
+        FS_UTILS="hdparm ntfs-3g dosfstools btrfs-progs mergerfs cryptsetup uuid rsync"
         apt-get -y install $FS_UTILS > /dev/null 2>&1
     }
 
@@ -249,6 +256,29 @@ packages() {
         printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: CONNECTIVITY UTILITIES\n"
         CONNECTIVITY="curl wget net-tools"
         apt-get -y install $CONNECTIVITY > /dev/null 2>&1
+    }
+
+    power_management() {
+        # Install power and system management utilities packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: POWER AND SYSTEM MANAGEMENT UTILITIES\n"
+        POWER_MGMT="pm-utils acpi acpid fwupd"
+        apt-get -y install $POWER_MGMT > /dev/null 2>&1
+    }
+
+    resource_control() {
+        # Install resource limiting and control packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: RESOURCE LIMITING AND CONTROL\n"
+        RESOURCE_CTRL="cpulimit"
+        apt-get -y install $RESOURCE_CTRL > /dev/null 2>&1
+    }
+
+    graphics_network() {
+        # Install graphics and network drivers and firmware packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: GRAPHICS AND NETWORK DRIVERS AND FIRMWARE\n"
+        MISC="firmware-misc-nonfree"
+        NETWORK="firmware-realtek firmware-atheros"
+        GRAPHICS="firmware-amd-graphics"
+        apt-get -y install $MISC $NETWORK > /dev/null 2>&1
     }
 
     extra_utils() {
@@ -261,11 +291,15 @@ packages() {
     # Call
     text_editor
     network_tools
+    security
     compression
     scripting
     monitoring
     fs_utils
     connectivity
+    power_management
+    resource_control
+    graphics_network
     extra_utils
 }
 
@@ -297,7 +331,7 @@ firewall() {
     printf "\e[32m*\e[0m SETTING UP FIREWALL\n"
 
     # Install required dependencies
-    apt-get -y install nftables rsyslog > /dev/null 2>&1
+    apt-get-get -y install nftables rsyslog > /dev/null 2>&1
 
     # Configure firewall services and scripts
     systemctl disable --now nftables --quiet
@@ -335,7 +369,7 @@ hypervisor() {
 
     lxc() {
         # Install LXC and required dependencies
-        apt-get -y install lxc > /dev/null 2>&1
+        apt-get-get -y install lxc > /dev/null 2>&1
 
         # Disable and stop lxc and lxc-net services
         systemctl disable --now lxc --quiet
@@ -452,7 +486,7 @@ ssh() {
     printf "\e[32m*\e[0m SETTING UP SSH\n"
 
     # Install the required packages
-    apt-get -y install openssh-server sshfs autossh > /dev/null 2>&1
+    apt-get-get -y install openssh-server sshfs autossh > /dev/null 2>&1
 
     # Remove existing SSH configuration
     rm /etc/ssh/sshd_config
@@ -517,7 +551,7 @@ rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" "$TARGET_USER" "$TARGET_U
 
 finish() {
    # Remove pacotes não utilizados e dependências não necessárias
-   apt-get -y autoremove > /dev/null 2>&1
+   apt-get-get -y autoremove > /dev/null 2>&1
 
    printf "\e[32m*\e[0m YOUR VPS IS ALMOST READY! FOR EVERYTHING TO WORK CORRECTLY, REBOOT IT.\n"
 }
