@@ -418,8 +418,6 @@ firewall() {
     # Create the rsyslog configuration file to filter nftables logs
     cat <<EOF > /etc/rsyslog.d/50-nftables.conf
 # /etc/rsyslog.d/50-nftables.conf
-:msg, contains, "INPUT_DROP: " /var/log/nftables.log
-:msg, contains, "OUTPUT_DROP: " /var/log/nftables.log
 :msg, contains, "FORWARD_DROP: " /var/log/nftables.log
 & stop
 EOF
