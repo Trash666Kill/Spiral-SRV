@@ -9,9 +9,6 @@
 # Close on any error
 set -e
 
-# Interfaces
-WAN=''
-
 # Enable IP forwarding
 ip_forwarding() {
     sysctl -w net.ipv4.ip_forward=1
