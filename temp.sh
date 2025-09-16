@@ -688,11 +688,14 @@ main() {
     packages
     directories
     trigger
-    firewall
-    hypervisor
     network
-    spawn
+    firewall
+    mount
+    hypervisor
     ssh
+    de
+    spawn
+    grub
     later
     finish
 }
