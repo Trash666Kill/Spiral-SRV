@@ -645,11 +645,11 @@ GRUB_CMDLINE_LINUX=""' > /etc/default/grub && chmod 644 /etc/default/grub
 later() {
     printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART\n"
 
-    # Grep for UID 1001 (sysop user)
-    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
+    # Grep for UID 1000 (sysop user)
+    TARGET_USER=$(grep 1000 /etc/passwd | cut -f 1 -d ":")
 
     if [[ -z "$TARGET_USER" ]]; then
-        printf "\e[33m* WARNING: No UID 1001 user found, skipping cleanup\e[0m\n"
+        printf "\e[33m* WARNING: No UID 1000 user found, skipping cleanup\e[0m\n"
         return  # Exit early if no user
     fi
 
