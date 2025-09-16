@@ -1,7 +1,6 @@
 #!/bin/bash
-# SCRIPT IN CHARGE OF CHECKING THE IP ADDRESS AVAILABLE ON THE DNS SERVER AND INFORMING THE 'SPAWN' TOOL
 
-# Desativa histórico bash
+# Disable bash history
 unset HISTFILE
 
 LEASES_FILE="/var/lib/misc/dnsmasq.leases"
