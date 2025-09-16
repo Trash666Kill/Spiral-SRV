@@ -7,8 +7,13 @@ unset HISTFILE
 cd /etc/spawn/CT/
 
 BASE="SpiralCT"
-BASE_CT_FILES="basect.sh"
+BASE_CT_FILES=(
+    "basect.sh"
+    "systemd/scripts/main.sh"
+    "systemd/scripts/network.sh"
+)
 ARCH=amd64
+RELEASE=trixie
 NEW_CT="ct$(shuf -i 100000-999999 -n 1)"
 NEW_CT_FILES="later.sh"
 
