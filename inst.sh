@@ -302,11 +302,11 @@ network() {
     cp systemd/scripts/network.sh /root/.services/ && chmod 700 /root/.services/network.sh
 
     # Disabling services (with full error suppression)
-    systemctl disable networking --quiet
-    systemctl disable ModemManager --quiet
-    systemctl disable wpa_supplicant --quiet
-    systemctl disable NetworkManager-wait-online --quiet
-    systemctl disable NetworkManager.service --quiet
+    systemctl disable networking --quiet 2>/dev/null || true
+    systemctl disable ModemManager --quiet 2>/dev/null || true
+    systemctl disable wpa_supplicant --quiet 2>/dev/null || true
+    systemctl disable NetworkManager-wait-online --quiet 2>/dev/null || true
+    systemctl disable NetworkManager.service --quiet 2>/dev/null || true
 
     # Collects the MAC address and stores it in the variable
     MAC=$(ip link show "$NIC0" | awk '/ether/ {print $2}')
