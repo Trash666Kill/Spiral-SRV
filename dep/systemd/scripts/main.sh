@@ -59,15 +59,6 @@ firewall() {
     done
 }
 
-dhcp() {
-    local SERVICE=dhcpcd
-    systemctl restart "$SERVICE"
-    if [[ $? -ne 0 ]]; then
-        printf "\e[31m*\e[0m Error: Failed to restart $SERVICE.\n"
-        exit 1
-    fi
-}
-
 dns() {
     local SERVICE=dnsmasq
     systemctl restart "$SERVICE"
@@ -167,7 +158,6 @@ main() {
     set_printk
     network
     firewall
-    dhcp
     dns
     ntp
     mount
