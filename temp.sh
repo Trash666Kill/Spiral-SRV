@@ -120,12 +120,6 @@ interface() {
     fi
 }
 
-global() {
-
-    # Self-explanatory
-    
-}
-
 hostname() {
     # Install the required packages
     apt-get -y install uuid uuid-runtime > /dev/null 2>&1
