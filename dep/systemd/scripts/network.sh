@@ -42,10 +42,8 @@ virtual() {
         brctl stp br_vlan710 on
         brctl addif br_vlan710 vlan710
         ip link set dev br_vlan710 up
-        # NIC0_CONFIG
-        ifconfig br_vlan710 0.0.0.0 netmask 0.0.0.0
-        # NIC0_DEFAULT_ROUTE
-        ip route add default via 0.0.0.0 dev br_vlan710
+        ifconfig br_vlan710 "$IPV4" netmask "$MASK"
+        ip route add default via ""$GW dev br_vlan710
     }
 
     # Call
