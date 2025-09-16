@@ -714,7 +714,7 @@ main() {
     packages
     directories
     trigger
-    de
+    #de
     network
     firewall
     mount
