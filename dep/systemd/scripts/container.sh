@@ -1,11 +1,5 @@
 #!/bin/bash
 
-# - Description: Starts a container using lxc and optionally restarts lxc.
-# - Defines a function to restart the lxc service, which exits on failure.
-# - Starts the CT named CT123456 using `lxc-start`.
-# - The `main` function calls the CT start routine; restart_lxc is defined but unused.
-# - To manage other CTs, duplicate and edit the CT123456 function accordingly.
-
 # Restart lxc service
 restart_lxc() {
     local SERVICE=lxc
