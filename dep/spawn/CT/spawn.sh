@@ -1,77 +1,79 @@
 #!/bin/bash
-# - SCRIPT FOR AUTOMATIC CONSTRUCTION OF LXC CONTAINERS FOR VPS
 
-# Diretório de execução
-cd /etc/spawn/CT/
-
-# Desativa histórico bash
+# Disable bash history
 unset HISTFILE
+
+# Execution directory
+cd /etc/spawn/CT/
 
 BASE="SpiralCT"
 BASE_CT_FILES="basect.sh"
 ARCH=amd64
-NEW_CT="CT$(shuf -i 100000-999999 -n 1)"
+NEW_CT="ct$(shuf -i 100000-999999 -n 1)"
 NEW_CT_FILES="later.sh"
 
 basect() {
-# Verifica se os arquivos necessários para criar o container base existem
-for file in $BASE_CT_FILES; do
-    if [[ ! -f "$file" ]]; then
-        printf "\e[31m*\e[0m ERROR: FILES REQUIRED TO BUILD THE BASE CONTAINER \033[32m%s\033[0m DO NOT EXIST.\n" "$file"
-        exit 1
-    fi
-done
+    # Checks if the files needed to create the base container exist
+    for file in $BASE_CT_FILES; do
+        if [[ ! -f "$file" ]]; then
+            printf "\e[31m*\e[0m ERROR: FILES REQUIRED TO BUILD THE BASE CONTAINER \033[32m%s\033[0m DO NOT EXIST.\n" "$file"
+            exit 1
+        fi
+    done
 
-# Verifica se o container base já existe
-if ! lxc-ls --filter "^${BASE}$" | grep -q "${BASE}"; then
-    printf "\e[33m*\e[0m ATTENTION: THE BASE CONTAINER \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE"
+    # Verifica se o container base já existe
+    if ! lxc-ls --filter "^${BASE}$" | grep -q "${BASE}"; then
+        printf "\e[33m*\e[0m ATTENTION: THE BASE CONTAINER \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE"
 
-    # Cria o container base se não existir
-    lxc-create --name "${BASE}" --template download -- --dist debian --release bookworm --arch "${ARCH}" > /dev/null
+        # Cria o container base se não existir
+        lxc-create --name "${BASE}" --template download -- --dist debian --release "${RELEASE}" --arch "${ARCH}" > /dev/null
 
-    # Copia o script de configuração para o diretório do container
-    cp basect.sh /var/lib/lxc/"${BASE}"/rootfs/root/
+        # Copia o script de configuração para o diretório do container
+        cp basect.sh /var/lib/lxc/"${BASE}"/rootfs/root/ && 
 
-    # Verifica se a cópia foi bem-sucedida
-    if [ $? -ne 0 ]; then
-        printf "\e[31m*\e[0m ERROR: FAILED TO CREATE BASE CONTAINER \033[32m%s\033[0m.\n" "$BASE"
-        exit 1
-    fi
+        # Verifica se a cópia foi bem-sucedida
+        if [ $? -ne 0 ]; then
+            printf "\e[31m*\e[0m ERROR: FAILED TO CREATE BASE CONTAINER \033[32m%s\033[0m.\n" "$BASE"
+            exit 1
+        fi
 
-    # Tenta iniciar o container
-    if ! lxc-start --name "${BASE}"; then
-        printf "\e[31m*\e[0m ERROR: CONTAINER \033[32m%s\033[0m FAILED TO START.\n" "$BASE"
-        exit 1
-    fi
+        # Tenta iniciar o container
+        if ! lxc-start --name "${BASE}"; then
+            printf "\e[31m*\e[0m ERROR: CONTAINER \033[32m%s\033[0m FAILED TO START.\n" "$BASE"
+            exit 1
+        fi
 
-    # Tenta conectar o container à internet
-    printf "\e[32m*\e[0m TRYING TO CONNECT TO THE INTERNET, WAIT...\n"
-    if ! lxc-attach --name "${BASE}" -- dhclient eth0; then
-        printf "\e[31m*\e[0m ERROR: CONTAINER \033[32m%s\033[0m WAS UNABLE TO CONNECT TO THE INTERNET.\n" "$BASE"
+        # Tenta conectar o container à internet
+        printf "\e[32m*\e[0m TRYING TO CONNECT TO THE INTERNET, WAIT...\n"
+        if ! lxc-attach --name "${BASE}" -- dhclient eth0; then
+            printf "\e[31m*\e[0m ERROR: CONTAINER \033[32m%s\033[0m WAS UNABLE TO CONNECT TO THE INTERNET.\n" "$BASE"
+            lxc-stop --name "${BASE}"
+            exit 1
+        fi
+
+        # Realiza as operações de construção e configuração no container
+        printf "\e[32m*\e[0m BUILDING BASE, WAIT...\n"
+        lxc-attach --name "${BASE}" -- chmod +x /root/basect.sh
+        lxc-attach --name "${BASE}" -- /root/basect.sh
+        cp systemd/trigger.service /var/lib/lxc/"${BASE}"/rootfs/etc/systemd/system && cp systemd/scripts/*.sh /var/lib/lxc/"${BASE}"/rootfs/root/.services
+        lxc-attach --name "${BASE}" -- chmod 700 /root/.services/*.sh
+        lxc-attach --name "${BASE}" -- systemctl daemon-reload && lxc-attach --name "${BASE}" -- systemctl enable trigger --quiet
+
+        # Verifica se a atualização ou instalação dos pacotes falhou
+        if [ $? -ne 0 ]; then
+            printf "\e[31m*\e[0m ERROR: COULD NOT UPDATE OR INSTALL PACKAGES IN CONTAINER \033[32m%s\033[0m.\n" "$BASE"
+            lxc-stop --name "${BASE}"
+            exit 1
+        fi
+
+        # Para o container após a conclusão
         lxc-stop --name "${BASE}"
-        exit 1
+        sleep 5
+
+        printf "\e[32m*\e[0m CONTAINER \033[32m%s\033[0m SUCCESSFULLY CREATED AND CONFIGURED.\n" "$BASE"
+    else
+        printf "\e[32m*\e[0m BASE CONTAINER ALREADY EXISTS.\n"
     fi
-
-    # Realiza as operações de construção e configuração no container
-    printf "\e[32m*\e[0m BUILDING BASE, WAIT...\n"
-    lxc-attach --name "${BASE}" -- chmod +x /root/basect.sh
-    lxc-attach --name "${BASE}" -- /root/basect.sh
-
-    # Verifica se a atualização ou instalação dos pacotes falhou
-    if [ $? -ne 0 ]; then
-        printf "\e[31m*\e[0m ERROR: COULD NOT UPDATE OR INSTALL PACKAGES IN CONTAINER \033[32m%s\033[0m.\n" "$BASE"
-        lxc-stop --name "${BASE}"
-        exit 1
-    fi
-
-    # Para o container após a conclusão
-    lxc-stop --name "${BASE}"
-    sleep 5
-
-    printf "\e[32m*\e[0m CONTAINER \033[32m%s\033[0m SUCCESSFULLY CREATED AND CONFIGURED.\n" "$BASE"
-else
-    printf "\e[32m*\e[0m BASE CONTAINER ALREADY EXISTS.\n"
-fi
 }
 
 newct() {
@@ -150,5 +152,10 @@ else
 fi
 }
 
-# Sequence
-basect; newct
+main() {
+    basect
+    newct
+}
+
+# Execute main function
+main
