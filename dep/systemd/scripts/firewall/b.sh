@@ -7,10 +7,10 @@ host() {
     # Configure NAT and forwarding (BR_TAP110)
     br_tap110() {
         # Masquerade Rules
-        nft add rule inet firelux postrouting ip saddr 10.0.10.0/24 oifname "$LAN0" masquerade
+        nft add rule inet firelux postrouting ip saddr 10.0.10.0/24 oifname "$NIC0" masquerade
 
         # Forward Rules
-        nft add rule inet firelux forward iifname "br_tap110" oifname "$LAN0" accept
+        nft add rule inet firelux forward iifname "br_tap110" oifname "$NIC0" accept
     }
 
     # Call
