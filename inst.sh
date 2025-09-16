@@ -581,7 +581,7 @@ de() {
     printf "\e[32m*\e[0m SETTING UP DESKTOP ENVIRONMENT\n"
 
     # Installs the packages required for the desktop environment
-    apt -y install gnome-core gdm3 virt-manager ssh-askpass > /dev/null 2>&1
+    apt-get -y install gnome-core gdm3 virt-manager ssh-askpass > /dev/null 2>&1
 
     # Configure specific directories and files for the target user
     su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Pictures/{Wallpapers,Screenshots},Music,Documents,Videos,.virt/{ISO,Temp}}"
@@ -590,7 +590,7 @@ de() {
         printf "\e[32m*\e[0m SETTING UP SANDBOX PACKAGES\n"
 
         # Install and configure Flatpak core (log errors to file for debug)
-        apt -y install flatpak gnome-software-plugin-flatpak >> /tmp/inst.log 2>&1 || {
+        apt-get -y install flatpak gnome-software-plugin-flatpak >> /tmp/inst.log 2>&1 || {
             printf "\e[33m* WARNING: Flatpak install failed (check /tmp/inst.log)\e[0m\n"
         }
 
