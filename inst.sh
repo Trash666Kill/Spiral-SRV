@@ -35,7 +35,7 @@ interface() {
 
     # Iterate over active interfaces (status UP) starting with eth, en, or enp
     for IFACE in $(ip -o link show | awk -F': ' '/state UP/ && ($2 ~ /^(eth|en|enp)/) {sub(/@.*/, "", $2); print $2}'); do
-        # Test ping on the interface with 3 packets, capt-geture average latency
+        # Test ping on the interface with 3 packets, capture average latency
         LATENCY=$(ping -I "$IFACE" -4 -c 3 "$TARGET_IP" 2>/dev/null | awk -F'/' 'END {print $5}') || continue
 
         # Compare current latency with the best found so far
@@ -289,18 +289,22 @@ network() {
     # Install the required packages
     apt-get -y install dhcpcd > /dev/null 2>&1
 
-    # Disabling services
-    systemctl disable networking --quiet && systemctl disable ModemManager --quiet &&  systemctl disable wpa_supplicant --quiet && systemctl disable dhcpcd --quiet && systemctl disable NetworkManager-wait-online --quiet && systemctl disable NetworkManager.service --quiet
-
+    # Disabling services (with full error suppression)
+    systemctl disable networking --quiet 2>/dev/null || true
+    systemctl disable ModemManager --quiet 2>/dev/null || true
+    systemctl disable wpa_supplicant --quiet 2>/dev/null || true
+    systemctl disable dhcpcd --quiet 2>/dev/null || true
+    systemctl disable NetworkManager-wait-online --quiet 2>/dev/null || true
+    systemctl disable NetworkManager.service --quiet 2>/dev/null || true
 
     # Configuring dhcpcd
     sed -i -e '$a\' -e '\n# Custom\n#Try DHCP on all interfaces\nallowinterfaces br_vlan710\n\n# Waiting time to try to get an IP (in seconds)\ntimeout 0  # 0 means try indefinitely' /etc/dhcpcd.conf
 
     # Collects the MAC address and stores it in the variable
-    MAC=$(ip link show "$INTERFACE" | awk '/ether/ {print $2}')
+    MAC=$(ip link show "$NIC0" | awk '/ether/ {print $2}')
 
     # Setting the primary interface
-    sed -i "s/NIC0=.*/NIC0=\"$INTERFACE\"/" /root/.services/network.sh
+    sed -i "s/NIC0=.*/NIC0=\"$NIC0\"/" /root/.services/network.sh
     sed -i "/ip link set dev br_vlan710 address/s/$/ $MAC/" /root/.services/network.sh
 
     ntp() {
@@ -410,6 +414,9 @@ network() {
     # Call
     ntp
     dns
+
+    # Restart dhcpcd to restore network during script execution
+    systemctl enable --now dhcpcd --quiet 2>/dev/null || true
 }
 
 firewall() {
@@ -580,17 +587,23 @@ de() {
     su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Pictures/{Wallpapers,Screenshots},Music,Documents,Videos,.virt/{ISO,Temp}}"
 
     sandbox_pkg() {
-    printf "\e[32m*\e[0m SETTING UP SANDBOX PACKAGES\n"
+        printf "\e[32m*\e[0m SETTING UP SANDBOX PACKAGES\n"
 
-    # Install and configure Flatpak core
-    apt -y install flatpak gnome-software-plugin-flatpak > /dev/null 2>&1
+        # Install and configure Flatpak core (log errors to file for debug)
+        apt -y install flatpak gnome-software-plugin-flatpak >> /tmp/inst.log 2>&1 || {
+            printf "\e[33m* WARNING: Flatpak install failed (check /tmp/inst.log)\e[0m\n"
+        }
 
-    # Add the Flathub repository
-    flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-
-    # Packages
-    flatpak -y install flathub org.mozilla.firefox com.freerdp.FreeRDP
-}
+        # Check if flatpak is available before proceeding
+        if command -v flatpak &> /dev/null; then
+            flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo >> /tmp/inst.log 2>&1
+            flatpak -y install flathub org.mozilla.firefox com.freerdp.FreeRDP >> /tmp/inst.log 2>&1 || {
+                printf "\e[33m* WARNING: Flatpak packages failed to install\e[0m\n"
+            }
+        else
+            printf "\e[33m* SKIPPING FLATPAK: Not installed (network issue? Check /tmp/inst.log)\e[0m\n"
+        fi
+    }
 
     # Call
     sandbox_pkg
@@ -632,8 +645,13 @@ GRUB_CMDLINE_LINUX=""' > /etc/default/grub && chmod 644 /etc/default/grub
 later() {
     printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART\n"
 
-    # Gets the name of the user with UID 1000, usually the first user created
-    TARGET_USER=$(grep 1000 /etc/passwd | cut -f 1 -d ":")
+    # Grep for UID 1001 (sysop user)
+    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
+
+    if [[ -z "$TARGET_USER" ]]; then
+        printf "\e[33m* WARNING: No UID 1001 user found, skipping cleanup\e[0m\n"
+        return  # Exit early if no user
+    fi
 
     # Creates the startup script that will be executed after reboot
     printf '#!/bin/bash
@@ -646,17 +664,17 @@ later() {
 # Short-Description: Procedures subsequent to instance construction only possible after reboot
 ### END INIT INFO
 
-# End all processes for user TARGET USER
+# End all processes for user %s
 pkill -u %s
 
-# Remove the user TARGET USER and its home directory
+# Remove the user %s and its home directory
 userdel -r %s
 
 # Remove the WS folder from the /root directory
 rm -rf /root/Spiral-SRV-main
 
 # Remove the init.d script after it is executed
-rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later && chmod +x /etc/init.d/later
+rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later && chmod +x /etc/init.d/later
 
     # Add the script to the services that will start at boot
     update-rc.d later defaults
@@ -666,8 +684,12 @@ finish() {
     # Remove unused packages and unnecessary dependencies
     apt-get -y autoremove > /dev/null 2>&1
 
-    # Remove default network configuration file to avoid conflicts
-    rm /etc/network/interfaces
+    # Remove default network configuration file to avoid conflicts, with warning if not found
+    if [[ ! -f /etc/network/interfaces ]]; then
+        printf "\e[33m* WARNING: /etc/network/interfaces does not exist, skipping removal\e[0m\n"
+    else
+        rm -f /etc/network/interfaces
+    fi
 
     printf "\e[32m*\e[0m INSTALLATION COMPLETED SUCCESSFULLY!\n"
 
@@ -692,12 +714,12 @@ main() {
     packages
     directories
     trigger
+    de
     network
     firewall
     mount
     hypervisor
     ssh
-    de
     spawn
     grub
     later
