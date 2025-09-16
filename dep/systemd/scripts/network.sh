@@ -43,7 +43,7 @@ virtual() {
         brctl addif br_vlan710 vlan710
         ip link set dev br_vlan710 up
         ifconfig br_vlan710 "$IPV4" netmask "$MASK"
-        ip route add default via ""$GW dev br_vlan710
+        ip route add default via "$GW" dev br_vlan710
     }
 
     # Call
