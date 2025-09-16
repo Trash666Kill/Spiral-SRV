@@ -59,20 +59,35 @@ interface() {
         exit 1
     fi
 
+    # Convert CIDR to decimal netmask for /etc/environment
+    case "$BEST_NETMASK" in
+        8) DECIMAL_NETMASK="255.0.0.0" ;;
+        16) DECIMAL_NETMASK="255.255.0.0" ;;
+        24) DECIMAL_NETMASK="255.255.255.0" ;;
+        32) DECIMAL_NETMASK="255.255.255.255" ;;
+        *) printf "\033[31m*\033[0m ERROR: UNSUPPORTED NETMASK \033[32m/%s\033[0m\n" "$BEST_NETMASK"; exit 1 ;;
+    esac
+
     # Assign to global variable
     NIC0="$BEST_INTERFACE"
     printf "\e[32m*\e[0m CHOSEN INTERFACE: \033[32m%s\033[0m, LATENCY OF \033[32m%s ms\033[0m FOR \033[32m%s\033[0m\n" "$NIC0" "$BEST_LATENCY" "$TARGET_IP"
 
-    # Write NIC0 and NIC0_ALT to /etc/environment
-    if [[ -n "$BEST_ALTNAME" && -n "$BEST_INTERFACE" ]]; then
-        printf "\e[32m*\e[0m WRITING ALTNAME \033[32m%s\033[0m AND INTERFACE \033[32m%s\033[0m TO /etc/environment\n" "$BEST_ALTNAME" "$NIC0"
+    # Write NIC0, NIC0_ALT, IPV4, GW, and MASK to /etc/environment
+    if [[ -n "$BEST_ALTNAME" && -n "$BEST_INTERFACE" && -n "$BEST_IP" && -n "$BEST_GATEWAY" && -n "$DECIMAL_NETMASK" ]]; then
+        printf "\e[32m*\e[0m WRITING ALTNAME \033[32m%s\033[0m, INTERFACE \033[32m%s\033[0m, IP \033[32m%s\033[0m, GATEWAY \033[32m%s\033[0m, AND NETMASK \033[32m%s\033[0m TO /etc/environment\n" "$BEST_ALTNAME" "$NIC0" "$BEST_IP" "$BEST_GATEWAY" "$DECIMAL_NETMASK"
         touch /etc/environment
         sed -i '/^NIC0=/d' /etc/environment
         sed -i '/^NIC0_ALT=/d' /etc/environment
+        sed -i '/^IPV4=/d' /etc/environment
+        sed -i '/^GW=/d' /etc/environment
+        sed -i '/^MASK=/d' /etc/environment
         echo "NIC0=$NIC0" >> /etc/environment
         echo "NIC0_ALT=$BEST_ALTNAME" >> /etc/environment
+        echo "IPV4=$BEST_IP" >> /etc/environment
+        echo "GW=$BEST_GATEWAY" >> /etc/environment
+        echo "MASK=$DECIMAL_NETMASK" >> /etc/environment
     else
-        printf "\033[31m*\033[0m ERROR: NO VALID INTERFACE FOUND TO WRITE TO /etc/environment\n"
+        printf "\033[31m*\033[0m ERROR: NO VALID INTERFACE, ALTNAME, IP, GATEWAY, OR NETMASK FOUND TO WRITE TO /etc/environment\n"
         exit 1
     fi
 }
@@ -286,25 +301,17 @@ network() {
     # Adding Network Configuration File
     cp systemd/scripts/network.sh /root/.services/ && chmod 700 /root/.services/network.sh
 
-    # Install the required packages
-    apt-get -y install dhcpcd > /dev/null 2>&1
-
     # Disabling services (with full error suppression)
     systemctl disable networking --quiet 2>/dev/null || true
     systemctl disable ModemManager --quiet 2>/dev/null || true
     systemctl disable wpa_supplicant --quiet 2>/dev/null || true
-    systemctl disable dhcpcd --quiet 2>/dev/null || true
     systemctl disable NetworkManager-wait-online --quiet 2>/dev/null || true
     systemctl disable NetworkManager.service --quiet 2>/dev/null || true
-
-    # Configuring dhcpcd
-    sed -i -e '$a\' -e '\n# Custom\n#Try DHCP on all interfaces\nallowinterfaces br_vlan710\n\n# Waiting time to try to get an IP (in seconds)\ntimeout 0  # 0 means try indefinitely' /etc/dhcpcd.conf
 
     # Collects the MAC address and stores it in the variable
     MAC=$(ip link show "$NIC0" | awk '/ether/ {print $2}')
 
-    # Setting the primary interface
-    sed -i "s/NIC0=.*/NIC0=\"$NIC0\"/" /root/.services/network.sh
+    # Update the MAC address in /root/.services/network.sh
     sed -i "/ip link set dev br_vlan710 address/s/$/ $MAC/" /root/.services/network.sh
 
     ntp() {
@@ -330,53 +337,6 @@ network() {
 
         # Update the system configuration to use the correct time zone
         timedatectl set-timezone ${TIMEZONE}
-
-        netfile() {
-            # Check if the destination file exists and is writable
-            if [[ ! -f "$DEST_SCRIPT_PATH" ]]; then
-                printf "\033[31m*\033[0m ERROR: FILE \033[32m%s\033[0m DOES NOT EXIST\n" "$DEST_SCRIPT_PATH"
-                exit 1
-            fi
-            if [[ ! -w "$DEST_SCRIPT_PATH" ]]; then
-                printf "\033[31m*\033[0m ERROR: CANNOT WRITE TO \033[32m%s\033[0m. CHECK PERMISSIONS.\n" "$DEST_SCRIPT_PATH"
-                exit 1
-            fi
-            # Update /root/.services/network.sh with the new interface configuration
-            if [[ -n "$BEST_IP" && -n "$BEST_NETMASK" && -n "$BEST_GATEWAY" ]]; then
-                # Convert CIDR to decimal netmask for ifconfig
-                case "$BEST_NETMASK" in
-                    8) DECIMAL_NETMASK="255.0.0.0" ;;
-                    16) DECIMAL_NETMASK="255.255.0.0" ;;
-                    24) DECIMAL_NETMASK="255.255.255.0" ;;
-                    32) DECIMAL_NETMASK="255.255.255.255" ;;
-                    *) printf "\033[31m*\033[0m ERROR: UNSUPPORTED NETMASK \033[32m/%s\033[0m FOR IFCONFIG\n" "$BEST_NETMASK"; exit 1 ;;
-                esac
-                printf "\e[32m*\e[0m WRITING ALTNAME \033[32m%s\033[0m AND INTERFACE \033[32m%s\033[0m TO %s\n" "$BEST_ALTNAME" "$NIC0" "$DEST_SCRIPT_PATH"
-                # Remove old configuration lines
-                sed -i '/ifconfig "$NIC0" 0\.0\.0\.0/d' "$DEST_SCRIPT_PATH" || {
-                    printf "\033[31m*\033[0m ERROR: FAILED TO REMOVE OLD IFCONFIG LINE IN \033[32m%s\033[0m\n" "$DEST_SCRIPT_PATH"
-                    exit 1
-                }
-                sed -i '/ip route add default via 0\.0\.0\.0 dev "$NIC0"/d' "$DEST_SCRIPT_PATH" || {
-                    printf "\033[31m*\033[0m ERROR: FAILED TO REMOVE OLD IP ROUTE LINE IN \033[32m%s\033[0m\n" "$DEST_SCRIPT_PATH"
-                    exit 1
-                }
-                # Remove any existing NIC0_CONFIG or NIC0_DEFAULT_ROUTE lines to avoid duplicates
-                sed -i '/# NIC0_CONFIG/d' "$DEST_SCRIPT_PATH"
-                sed -i '/# NIC0_DEFAULT_ROUTE/d' "$DEST_SCRIPT_PATH"
-                # Add new configuration lines after the last line of br_vlan710, using br_vlan710
-                sed -i '/brctl addif br_vlan710 vlan710/a\        # NIC0_CONFIG\n        ifconfig "br_vlan710" '"$BEST_IP"' netmask '"$DECIMAL_NETMASK"'\n        # NIC0_DEFAULT_ROUTE\n        ip route add default via '"$BEST_GATEWAY"' dev "br_vlan710"' "$DEST_SCRIPT_PATH" || {
-                    printf "\033[31m*\033[0m ERROR: FAILED TO UPDATE \033[32m%s\033[0m WITH NEW CONFIGURATION\n" "$DEST_SCRIPT_PATH"
-                    exit 1
-                }
-            else
-                printf "\033[31m*\033[0m ERROR: COULD NOT DETERMINE IP, NETMASK, OR GATEWAY FOR INTERFACE \033[32m%s\033[0m\n" "$NIC0"
-                exit 1
-            fi
-        }
-
-        # Call
-        netfile
     }
 
     dns() {
@@ -414,9 +374,6 @@ network() {
     # Call
     ntp
     dns
-
-    # Restart dhcpcd to restore network during script execution
-    systemctl enable --now dhcpcd --quiet 2>/dev/null || true
 }
 
 firewall() {
@@ -714,7 +671,7 @@ main() {
     packages
     directories
     trigger
-    #de
+    de
     network
     firewall
     mount
