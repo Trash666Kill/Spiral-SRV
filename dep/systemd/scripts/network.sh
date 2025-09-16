@@ -6,7 +6,7 @@ set -e
 # Physical interfaces
 physical() {
     nic0() {
-        ip link set dev "$NIC0" up
+        ip link set dev "$NIC0_ALT" up
     }
 
     # Call
@@ -26,7 +26,7 @@ virtual() {
     }
 
     br_vlan966() {
-        ip link add link "$NIC0" name vlan966 type vlan id 966
+        ip link add link "$NIC0_ALT" name vlan966 type vlan id 966
         ip link set dev vlan966 up
         brctl addbr br_vlan966
         brctl stp br_vlan966 on
@@ -35,7 +35,7 @@ virtual() {
     }
 
     br_vlan710() {
-        ip link add link "$NIC0" name vlan710 type vlan id 710
+        ip link add link "$NIC0_ALT" name vlan710 type vlan id 710
         ip link set dev vlan710 up
         brctl addbr br_vlan710
         ip link set dev br_vlan710 address
@@ -43,9 +43,9 @@ virtual() {
         brctl addif br_vlan710 vlan710
         ip link set dev br_vlan710 up
         # NIC0_CONFIG
-        ifconfig "$NIC0" 0.0.0.0 netmask 0.0.0.0
+        ifconfig "$NIC0_ALT" 0.0.0.0 netmask 0.0.0.0
         # NIC0_DEFAULT_ROUTE
-        ip route add default via 0.0.0.0 dev "$NIC0"
+        ip route add default via 0.0.0.0 dev "$NIC0_ALT"
     }
 
     # Call
