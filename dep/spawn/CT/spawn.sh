@@ -60,6 +60,10 @@ basect() {
         printf "\e[32m*\e[0m BUILDING BASE, WAIT...\n"
         lxc-attach --name "${BASE}" -- chmod +x /root/basect.sh
         lxc-attach --name "${BASE}" -- /root/basect.sh
+        cp systemd/trigger.service /var/lib/lxc/"${BASE}"/rootfs/etc/systemd/system
+        cp systemd/scripts/{main.sh,network.sh} /var/lib/lxc/"${BASE}"/rootfs/root/.services
+        lxc-attach --name "${BASE}" -- chmod 700 /root/.services/*.sh
+        lxc-attach --name "${BASE}" -- systemctl daemon-reload && lxc-attach --name "${BASE}" -- systemctl enable trigger --quiet
 
         # Verifica se a atualização ou instalação dos pacotes falhou
         if [ $? -ne 0 ]; then
