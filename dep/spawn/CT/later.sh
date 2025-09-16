@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Desativa histórico bash
+# Disable bash history
 unset HISTFILE
 
 # Obtendo o hostname da máquina
