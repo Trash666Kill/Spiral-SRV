@@ -362,7 +362,7 @@ network() {
         printf '10.0.10.254 %s.local' "$HOSTNAME" > /etc/dnsmasq.d/config/hosts
 
         # Fixing DNS Server
-        chattr -i /etc/resolv.conf
+        chattr + /etc/resolv.conf
 
         # Creates the Upstream DNS server declaration file that will be used by dnsmasq
         grep '^nameserver' /etc/resolv.conf | awk '{print "nameserver " $2}' | tee -a /etc/dnsmasq.d/config/resolv > /dev/null
