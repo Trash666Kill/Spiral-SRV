@@ -364,8 +364,8 @@ network() {
                 # Remove any existing NIC0_CONFIG or NIC0_DEFAULT_ROUTE lines to avoid duplicates
                 sed -i '/# NIC0_CONFIG/d' "$DEST_SCRIPT_PATH"
                 sed -i '/# NIC0_DEFAULT_ROUTE/d' "$DEST_SCRIPT_PATH"
-                # Add new configuration lines after the last line of br_vlan710
-                sed -i '/brctl addif br_vlan710 vlan710/a\        # NIC0_CONFIG\n        ifconfig "'"$NIC0"'" '"$BEST_IP"' netmask '"$DECIMAL_NETMASK"'\n        # NIC0_DEFAULT_ROUTE\n        ip route add default via '"$BEST_GATEWAY"' dev "'"$NIC0"'"' "$DEST_SCRIPT_PATH" || {
+                # Add new configuration lines after the last line of br_vlan710, using br_vlan710
+                sed -i '/brctl addif br_vlan710 vlan710/a\        # NIC0_CONFIG\n        ifconfig "br_vlan710" '"$BEST_IP"' netmask '"$DECIMAL_NETMASK"'\n        # NIC0_DEFAULT_ROUTE\n        ip route add default via '"$BEST_GATEWAY"' dev "br_vlan710"' "$DEST_SCRIPT_PATH" || {
                     printf "\033[31m*\033[0m ERROR: FAILED TO UPDATE \033[32m%s\033[0m WITH NEW CONFIGURATION\n" "$DEST_SCRIPT_PATH"
                     exit 1
                 }
@@ -581,7 +581,7 @@ de() {
     printf "\e[32m*\e[0m SETTING UP DESKTOP ENVIRONMENT\n"
 
     # Installs the packages required for the desktop environment
-    apt-get -y install gnome-core gdm3 virt-manager ssh-askpass > /dev/null 2>&1
+    apt -y install gnome-core gdm3 virt-manager ssh-askpass > /dev/null 2>&1
 
     # Configure specific directories and files for the target user
     su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Pictures/{Wallpapers,Screenshots},Music,Documents,Videos,.virt/{ISO,Temp}}"
@@ -590,7 +590,7 @@ de() {
         printf "\e[32m*\e[0m SETTING UP SANDBOX PACKAGES\n"
 
         # Install and configure Flatpak core (log errors to file for debug)
-        apt-get -y install flatpak gnome-software-plugin-flatpak >> /tmp/inst.log 2>&1 || {
+        apt -y install flatpak gnome-software-plugin-flatpak >> /tmp/inst.log 2>&1 || {
             printf "\e[33m* WARNING: Flatpak install failed (check /tmp/inst.log)\e[0m\n"
         }
 
@@ -645,11 +645,11 @@ GRUB_CMDLINE_LINUX=""' > /etc/default/grub && chmod 644 /etc/default/grub
 later() {
     printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART\n"
 
-    # Grep for UID 1000 (sysop user)
-    TARGET_USER=$(grep 1000 /etc/passwd | cut -f 1 -d ":")
+    # Grep for UID 1001 (sysop user)
+    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
 
     if [[ -z "$TARGET_USER" ]]; then
-        printf "\e[33m* WARNING: No UID 1000 user found, skipping cleanup\e[0m\n"
+        printf "\e[33m* WARNING: No UID 1001 user found, skipping cleanup\e[0m\n"
         return  # Exit early if no user
     fi
 
@@ -714,7 +714,7 @@ main() {
     packages
     directories
     trigger
-    #de
+    de
     network
     firewall
     mount
