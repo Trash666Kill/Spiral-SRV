@@ -1,33 +1,46 @@
-de() {
+#!/bin/bash
+
+setup_vnc() {
     printf "\e[32m*\e[0m SETTING UP VNC SERVER\n"
 
+    # Identify the user with UID 1001
     TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
+    if [ -z "$TARGET_USER" ]; then
+        echo "Error: No user with UID 1001 found."
+        exit 1
+    fi
 
-    # Installs the packages
-    apt-get install -y tigervnc-standalone-server tigervnc-common xvfb x11-apps firefox-esr openbox x11-xserver-utils
+    # Check if the home directory exists
+    if [ ! -d "/home/$TARGET_USER" ]; then
+        echo "Error: Home directory /home/$TARGET_USER does not exist."
+        exit 1
+    fi
 
-    # Criação do diretório de configuração do VNC para o usuário alvo
-    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.vnc"
+    # Install required packages
+    apt-get install -y tigervnc-standalone-server tigervnc-common xvfb x11-apps openbox x11-xserver-utils
+
+    # Create configuration directories and files
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.vnc /home/$TARGET_USER/.services"
     su - "$TARGET_USER" -c "touch /home/$TARGET_USER/.Xresources"
 
-    # Criação do script de inicialização do VNC
+    # Create the VNC xstartup script
     su - "$TARGET_USER" -c "printf '#!/bin/bash
 Xvfb :1 -screen 0 1920x1080x24 +extension RANDR &
 export DISPLAY=:1
-xrdb $HOME/.Xresources
+xrdb \$HOME/.Xresources
 openbox &
 #firefox-esr &
-sleep infinity' > /home/$TARGET_USER/.vnc/xstartup && chmod +x /home/$TARGET_USER/.vnc/xstartup"
+' > /home/$TARGET_USER/.vnc/xstartup && chmod +x /home/$TARGET_USER/.vnc/xstartup"
 
-    #
+    # Create the noVNC script
     su - "$TARGET_USER" -c "printf '#!/bin/bash
 vncserver -kill :1 2>/dev/null || true
 vncserver :1 -SecurityTypes VncAuth -AcceptSetDesktopSize
-/usr/share/novnc/utils/novnc_proxy --vnc localhost:5901 --listen 0.0.0.0:6080 --web /usr/share/novnc 2>/dev/null
-vncserver -kill :1' > /home/$TARGET_USER/.services/novnc.sh && chmod u+x /home/$TARGET_USER/.services/novnc.sh"
+/usr/share/novnc/utils/novnc_proxy --vnc localhost:5901 --listen 0.0.0.0:6080 --web /usr/share/novnc >> /home/$TARGET_USER/.services/novnc.log 2>&1
+' > /home/$TARGET_USER/.services/novnc.sh && chmod u+x /home/$TARGET_USER/.services/novnc.sh"
 
-    # Criação do serviço systemd para iniciar o VNC Server e o proxy noVNC
-printf '[Unit]
+    # Create the systemd service file
+    printf '[Unit]
 Description=VNC Server and noVNC Proxy
 After=network.target
 
@@ -35,11 +48,10 @@ After=network.target
 ExecStart=/bin/bash /home/%s/.services/novnc.sh
 Restart=always
 User=%s
-Environment=DISPLAY=:1
 
 [Install]
 WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/novnc.service
 
-# Recarrega os arquivos de configuração do systemd para registrar o novo serviço e ativa a inicialização automática
-systemctl daemon-reload --quiet && systemctl enable novnc --quiet
+    # Reload and enable the systemd service
+    systemctl daemon-reload --quiet && systemctl enable novnc --quiet && systemctl start novnc --quiet
 }
