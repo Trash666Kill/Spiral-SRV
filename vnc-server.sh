@@ -55,3 +55,10 @@ WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/
     # Reload and enable the systemd service
     systemctl daemon-reload --quiet && systemctl enable novnc --quiet && systemctl start novnc --quiet
 }
+
+main() {
+    setup_vnc
+}
+
+# Execute main function
+main
