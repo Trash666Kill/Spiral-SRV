@@ -1,6 +1,8 @@
 de() {
     printf "\e[32m*\e[0m SETTING UP VNC SERVER\n"
 
+    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
+
     # Installs the packages
     apt-get install -y tigervnc-standalone-server tigervnc-common xvfb x11-apps firefox-esr openbox x11-xserver-utils
 
@@ -17,7 +19,7 @@ openbox &
 #firefox-esr &
 sleep infinity' > /home/$TARGET_USER/.vnc/xstartup && chmod +x /home/$TARGET_USER/.vnc/xstartup"
 
-    # 
+    #
     su - "$TARGET_USER" -c "printf '#!/bin/bash
 vncserver -kill :1 2>/dev/null || true
 vncserver :1 -SecurityTypes VncAuth -AcceptSetDesktopSize
