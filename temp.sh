@@ -1,166 +1,96 @@
-#!/bin/bash
+de() {
+printf "\e[32m*\e[0m SETTING UP DESKTOP ENVIRONMENT AND VNC SERVER\n"
 
-# Disable bash history
-unset HISTFILE
+TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
 
-# Execution directory
-cd /etc/spawn/CT/
+# Instala os pacotes necessários para o ambiente desktop
+apt -y install xorg dbus-x11 lightdm openbox obconf hsetroot terminator lxpanel \
+lxtask lxsession-logout lxappearance numlockx progress arc-theme ffmpegthumbnailer \
+gpicview galculator l3afpad compton pcmanfm firefox-esr engrampa \
+tigervnc-standalone-server tigervnc-common novnc > /dev/null 2>&1
 
-BASE="SpiralCT"
-BASE_CT_FILES=(
-    "basect.sh"
-    "systemd/scripts/main.sh"
-    "systemd/scripts/network.sh"
-)
-ARCH=amd64
-RELEASE=trixie
-NEW_CT="ct$(shuf -i 100000-999999 -n 1)"
-NEW_CT_FILES="later.sh"
+# Configura o LightDM com o arquivo de greeter personalizado
+rm /etc/lightdm/lightdm-gtk-greeter.conf
+printf '[greeter]
+background = #2e3436
+default-user-image = #avatar-default-symbolic
+indicators = ~host;~spacer;~spacer;~power' > /etc/lightdm/lightdm-gtk-greeter.conf
 
-basect() {
-    # Checks if the files needed to create the base container exist
-    for file in $BASE_CT_FILES; do
-        if [[ ! -f "$file" ]]; then
-            printf "\e[31m*\e[0m ERROR: FILES REQUIRED TO BUILD THE BASE CONTAINER \033[32m%s\033[0m DO NOT EXIST.\n" "$file"
-            exit 1
-        fi
-    done
+# Cria o grupo e atribui o usuário alvo necessário
+groupadd -r autologin
+gpasswd -a $TARGET_USER autologin > /dev/null 2>&1
 
-    # Verifica se o container base já existe
-    if ! lxc-ls --filter "^${BASE}$" | grep -q "${BASE}"; then
-        printf "\e[33m*\e[0m ATTENTION: THE BASE CONTAINER \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE"
+# Configura a inicialização automatica no modo gráfico
+rm /etc/lightdm/lightdm.conf
+printf '[Seat:*]
+autologin-user=%s
+autologin-guest=false
+autologin-user-timeout=0' "$TARGET_USER" > /etc/lightdm/lightdm.conf
 
-        # Cria o container base se não existir
-        lxc-create --name "${BASE}" --template download -- --dist debian --release "${RELEASE}" --arch "${ARCH}" > /dev/null
+# Instala e configura background, temas e ícones para o ambiente desktop
+tar -xvf de/01-Qogir.tar.xz -C /usr/share/icons > /dev/null 2>&1
+tar -xvf de/Arc-Dark.tar.xz -C /usr/share/themes > /dev/null 2>&1
+cp de/debian-swirl.png /usr/share/icons/default
+su - "$TARGET_USER" -c "rm -r /home/$TARGET_USER/.config" > /dev/null 2>&1
+cp -r de/config /home/$TARGET_USER/.config; chown "$TARGET_USER":"$TARGET_USER" -R /home/$TARGET_USER/.config
+cp de/gtkrc-2.0 /home/$TARGET_USER/.gtkrc-2.0; chown "$TARGET_USER":"$TARGET_USER" /home/$TARGET_USER/.gtkrc-2.0
 
-        # Copia o script de configuração para o diretório do container
-        cp basect.sh /var/lib/lxc/"${BASE}"/rootfs/root/
+# Criação do diretório de configuração do VNC para o usuário alvo
+su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.vnc"
 
-        # Verifica se a cópia foi bem-sucedida
-        if [ $? -ne 0 ]; then
-            printf "\e[31m*\e[0m ERROR: FAILED TO CREATE BASE CONTAINER \033[32m%s\033[0m.\n" "$BASE"
-            exit 1
-        fi
+# Criação do script de inicialização do VNC
+su - "$TARGET_USER" -c "printf '#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec /bin/sh /etc/X11/xinit/xinitrc' > /home/$TARGET_USER/.vnc/xstartup; chmod +x /home/$TARGET_USER/.vnc/xstartup"
 
-        # Tenta iniciar o container
-        if ! lxc-start --name "${BASE}"; then
-            printf "\e[31m*\e[0m ERROR: CONTAINER \033[32m%s\033[0m FAILED TO START.\n" "$BASE"
-            exit 1
-        fi
+# Configuração da senha para o VNC
+su - "$TARGET_USER" -c "echo -n "$PASSWORD_TARGET" | vncpasswd -f > /home/$TARGET_USER/.vnc/passwd; chmod 600 /home/$TARGET_USER/.vnc/passwd"
 
-        # Tenta conectar o container à internet
-        printf "\e[32m*\e[0m TRYING TO CONNECT TO THE INTERNET, WAIT...\n"
-        if ! lxc-attach --name "${BASE}" -- dhclient eth0; then
-            printf "\e[31m*\e[0m ERROR: CONTAINER \033[32m%s\033[0m WAS UNABLE TO CONNECT TO THE INTERNET.\n" "$BASE"
-            lxc-stop --name "${BASE}"
-            exit 1
-        fi
+# Criação do serviço systemd para iniciar o VNC Server e o proxy noVNC
+printf '[Unit]
+Description=Start VNC Server and noVNC Proxy
+After=network.target
 
-        # Realiza as operações de construção e configuração no container
-        printf "\e[32m*\e[0m BUILDING BASE, WAIT...\n"
-        lxc-attach --name "${BASE}" -- chmod +x /root/basect.sh
-        lxc-attach --name "${BASE}" -- /root/basect.sh
-        cp systemd/trigger.service /var/lib/lxc/"${BASE}"/rootfs/etc/systemd/system && cp systemd/scripts/*.sh /var/lib/lxc/"${BASE}"/rootfs/root/.services
-        lxc-attach --name "${BASE}" -- chmod 700 /root/.services/*.sh
-        lxc-attach --name "${BASE}" -- systemctl daemon-reload && lxc-attach --name "${BASE}" -- systemctl enable trigger --quiet
+[Service]
+Type=simple
+User=%s
+Group=%s
+ExecStartPre=/usr/bin/vncserver -verbose -geometry 1024x768 :1
+ExecStart=/usr/share/novnc/utils/novnc_proxy --vnc localhost:5901
+ExecStop=/usr/bin/vncserver -kill :1
+Environment=DISPLAY=:1
 
-        # Verifica se a atualização ou instalação dos pacotes falhou
-        if [ $? -ne 0 ]; then
-            printf "\e[31m*\e[0m ERROR: COULD NOT UPDATE OR INSTALL PACKAGES IN CONTAINER \033[32m%s\033[0m.\n" "$BASE"
-            lxc-stop --name "${BASE}"
-            exit 1
-        fi
+[Install]
+WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/novnc.service
 
-        # Para o container após a conclusão
-        lxc-stop --name "${BASE}"
-        sleep 5
+# Recarrega os arquivos de configuração do systemd para registrar o novo serviço e ativa a inicialização automática
+systemctl daemon-reload --quiet; systemctl enable novnc --quiet
 
-        printf "\e[32m*\e[0m CONTAINER \033[32m%s\033[0m SUCCESSFULLY CREATED AND CONFIGURED.\n" "$BASE"
-    else
-        printf "\e[32m*\e[0m BASE CONTAINER ALREADY EXISTS.\n"
-    fi
+# Define a inicialização padrão para o modo CLI
+systemctl set-default multi-user.target --quiet
 }
 
-newct() {
-# Verifica se os arquivos necessários para criar o novo container existem
-for file in $NEW_CT_FILES; do
-    if [[ ! -f "$file" ]]; then
-        printf "\e[31m*\e[0m ERROR: FILES REQUIRED TO BUILD THE NEW CONTAINER \033[32m%s\033[0m DO NOT EXIST.\n" "$file"
-        exit 1
-    fi
-done
+grub() {
+printf "\e[32m*\e[0m SETTING UP GRUB\n"
 
-# Inicia a criação do novo container a partir do container base
-printf "\e[32m*\e[0m CREATING CONTAINER FROM BASE, WAIT...\n"
-lxc-copy --name "${BASE}" --newname "${NEW_CT}"
+# Remove o arquivo de configuração atual do GRUB (se existir)
+rm -f /etc/default/grub
 
-# Verifica se a cópia do container foi bem-sucedida
+# Cria um novo arquivo de configuração do GRUB com parâmetros personalizados
+printf 'GRUB_DEFAULT=0
+GRUB_TIMEOUT=0
+GRUB_DISTRIBUTOR=`lsb_release -i -s 2> /dev/null || echo Debian`
+GRUB_CMDLINE_LINUX_DEFAULT="console=tty0 console=ttyS0,115200n8"
+GRUB_CMDLINE_LINUX=""' > /etc/default/grub; chmod 644 /etc/default/grub
+
+# Atualiza a configuração do GRUB
+update-grub
+
+# Mensagem de conclusão
 if [ $? -eq 0 ]; then
-    printf "\033[32m*\033[0m CONTAINER CREATED SUCCESSFULLY\n"
-
-    # Caminho do arquivo de configuração do container
-    local lxc_config_path="/var/lib/lxc/$NEW_CT/config"
-
-    # Verifica se o arquivo de configuração do container existe
-    if [ ! -f "$lxc_config_path" ]; then
-        printf "\e[31m*\e[0m ERROR: CONTAINER CONFIGURATION FILE \033[32m%s\033[0m NOT FOUND\n" "$NEW_CT"
-        exit 1
-    fi
-
-    # Gera um UUID e cria um endereço MAC único
-    local uuid=$(uuidgen | tr -d '-' | cut -c 1-12)
-    local MAC_ADDRESS="00:16:3e:${uuid:0:2}:${uuid:2:2}:${uuid:4:2}"
-
-    # Atualiza ou adiciona a configuração de endereço MAC no arquivo de configuração do container
-    sed -i '/lxc.net.0.hwaddr/d' "$lxc_config_path"
-    echo "lxc.net.0.hwaddr = $MAC_ADDRESS" >> "$lxc_config_path"
-
-    reserve() {
-    # Obtém o endereço IP do container a partir do DNS
-    local IP_ADDRESS=$(/etc/spawn/CT/grepip.sh)
-
-    # Monta a string de reserva de DNS
-    RESULT="$MAC_ADDRESS,$IP_ADDRESS,$NEW_CT"
-    printf "\033[32m*\033[0m IP ADDRESS FIXED.\n"
-
-    # Modifica a configuração do dnsmasq para adicionar a reserva de IP
-    kill -SIGHUP $(pidof dnsmasq)
-    echo "$RESULT" >> /etc/dnsmasq.d/config/reservations
-    kill -SIGHUP $(pidof dnsmasq)
-    }
-
-    # Pergunta ao usuário se o endereço de IP deve ser reservado
-    read -p "WANT TO RESERVE THE NEXT AVAILABLE IP [y/n]? " x
-    case "$x" in
-        y)
-            reserve  # Chama a função para coletar o próximo endereço de IP válido e fixa-o
-            ;;
-        n)
-            printf "\033[33m*\033[0m ATTENTION: A DYNAMIC IP ADDRESS WILL BE ASSIGNED TO THE CONTAINER\n"
-            ;;
-        *)
-            printf "\033[31m*\033[0m ERROR: INVALID CHOICE, TYPE \033[32m'y'\033[0m IF YOU WANT TO FIX AN IP ADDRESS IN THE CONTAINER AND \033[32m'n'\033[0m IF YOU PREFER TO LEAVE IT DYNAMIC\n"
-            ;;
-        esac
-
-    # Inicia o novo container
-    printf "\033[32m*\033[0m STARTING...\n"
-    cp later.sh /var/lib/lxc/"${NEW_CT}"/rootfs/root/
-    lxc-start --name "${NEW_CT}"
-
-    # Torna o script later.sh executável e o executa dentro do container
-    lxc-attach --name "${NEW_CT}" -- chmod +x /root/later.sh
-    lxc-attach --name "${NEW_CT}" -- /root/later.sh
+    printf "\e[32m*\e[0m GRUB CONFIGURATION UPDATED SUCCESSFULLY\n"
 else
-    printf "\e[31m*\e[0m ERROR CREATING CONTAINER \033[32m%s\033[0m.\n" "$NEW_CT"
-    exit 1
+    printf "\e[31m*\e[0m ERROR: FAILED TO UPDATE GRUB CONFIGURATION\n"
 fi
 }
-
-main() {
-    basect
-    newct
-}
-
-# Execute main function
-main
