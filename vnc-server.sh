@@ -1,64 +1,19 @@
 #!/bin/bash
+# Inicia Xvfb
+Xvfb :1 -screen 0 1920x1080x24 +extension RANDR -extension GLX -listen tcp &
+XVFB_PID=$!
+sleep 3  # Aguarda o Xvfb inicializar
 
-setup_vnc() {
-    printf "\e[32m*\e[0m SETTING UP VNC SERVER\n"
-
-    # Identify the user with UID 1001
-    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
-    if [ -z "$TARGET_USER" ]; then
-        echo "Error: No user with UID 1001 found."
-        exit 1
-    fi
-
-    # Check if the home directory exists
-    if [ ! -d "/home/$TARGET_USER" ]; then
-        echo "Error: Home directory /home/$TARGET_USER does not exist."
-        exit 1
-    fi
-
-    # Install required packages
-    apt-get install -y tigervnc-standalone-server tigervnc-common xvfb x11-apps openbox x11-xserver-utils
-
-    # Create configuration directories and files
-    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/tigervnc"
-    su - "$TARGET_USER" -c "touch /home/$TARGET_USER/.Xresources"
-
-    # Create the VNC xstartup script
-    su - "$TARGET_USER" -c "printf '#!/bin/bash
-Xvfb :1 -screen 0 1920x1080x24 +extension RANDR &
+# Define o display e carrega recursos (ignora erros se display não estiver pronto)
 export DISPLAY=:1
-xrdb \$HOME/.Xresources
-openbox &
-#firefox-esr &
-' > /home/$TARGET_USER/.vnc/xstartup && chmod +x /home/$TARGET_USER/.vnc/xstartup"
+xrdb $HOME/.Xresources 2>/dev/null || true
 
-    # Create the noVNC script
-    su - "$TARGET_USER" -c "printf '#!/bin/bash
-vncserver -kill :1 2>/dev/null || true
-vncserver :1 -SecurityTypes VncAuth -AcceptSetDesktopSize
-/usr/share/novnc/utils/novnc_proxy --vnc localhost:5901 --listen 0.0.0.0:6080 --web /usr/share/novnc >> /home/$TARGET_USER/.services/novnc.log 2>&1
-' > /home/$TARGET_USER/.services/novnc.sh && chmod u+x /home/$TARGET_USER/.services/novnc.sh"
+# Inicia o gerenciador de janelas
+openbox-session &
 
-    # Create the systemd service file
-    printf '[Unit]
-Description=VNC Server and noVNC Proxy
-After=network.target
+# Inicia o Firefox (opcional, com atraso)
+sleep 2
+firefox-esr &
 
-[Service]
-ExecStart=/bin/bash /home/%s/.services/novnc.sh
-Restart=always
-User=%s
-
-[Install]
-WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/novnc.service
-
-    # Reload and enable the systemd service
-    systemctl daemon-reload --quiet && systemctl enable novnc --quiet && systemctl start novnc --quiet
-}
-
-main() {
-    setup_vnc
-}
-
-# Execute main function
-main
+# Mantém o script ativo (opcional, mas útil para depuração)
+wait $XVFB_PID

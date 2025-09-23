@@ -30,12 +30,15 @@ setup_vnc() {
 
     # Create the VNC xstartup script
     su - "$TARGET_USER" -c "printf '#!/bin/bash
-Xvfb :1 -screen 0 1920x1080x24 +extension RANDR &
+Xvfb :1 -screen 0 1920x1080x24 +extension RANDR -extension GLX -listen tcp &
+XVFB_PID=$!
+sleep 3
 export DISPLAY=:1
-xrdb \$HOME/.Xresources
-openbox &
+xrdb $HOME/.Xresources 2>/dev/null || true
+openbox-session &
+sleep 2
 #firefox-esr &
-' > /home/$TARGET_USER/.config/tigervnc/xstartup && chmod +x /home/$TARGET_USER/.config/tigervnc/xstartup"
+wait $XVFB_PID' > /home/$TARGET_USER/.config/tigervnc/xstartup && chmod +x /home/$TARGET_USER/.config/tigervnc/xstartup"
 
     # Create the noVNC script
     su - "$TARGET_USER" -c "printf '#!/bin/bash
