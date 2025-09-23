@@ -20,7 +20,7 @@ setup_vnc() {
     apt-get install -y tigervnc-standalone-server tigervnc-common xvfb x11-apps openbox x11-xserver-utils
 
     # Create configuration directories and files
-    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.vnc /home/$TARGET_USER/.services"
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/tigervnc"
     su - "$TARGET_USER" -c "touch /home/$TARGET_USER/.Xresources"
 
     # Create the VNC xstartup script

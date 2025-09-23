@@ -20,12 +20,12 @@ setup_vnc() {
     apt-get install -y novnc tigervnc-standalone-server tigervnc-common xvfb x11-apps openbox x11-xserver-utils pwgen
 
     # Create configuration directories and files
-    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.vnc /home/$TARGET_USER/.services"
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/tigervnc"
     su - "$TARGET_USER" -c "touch /home/$TARGET_USER/.Xresources"
 
     # Generate a secure VNC password
     PASSWORD_TARGET=$(pwgen -s 18 1)
-    su - "$TARGET_USER" -c "echo -n \"$PASSWORD_TARGET\" | vncpasswd -f > /home/$TARGET_USER/.vnc/passwd && chmod 600 /home/$TARGET_USER/.vnc/passwd"
+    su - "$TARGET_USER" -c "echo -n \"$PASSWORD_TARGET\" | vncpasswd -f > /home/$TARGET_USER/.vnc/passwd && chmod 600 /home/$TARGET_USER/.config/tigervnc/passwd"
     echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32m$TARGET_USER\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
 
     # Create the VNC xstartup script
@@ -35,7 +35,7 @@ export DISPLAY=:1
 xrdb \$HOME/.Xresources
 openbox &
 #firefox-esr &
-' > /home/$TARGET_USER/.vnc/xstartup && chmod +x /home/$TARGET_USER/.vnc/xstartup"
+' > /home/$TARGET_USER/.config/tigervnc/xstartup && chmod +x /home/$TARGET_USER/.config/tigervnc/xstartup"
 
     # Create the noVNC script
     su - "$TARGET_USER" -c "printf '#!/bin/bash
