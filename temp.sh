@@ -17,11 +17,16 @@ setup_vnc() {
     fi
 
     # Install required packages
-    apt-get install -y tigervnc-standalone-server tigervnc-common xvfb x11-apps openbox x11-xserver-utils
+    apt-get install -y novnc tigervnc-standalone-server tigervnc-common xvfb x11-apps firefox-esr openbox x11-xserver-utils pwgen
 
     # Create configuration directories and files
     su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.vnc /home/$TARGET_USER/.services"
     su - "$TARGET_USER" -c "touch /home/$TARGET_USER/.Xresources"
+
+    # Generate a secure VNC password
+    PASSWORD_TARGET=$(pwgen -s 18 1)
+    su - "$TARGET_USER" -c "echo -n \"$PASSWORD_TARGET\" | vncpasswd -f > /home/$TARGET_USER/.vnc/passwd && chmod 600 /home/$TARGET_USER/.vnc/passwd"
+    echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32m$TARGET_USER\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
 
     # Create the VNC xstartup script
     su - "$TARGET_USER" -c "printf '#!/bin/bash
@@ -29,7 +34,7 @@ Xvfb :1 -screen 0 1920x1080x24 +extension RANDR &
 export DISPLAY=:1
 xrdb \$HOME/.Xresources
 openbox &
-#firefox-esr &
+firefox-esr &
 ' > /home/$TARGET_USER/.vnc/xstartup && chmod +x /home/$TARGET_USER/.vnc/xstartup"
 
     # Create the noVNC script
@@ -55,3 +60,10 @@ WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/
     # Reload and enable the systemd service
     systemctl daemon-reload --quiet && systemctl enable novnc --quiet && systemctl start novnc --quiet
 }
+
+main() {
+    setup_vnc
+}
+
+# Execute main function
+main
