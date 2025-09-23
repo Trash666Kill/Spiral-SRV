@@ -17,7 +17,7 @@ setup_vnc() {
     fi
 
     # Install required packages
-    apt-get install -y novnc tigervnc-standalone-server tigervnc-common xvfb x11-apps firefox-esr openbox x11-xserver-utils pwgen
+    apt-get install -y novnc tigervnc-standalone-server tigervnc-common xvfb x11-apps openbox x11-xserver-utils pwgen
 
     # Create configuration directories and files
     su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.vnc /home/$TARGET_USER/.services"
@@ -34,7 +34,7 @@ Xvfb :1 -screen 0 1920x1080x24 +extension RANDR &
 export DISPLAY=:1
 xrdb \$HOME/.Xresources
 openbox &
-firefox-esr &
+#firefox-esr &
 ' > /home/$TARGET_USER/.vnc/xstartup && chmod +x /home/$TARGET_USER/.vnc/xstartup"
 
     # Create the noVNC script
