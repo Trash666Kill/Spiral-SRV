@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Close on any error
+set -e
+
 redis() {
     local SERVICE=redis-server
     systemctl restart "$SERVICE"
@@ -44,3 +47,23 @@ webserver() {
         exit 1
     fi
 }
+
+# Main function to orchestrate the setup
+main() {
+    SERVICES="
+    redis
+    consumer
+    scheduler
+    task_queue
+    webserver
+    "
+
+    for SERVICE in $SERVICES
+    do
+        $SERVICE
+        sleep 4
+    done
+}
+
+# Execute main function
+main
