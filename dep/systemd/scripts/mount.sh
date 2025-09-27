@@ -3,6 +3,12 @@
 # Close on any error
 set -e
 
+swap() {
+    local DEVICE_UUID=""
+
+    swapon -U "$DEVICE_UUID"
+}
+
 mount_unit() {
     local USE_LUKS=${USE_LUKS:-}  # Enable LUKS if USE_LUKS="yes"
     local DEVICE_UUID="407c2263-1f73-4424-a56b-2e1cb87a15af"  # UUID for non-LUKS case
@@ -73,6 +79,7 @@ smb_mount_unit() {
 
 # Main function to orchestrate the setup
 main() {
+    #swap
     mount_unit
     nfs_mount_unit
     smb_mount_unit
