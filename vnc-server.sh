@@ -10,12 +10,17 @@ vnc_server() {
     apt-get install --no-install-recommends xorg openbox tigervnc-standalone-server tigervnc-common tigervnc-tools novnc
 
     # Building the environment
-    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/tigervnc"
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/{tigervnc,openbox}"
 
     su - "$TARGET_USER" -c "printf '#!/bin/sh
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
 exec /bin/sh /etc/X11/xinit/xinitrc' > /home/$TARGET_USER/.config/tigervnc/xstartup && chmod +x /home/$TARGET_USER/.config/tigervnc/xstartup"
+
+    su - "$TARGET_USER" -c "printf '#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec /bin/sh /etc/X11/xinit/xinitrc' > /home/$TARGET_USER/.config/openbox/autostart.sh && chmod +x /home/$TARGET_USER/.config/openbox/autostart.sh"
 
     printf '[Unit]
 Description=Start VNC Server and noVNC Proxy
@@ -31,7 +36,7 @@ ExecStop=/usr/bin/vncserver -kill :1
 Environment=DISPLAY=:1
 
 [Install]
-WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/novnc.service
+WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/novnc.service && systemctl daemon-reload --quiet && systemctl enable novnc --quiet
 }
 
 
