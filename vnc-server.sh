@@ -41,7 +41,7 @@ Environment=DISPLAY=:1
 WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/novnc.service && systemctl daemon-reload --quiet && systemctl enable novnc --quiet
 
     printf "\e[32m*\e[0m ENTER THE PASSWORD TO ACCESS THE REMOTE ENVIRONMENT\n"
-    vncserver :1 && vncserver -kill :1 && systemctl restart novnc --quiet
+    su - "$TARGET_USER" -c "vncserver :1" && vncserver -kill :1 && systemctl restart novnc --quiet
 }
 
 main() {
