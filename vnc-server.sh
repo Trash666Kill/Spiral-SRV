@@ -7,7 +7,7 @@ vnc_server() {
     TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
 
     # Installing requirements
-    apt-get install --no-install-recommends xorg openbox tigervnc-standalone-server tigervnc-common tigervnc-tools novnc
+    apt-get -y install --no-install-recommends xorg openbox tigervnc-standalone-server tigervnc-common tigervnc-tools novnc
 
     # Building the environment
     su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/{tigervnc,openbox}"
