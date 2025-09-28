@@ -10,26 +10,19 @@ vnc_server() {
     apt-get install --no-install-recommends xorg openbox tigervnc-standalone-server tigervnc-common tigervnc-tools novnc
 
     # Building the environment
-<<<<<<< HEAD
-    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/tigervnc"
-    
-    su - "$TARGET_USER" -c "printf '#!/bin/sh
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
-exec /bin/sh /etc/X11/xinit/xinitrc' > /home/$TARGET_USER/.config/tigervnc/xstartup && chmod +x /home/$TARGET_USER/.config/tigervnc/xstartup"
-=======
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/{tigervnc,openbox}"
 
->>>>>>> ecc77b567bbd30743d3fbb8b7f6dc420857fa6db
+    su - "$TARGET_USER" -c "printf '# Programs that will run after Openbox has started
+# Always on
+xset -dpms &
+xset s off &
+# Application
+# firefox-esr & *Example' > /home/$TARGET_USER/.config/openbox/autostart && chmod +x /home/$TARGET_USER/.config/openbox/autostart"
 
     su - "$TARGET_USER" -c "printf '#!/bin/sh
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
 exec /bin/sh /etc/X11/xinit/xinitrc' > /home/$TARGET_USER/.config/tigervnc/xstartup && chmod +x /home/$TARGET_USER/.config/tigervnc/xstartup"
-
-    su - "$TARGET_USER" -c "printf '#!/bin/sh
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
-exec /bin/sh /etc/X11/xinit/xinitrc' > /home/$TARGET_USER/.config/openbox/autostart.sh && chmod +x /home/$TARGET_USER/.config/openbox/autostart.sh"
 
     printf '[Unit]
 Description=Start VNC Server and noVNC Proxy
@@ -46,9 +39,14 @@ Environment=DISPLAY=:1
 
 [Install]
 WantedBy=multi-user.target' "$TARGET_USER" "$TARGET_USER" > /etc/systemd/system/novnc.service && systemctl daemon-reload --quiet && systemctl enable novnc --quiet
+
+    printf "\e[32m*\e[0m ENTER THE PASSWORD TO ACCESS THE REMOTE ENVIRONMENT\n"
+    vncserver :1 && vncserver -kill :1 && systemctl restart novnc --quiet
 }
 
+main() {
+    vnc_server
+}
 
-
-
-
+# Execute main function
+main
