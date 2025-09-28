@@ -10,7 +10,16 @@ vnc_server() {
     apt-get install --no-install-recommends xorg openbox tigervnc-standalone-server tigervnc-common tigervnc-tools novnc
 
     # Building the environment
-    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/{tigervnc,openbox}"
+<<<<<<< HEAD
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/.config/tigervnc"
+    
+    su - "$TARGET_USER" -c "printf '#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec /bin/sh /etc/X11/xinit/xinitrc' > /home/$TARGET_USER/.config/tigervnc/xstartup && chmod +x /home/$TARGET_USER/.config/tigervnc/xstartup"
+=======
+
+>>>>>>> ecc77b567bbd30743d3fbb8b7f6dc420857fa6db
 
     su - "$TARGET_USER" -c "printf '#!/bin/sh
 unset SESSION_MANAGER
