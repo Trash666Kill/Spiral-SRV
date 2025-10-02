@@ -473,7 +473,16 @@ hypervisor() {
         apt-get -y install lxc > /dev/null 2>&1
 
         # Allow custom storage path
-        sed -i '/^\s*}$/i \ \ /mnt\/Local\/Container\/A\/lxc\/** rw,\n\ \ mount options=(rw, move) -> /mnt\/Local\/Container\/A\/lxc\/**,' /etc/apparmor.d/usr.bin.lxc-copy
+        tee /etc/apparmor.d/usr.bin.lxc-copy <<'EOF'
+abi <abi/4.0>,
+#include <tunables/global>
+
+/usr/bin/lxc-copy flags=(attach_disconnected) {
+  #include <abstractions/lxc/start-container>
+  /mnt/Local/Container/A/lxc/** rw,
+  mount options=(rw, move) -> /mnt/Local/Container/A/lxc/**,
+}
+EOF
         apparmor_parser -r /etc/apparmor.d/usr.bin.lxc-copy
 
         # Disable and stop lxc and lxc-net services
