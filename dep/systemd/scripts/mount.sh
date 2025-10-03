@@ -4,73 +4,55 @@
 set -e
 
 swap() {
-    local SWAP_UUID="$1"
-    local VERBOSE_MODE="$2"
-    local IS_VERBOSE=false
+    readonly DEVICE_SWAP_UUID=""
 
-    if [[ "$VERBOSE_MODE" == "verbose" ]]; then
-        IS_VERBOSE=true
+    readonly THRESHOLD_MB=512
+    readonly CALCULATION_BASE_MB=512
+
+    echo "INFO: Validating script configuration..."
+    if [[ -z "$DEVICE_SWAP_UUID" ]]; then
+        echo "ERROR: The DEVICE_SWAP_UUID variable is not set in the script." >&2
+        echo "Please edit the script and provide a valid UUID in the CONFIGURATION section." >&2
+        exit 1
     fi
+    echo "INFO: Configuration is valid. Proceeding with execution."
 
-    # Internal logging function
-    _log() {
-        if [[ "$IS_VERBOSE" == true ]]; then
-            echo "INFO: $1"
-        fi
-    }
-
-    # --- Constants for the logic ---
-    local THRESHOLD_MB=512
-    local CALCULATION_BASE_MB=512
-
-    # --- Execution ---
-    _log "Validating configuration..."
-    if [[ -z "$SWAP_UUID" ]]; then
-        echo "ERROR: No swap UUID was provided to the function." >&2
-        return 1
-    fi
-    _log "Configuration is valid. Proceeding."
-
-    local TOTAL_MEM_KB
-    local TOTAL_MEM_MB
     TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     TOTAL_MEM_MB=$((TOTAL_MEM_KB / 1024))
-    _log "Detected Total System RAM: ${TOTAL_MEM_MB} MB"
+
+    echo "INFO: Detected Total System RAM: ${TOTAL_MEM_MB} MB"
 
     if (( TOTAL_MEM_MB > THRESHOLD_MB )); then
-        _log "System has more than ${THRESHOLD_MB} MB of RAM. Calculating swappiness."
-        local CALCULATED_SWAPPINESS
+        echo "INFO: System has more than ${THRESHOLD_MB} MB of RAM. Calculating dynamic swappiness value."
         CALCULATED_SWAPPINESS=$(awk -v base="${CALCULATION_BASE_MB}" -v total="${TOTAL_MEM_MB}" 'BEGIN {printf "%.0f", (base / total) * 100}')
 
-        _log "Calculated swappiness value: ${CALCULATED_SWAPPINESS}"
-        sysctl vm.swappiness=${CALCULATED_SWAPPINESS} >/dev/null
+        echo "INFO: Calculated swappiness value: ${CALCULATED_SWAPPINESS}"
+        sysctl vm.swappiness=${CALCULATED_SWAPPINESS}
 
         if [[ $? -ne 0 ]]; then
             echo "ERROR: Failed to set vm.swappiness." >&2
-            return 1
+        else
+            CURRENT_SWAPPINESS=$(sysctl -n vm.swappiness)
+            echo "SUCCESS: vm.swappiness is now set to ${CURRENT_SWAPPINESS}."
         fi
-        _log "Successfully set vm.swappiness to $(sysctl -n vm.swappiness)."
     else
-        _log "System has ${THRESHOLD_MB} MB of RAM or less. Skipping swappiness configuration."
+        echo "INFO: System has ${THRESHOLD_MB} MB of RAM or less."
+        echo "INFO: Skipping swappiness configuration to rely on system defaults."
     fi
 
-    echo # Blank line for readability in verbose mode
+    echo
 
-    _log "Activating swap device with specified UUID: ${SWAP_UUID}"
-    swapon -U "${SWAP_UUID}"
+    echo "INFO: Activating swap device with specified UUID: ${DEVICE_SWAP_UUID}"
+    swapon -U "${DEVICE_SWAP_UUID}"
 
-    if [[ $? -ne 0 ]]; then
-        echo "ERROR: Swap activation failed. Please verify the UUID is correct: ${SWAP_UUID}" >&2
-        return 1
-    fi
-    _log "Swap activation command finished successfully."
-
-    if [[ "$IS_VERBOSE" == true ]]; then
-        echo "INFO: Current swap status:"
-        swapon --show
+    if [[ $? -eq 0 ]]; then
+        echo "SUCCESS: Swap activation command finished."
+    else
+        echo "ERROR: The swap activation command failed. Please verify the UUID is correct." >&2
     fi
 
-    return 0
+    echo "INFO: Current swap status:"
+    swapon --show
 }
 
 mount_unit() {
