@@ -3,7 +3,7 @@
 # Close on any error (Optional)
 #set -e
 
-#NIC0=enp1s0
+#NIC0=br_vlan710
 
 vm859224() {
     3390() {
