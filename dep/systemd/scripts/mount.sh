@@ -6,8 +6,8 @@ set -e
 swap() {
     readonly DEVICE_SWAP_UUID=""
 
-    readonly THRESHOLD_MB=512
     readonly CALCULATION_BASE_MB=512
+    readonly THRESHOLD_MB=512
 
     echo "INFO: Validating script configuration..."
     if [[ -z "$DEVICE_SWAP_UUID" ]]; then
