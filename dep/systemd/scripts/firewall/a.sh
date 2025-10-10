@@ -64,7 +64,6 @@ main() {
     main_table
     chains
     established_related
-    setup_logging
     "
 
     for RULE in $RULES
