@@ -1,0 +1,1 @@
+HTYPE=$(hostnamectl chassis)
