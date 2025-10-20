@@ -4,8 +4,7 @@ cloud_kernel() {
     # Checks if hardware type is 'vm'
     HTYPE=$(hostnamectl chassis)
     if [ "$HTYPE" != "vm" ]; then
-        echo "AVISO: Este não é um ambiente 'vm' (hostnamectl chassis = $HTYPE)."
-        echo "O script não será executado. Abortando."
+        printf "\e[31m* ERROR:\e[0m THIS IS NOT A VIRTUAL ENVIRONMENT.\n"
         exit 1
     fi
 
