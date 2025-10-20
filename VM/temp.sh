@@ -246,17 +246,17 @@ packages() {
 }
 
 directories() {
-printf "\e[32m*\e[0m CREATING DIRECTORIES\n"
+    printf "\e[32m*\e[0m CREATING DIRECTORIES\n"
 
-# Cria diretórios para serviços e dados temporários
-mkdir -p /mnt/{Temp,Services}; chown "$TARGET_USER":"$TARGET_USER" -R /mnt/*
-mkdir -p /root/{Temp,.services/scheduled,.crypt}; chmod 600 /root/.crypt
+    # Create directories for temporary services and data
+    mkdir -p /mnt/{Temp,Services} && chown "$TARGET_USER":"$TARGET_USER" -R /mnt/*
+    mkdir -p /root/{Temp,.services/scheduled,.crypt} && chmod 600 /root/.crypt
 
-# Cria diretório para logs do rsync e ajusta as permissões
-mkdir /var/log/rsync; chown "$TARGET_USER":"$TARGET_USER" -R /var/log/rsync
+    # Create directory for rsync logs and adjust permissions
+    mkdir /var/log/rsync && chown "$TARGET_USER":"$TARGET_USER" -R /var/log/rsync
 
-# Cria diretórios específicos para o usuário alvo
-su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Temp,.services/scheduled,.crypt}"
+    # Creates specific directories for the target user
+    su - "$TARGET_USER" -c "mkdir -p /home/$TARGET_USER/{Temp,.services/scheduled,.crypt}"
 }
 
 trigger() {
