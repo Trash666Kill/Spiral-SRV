@@ -1,59 +1,113 @@
 #!/bin/bash
-#SCRIPT FOR CREATING THE BASE VIRTUAL MACHINE
 
-# Desativa histórico bash
+# Disable bash history
 unset HISTFILE
 
-# Diretório de execução
+# Execution directory
 cd $PWD/dep
 
-repositore() {
-printf "\e[32m*\e[0m UPDATING EXISTING REPOSITORY AND PACKAGES\n"
+update() {
+    printf "\e[32m*\e[0m UPDATING EXISTING REPOSITORY AND PACKAGES\n"
 
-# Remove os repositórios padrão
-rm /etc/apt/sources.list
+    # Updates the list of available packages
+    apt-get -y update > /dev/null 2>&1
 
-# Adiciona os novos respositórios non-free
-printf '#
-deb http://deb.debian.org/debian/ bookworm main non-free non-free-firmware
-deb-src http://deb.debian.org/debian/ bookworm main non-free non-free-firmware
-#
-deb http://security.debian.org/debian-security bookworm-security main non-free non-free-firmware
-deb-src http://security.debian.org/debian-security bookworm-security main non-free non-free-firmware
-#
-deb http://deb.debian.org/debian/ bookworm-updates main non-free non-free-firmware
-deb-src http://deb.debian.org/debian/ bookworm-updates main non-free non-free-firmware
-#
-#deb http://deb.debian.org/debian bookworm-backports main non-free
-#' > /etc/apt/sources.list
-
-# Atualiza a lista de pacotes disponíveis
-apt -y update > /dev/null 2>&1
-
-# Realiza a atualização dos pacotes instalados
-apt -y upgrade > /dev/null 2>&1
+    # Performs the update of installed packages
+    apt-get -y upgrade > /dev/null 2>&1
 }
 
-global() {
-TIMEZONE="America/Sao_Paulo" # Autoexplicativo
+interface() {
+    # Installing required packages
+    apt-get -y install bc > /dev/null 2>&1
+    printf "\e[32m*\e[0m CHOOSING THE BEST AVAILABLE INTERFACE, WAIT...\n"
+
+    # Target IP for ping
+    TARGET_IP="8.8.8.8"
+
+    # Variables to store the interface with the lowest latency, its altname, IP, netmask, and gateway
+    BEST_INTERFACE=""
+    BEST_LATENCY=9999.0
+    BEST_ALTNAME=""
+    BEST_IP=""
+    BEST_NETMASK=""
+    BEST_GATEWAY=""
+    DEST_SCRIPT_PATH="/root/.services/network.sh"
+
+    # Iterate over active interfaces (status UP) starting with eth, en, or enp
+    for IFACE in $(ip -o link show | awk -F': ' '/state UP/ && ($2 ~ /^(eth|en|enp)/) {sub(/@.*/, "", $2); print $2}'); do
+        # Test ping on the interface with 3 packets, capture average latency
+        LATENCY=$(ping -I "$IFACE" -4 -c 3 "$TARGET_IP" 2>/dev/null | awk -F'/' 'END {print $5}') || continue
+
+        # Compare current latency with the best found so far
+        if [[ -n "$LATENCY" && $(echo "$LATENCY < $BEST_LATENCY" | bc -l) -eq 1 ]]; then
+            BEST_LATENCY="$LATENCY"
+            BEST_INTERFACE="$IFACE"
+            # Extract the first altname of the interface
+            BEST_ALTNAME=$(ip addr show "$IFACE" | awk '/altname/ {print $2; exit}')
+            # Extract the IP address and netmask (CIDR) of the interface
+            IP_INFO=$(ip -4 addr show "$IFACE" | grep 'inet' | awk '{print $2}' | head -n1)
+            BEST_IP=$(echo "$IP_INFO" | cut -d'/' -f1)
+            BEST_NETMASK=$(echo "$IP_INFO" | cut -d'/' -f2)
+            # Extract the gateway for the interface
+            BEST_GATEWAY=$(ip route show dev "$IFACE" | awk '/default/ {print $3}')
+        fi
+    done
+
+    # Check if a valid interface was found
+    if [[ -z "$BEST_INTERFACE" ]]; then
+        printf "\033[31m*\033[0m ERROR: NO VALID INTERFACE FOUND TO WRITE TO /etc/environment\n"
+        exit 1
+    fi
+
+    # Convert CIDR to decimal netmask for /etc/environment
+    case "$BEST_NETMASK" in
+        8) DECIMAL_NETMASK="255.0.0.0" ;;
+        16) DECIMAL_NETMASK="255.255.0.0" ;;
+        24) DECIMAL_NETMASK="255.255.255.0" ;;
+        32) DECIMAL_NETMASK="255.255.255.255" ;;
+        *) printf "\033[31m*\033[0m ERROR: UNSUPPORTED NETMASK \033[32m/%s\033[0m\n" "$BEST_NETMASK"; exit 1 ;;
+    esac
+
+    # Assign to global variable
+    NIC0="$BEST_INTERFACE"
+    printf "\e[32m*\e[0m CHOSEN INTERFACE: \033[32m%s\033[0m, LATENCY OF \033[32m%s ms\033[0m FOR \033[32m%s\033[0m\n" "$NIC0" "$BEST_LATENCY" "$TARGET_IP"
+
+    # Write NIC0, NIC0_ALT, IPV4, GW, and MASK to /etc/environment
+    if [[ -n "$BEST_ALTNAME" && -n "$BEST_INTERFACE" && -n "$BEST_IP" && -n "$BEST_GATEWAY" && -n "$DECIMAL_NETMASK" ]]; then
+        printf "\e[32m*\e[0m WRITING ALTNAME \033[32m%s\033[0m, INTERFACE \033[32m%s\033[0m, IP \033[32m%s\033[0m, GATEWAY \033[32m%s\033[0m, AND NETMASK \033[32m%s\033[0m TO /etc/environment\n" "$BEST_ALTNAME" "$NIC0" "$BEST_IP" "$BEST_GATEWAY" "$DECIMAL_NETMASK"
+        touch /etc/environment
+        sed -i '/^NIC0=/d' /etc/environment
+        sed -i '/^NIC0_ALT=/d' /etc/environment
+        sed -i '/^IPV4=/d' /etc/environment
+        sed -i '/^GW=/d' /etc/environment
+        sed -i '/^MASK=/d' /etc/environment
+        echo "NIC0=$NIC0" >> /etc/environment
+        echo "NIC0_ALT=$BEST_ALTNAME" >> /etc/environment
+        echo "IPV4=$BEST_IP" >> /etc/environment
+        echo "GW=$BEST_GATEWAY" >> /etc/environment
+        echo "MASK=$DECIMAL_NETMASK" >> /etc/environment
+    else
+        printf "\033[31m*\033[0m ERROR: NO VALID INTERFACE, ALTNAME, IP, GATEWAY, OR NETMASK FOUND TO WRITE TO /etc/environment\n"
+        exit 1
+    fi
 }
 
 hostname() {
-# Instala os pacotes necessários
-apt -y install uuid uuid-runtime > /dev/null 2>&1
+    # Install the required packages
+    apt-get -y install uuid uuid-runtime > /dev/null 2>&1
 
-# Gera um novo nome de host
-HOSTNAME="vm$(shuf -i 100000-999999 -n 1)"
+    # Generates a new hostname based on the chassis type and a random value
+    HOSTNAME="srv$(shuf -i 100000-999999 -n 1)"
 
-printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
+    printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
 
-# Remove o arquivo /etc/hostname e escreve o novo nome de host nele
-rm /etc/hostname
-printf "$HOSTNAME" > /etc/hostname
+    # Remove the /etc/hostname file and write the new hostname
+    rm /etc/hostname
+    printf "$HOSTNAME" > /etc/hostname
 
-# Remove o arquivo /etc/hosts e escreve as novas entradas de hosts
-rm /etc/hosts
-printf "127.0.0.1       localhost
+    # Remove the /etc/hosts file and writes the new hosts entries
+    rm /etc/hosts
+    printf "127.0.0.1       localhost
 127.0.1.1       "$HOSTNAME"
 
 ::1     localhost ip6-localhost ip6-loopback
@@ -62,90 +116,133 @@ ff02::2 ip6-allrouters" > /etc/hosts
 }
 
 target_user() {
-# Instala o pacote sudo
-apt -y install sudo > /dev/null 2>&1
+    # Install the sudo package
+    apt-get -y install sudo > /dev/null 2>&1
 
-# Modifica o arquivo /etc/profile para desabilitar o histórico de comandos
-sed -i '$ a unset HISTFILE\nexport HISTSIZE=0\nexport HISTFILESIZE=0\nexport HISTCONTROL=ignoreboth' /etc/profile
+    # Modify /etc/profile to disable command history
+    sed -i '$ a unset HISTFILE\nexport HISTSIZE=0\nexport HISTFILESIZE=0\nexport HISTCONTROL=ignoreboth' /etc/profile
 
-printf "\e[32m*\e[0m CREATING USER \e[32mSysOp\e[0m\n"
+    printf "\e[32m*\e[0m CREATING USER \e[32mSysOp\e[0m\n"
 
-# Cria o grupo sysop com GID 1001
-groupadd -g 1001 sysop
+    # Create the sysop group with GID 1001
+    groupadd -g 1001 sysop
 
-# Cria o usuário sysop com UID 1001, grupo sysop e shell bash
-useradd -m -u 1001 -g 1001 -c "SysOp" -s /bin/bash sysop
+    # Create the sysop user with UID 1001, sysop group, and bash shell
+    useradd -m -u 1001 -g 1001 -c "SysOp" -s /bin/bash sysop
 
-# Obtém o nome do usuário criado
-TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
+    # Get the name of the created user
+    TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
 
-# Adiciona o usuário ao grupo sudo
-/sbin/usermod -aG sudo "$TARGET_USER"
+    # Add the user to the sudo group
+    /sbin/usermod -aG sudo "$TARGET_USER"
 }
 
 passwords() {
-# Instala o pacote necessário para criação das senhas
-apt -y install pwgen > /dev/null 2>&1
-# Gera duas senhas seguras com caracteres especiais e 12 caracteres
-PASSWORD_ROOT=$(pwgen -s 18 1)
-PASSWORD_TARGET=$(pwgen -s 18 1)
+    # Install the package required for password generation
+    apt-get -y install pwgen > /dev/null 2>&1
 
-# Verifica se o usuário TARGET_USER existe no sistema
-if ! id "$TARGET_USER" &>/dev/null; then
-    printf "\e[31m* ERROR:\e[0m USER '$TARGET_USER' DOES NOT EXIST. TERMINATING SCRIPT.\n"
-    exit 1
-fi
+    # Generate two secure passwords with special characters and 18 characters
+    PASSWORD_ROOT=$(pwgen -s 18 1)
+    PASSWORD_TARGET=$(pwgen -s 18 1)
 
-# Altera a senha do usuário root
-echo "root:$PASSWORD_ROOT" | chpasswd
-if [ $? -ne 0 ]; then
-    printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE ROOT PASSWORD.\n"
-    exit 1
-fi
+    # Check if the TARGET_USER exists in the system
+    if ! id "$TARGET_USER" &>/dev/null; then
+        printf "\e[31m* ERROR:\e[0m USER '$TARGET_USER' DOES NOT EXIST. TERMINATING SCRIPT.\n"
+        exit 1
+    fi
 
-# Altera a senha do usuário TARGET_USER
-echo "$TARGET_USER:$PASSWORD_TARGET" | chpasswd
-if [ $? -ne 0 ]; then
-    printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE PASSWORD FOR USER '$TARGET_USER'.\n"
-    exit 1
-fi
+    # Change the root user's password
+    echo "root:$PASSWORD_ROOT" | chpasswd
+    if [ $? -ne 0 ]; then
+        printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE ROOT PASSWORD.\n"
+        exit 1
+    fi
 
-echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mSysOp\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
-echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mRoot\033[0m USER: \033[32m\"$PASSWORD_ROOT\"\033[0m"
+    # Change the TARGET_USER's password
+    echo "$TARGET_USER:$PASSWORD_TARGET" | chpasswd
+    if [ $? -ne 0 ]; then
+        printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE PASSWORD FOR USER '$TARGET_USER'.\n"
+        exit 1
+    fi
+
+    echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mSysOp\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
+    echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mRoot\033[0m USER: \033[32m\"$PASSWORD_ROOT\"\033[0m"
 }
 
 packages() {
-printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORIES: TEXT EDITOR\n"
-EDITOR="vim"
-apt -y install $EDITOR > /dev/null 2>&1
+    text_editor() {
+        # Install text editor package
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: TEXT EDITOR\n"
+        EDITOR="vim"
+        apt-get -y install $EDITOR > /dev/null 2>&1
+    }
 
-printf "\e[32m*\e[0m NETWORK TOOLS\n"
-NETWORK="nfs-common tcpdump traceroute iperf ethtool geoip-bin socat speedtest-cli"
-apt -y install $NETWORK > /dev/null 2>&1
+    network_tools() {
+        # Install network tools packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: NETWORK TOOLS\n"
+        NETWORK="nfs-common tcpdump traceroute iperf ethtool geoip-bin socat speedtest-cli bridge-utils"
+        apt-get -y install $NETWORK > /dev/null 2>&1
+    }
 
-printf "\e[32m*\e[0m COMPRESSION AND ARCHIVING\n"
-COMPRESSION="unzip xz-utils bzip2 pigz"
-apt -y install $COMPRESSION > /dev/null 2>&1
+    security() {
+        # Install security tools
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SECURITY TOOLS\n"
+        SECURITY="apparmor-utils"
+        apt-get -y install $SECURITY > /dev/null 2>&1
+    }
 
-printf "\e[32m*\e[0m SCRIPTING AND AUTOMATION SUPPORT\n"
-SCRIPTING="sshpass python3-apt"
-apt -y install $SCRIPTING > /dev/null 2>&1
+    compression() {
+        # Install compression and archiving packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: COMPRESSION AND ARCHIVING\n"
+        COMPRESSION="unzip xz-utils bzip2 pigz"
+        apt-get -y install $COMPRESSION > /dev/null 2>&1
+    }
 
-printf "\e[32m*\e[0m SYSTEM MONITORING AND DIAGNOSTICS\n"
-MONITORING="screen htop nload"
-apt -y install $MONITORING > /dev/null 2>&1
+    scripting() {
+        # Install scripting and automation support packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SCRIPTING AND AUTOMATION SUPPORT\n"
+        SCRIPTING="sshpass python3-apt-get"
+        apt-get -y install $SCRIPTING > /dev/null 2>&1
+    }
 
-printf "\e[32m*\e[0m DISK AND FILE SYSTEM UTILITIES\n"
-FS_UTILS="cryptsetup uuid rsync"
-apt -y install $FS_UTILS > /dev/null 2>&1
+    monitoring() {
+        # Install system monitoring and diagnostics packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: SYSTEM MONITORING AND DIAGNOSTICS\n"
+        MONITORING="screen htop nload"
+        apt-get -y install $MONITORING > /dev/null 2>&1
+    }
 
-printf "\e[32m*\e[0m CONNECTIVITY UTILITIES\n"
-CONNECTIVITY="curl wget net-tools"
-apt -y install $CONNECTIVITY > /dev/null 2>&1
+    fs_utils() {
+        # Install disk and file system utilities packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: DISK AND FILE SYSTEM UTILITIES\n"
+        FS_UTILS="cryptsetup uuid rsync"
+        apt-get -y install $FS_UTILS > /dev/null 2>&1
+    }
 
-printf "\e[32m*\e[0m ADDITIONAL UTILITIES\n"
-EXTRA_UTILS="x11-xkb-utils tree"
-apt -y install $EXTRA_UTILS > /dev/null 2>&1
+    connectivity() {
+        # Install connectivity utilities packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: CONNECTIVITY UTILITIES\n"
+        CONNECTIVITY="curl wget net-tools"
+        apt-get -y install $CONNECTIVITY > /dev/null 2>&1
+    }
+
+    extra_utils() {
+        # Install additional utilities packages
+        printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: ADDITIONAL UTILITIES\n"
+        EXTRA_UTILS="tree"
+        apt-get -y install $EXTRA_UTILS > /dev/null 2>&1
+    }
+
+    # Call
+    text_editor
+    network_tools
+    security
+    compression
+    scripting
+    monitoring
+    fs_utils
+    connectivity
+    extra_utils
 }
 
 directories() {
