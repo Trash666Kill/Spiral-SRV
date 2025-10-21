@@ -156,7 +156,7 @@ hostname() {
     apt-get -y install uuid uuid-runtime > /dev/null 2>&1
 
     # Generates a new hostname based on the chassis type and a random value
-    HOSTNAME="srv$(shuf -i 100000-999999 -n 1)"
+    HOSTNAME="vm$(shuf -i 100000-999999 -n 1)"
 
     printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
 
