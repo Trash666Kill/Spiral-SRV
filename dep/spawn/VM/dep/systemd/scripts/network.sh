@@ -6,7 +6,6 @@ set -e
 # Physical interfaces
 interfaces() {
     nic0() {
-        dhcpcd --release "$NIC0_ALT"
         dhcpcd --rebind "$NIC0_ALT"
     }
 
