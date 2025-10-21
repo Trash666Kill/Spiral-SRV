@@ -417,11 +417,11 @@ GRUB_CMDLINE_LINUX=""' > /etc/default/grub && chmod 644 /etc/default/grub
 later() {
 printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART\n"
 
-# Obtém o nome do usuário com UID 1000, geralmente o primeiro usuário criado
-TARGET_USER=$(grep 1000 /etc/passwd | cut -f 1 -d ":")
+    # Grep for UID 1000 (temp ~ user)
+    TARGET_USER=$(grep 1000 /etc/passwd | cut -f 1 -d ":")
 
-# Cria o script de inicialização que será executado após o reinício
-printf '#!/bin/bash
+    # Creates the startup script that will be executed after reboot
+    printf '#!/bin/bash
 ### BEGIN INIT INFO
 # Provides:          later
 # Required-Start:    $all
@@ -438,40 +438,44 @@ pkill -u %s
 userdel -r %s
 
 # Remove a pasta VM do diretório /root
-rm -rf /root/VM
+rm -rf /root/build.sh
 
 # Remove o script init.d depois que ele for executado
-rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later; chmod +x /etc/init.d/later
+rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later && chmod +x /etc/init.d/later
 
-# Adiciona o script aos serviços que serão iniciados no boot
-update-rc.d later defaults
+    # Add the script to the services that will start at boot
+    update-rc.d later defaults
 }
 
 finish() {
-# Remove pacotes não utilizados e dependências não necessárias
-apt -y autoremove > /dev/null 2>&1
+    # Remove unused packages and unnecessary dependencies
+    apt-get -y autoremove > /dev/null 2>&1
 
-# Remove arquivo de configuração de rede padrão para evitar conflitos
-rm /etc/network/interfaces
+    # Remove default network configuration file to avoid conflicts, with warning if not found
+    if [[ ! -f /etc/network/interfaces ]]; then
+        printf "\e[33m* WARNING: /etc/network/interfaces does not exist, skipping removal\e[0m\n"
+    else
+        rm -f /etc/network/interfaces
+    fi
 
-printf "\e[32m*\e[0m INSTALLATION COMPLETED SUCCESSFULLY!\n"
+    printf "\e[32m*\e[0m INSTALLATION COMPLETED SUCCESSFULLY!\n"
 
-read -p "DO YOU WANT TO RESTART? (Y/N): " response
+    read -p "DO YOU WANT TO RESTART? (Y/N): " response
     response=${response^^}
-if [[ "$response" == "Y" ]]; then
-    printf "\e[32m*\e[0m RESTARTING...\n"
-    systemctl reboot
-elif [[ "$response" == "N" ]]; then
-    printf "\e[32m*\e[0m WILL NOT BE RESTARTED.\n"
-else
-    printf "\e[31m*\e[0m ERROR: PLEASE ANSWER WITH 'Y' FOR YES OR 'N' FOR NO.\n"
-fi
+    if [[ "$response" == "Y" ]]; then
+        printf "\e[32m*\e[0m RESTARTING...\n"
+        systemctl reboot
+    elif [[ "$response" == "N" ]]; then
+        printf "\e[32m*\e[0m WILL NOT BE RESTARTED.\n"
+    else
+        printf "\e[31m*\e[0m ERROR: PLEASE ANSWER WITH 'Y' FOR YES OR 'N' FOR NO.\n"
+    fi
 }
 
 # Main function to orchestrate the setup
 main() {
-    repositore
-    global
+    update
+    interface
     hostname
     target_user
     passwords
@@ -481,7 +485,6 @@ main() {
     firewall
     mount
     ssh
-    de
     grub
     network
     later
