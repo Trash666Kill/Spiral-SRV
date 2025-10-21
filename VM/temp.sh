@@ -275,9 +275,18 @@ network() {
     # Adding Network Configuration File
     cp systemd/scripts/network.sh /root/.services && chmod 700 /root/.services/network.sh
 
+    # Disabling services (with full error suppression)
+    systemctl disable networking --quiet 2>/dev/null || true
+    systemctl disable ModemManager --quiet 2>/dev/null || true
+    systemctl disable wpa_supplicant --quiet 2>/dev/null || true
+    systemctl disable NetworkManager-wait-online --quiet 2>/dev/null || true
+    systemctl disable NetworkManager.service --quiet 2>/dev/null || true
+
     ntp() {
+        TIMEZONE="America/Sao_Paulo"
+
         # Install and configure the 'systemd-timesyncd' time synchronization service
-        apt -y install systemd-timesyncd > /dev/null 2>&1
+        apt-get -y install systemd-timesyncd > /dev/null 2>&1
 
         # Disables and stops the systemd-timesyncd service
         systemctl disable --now systemd-timesyncd --quiet
@@ -297,7 +306,7 @@ network() {
 
     dns() {
         # Install and configure the 'systemd-resolved' time synchronization service
-        apt -y install systemd-resolved > /dev/null 2>&1
+        apt-get -y install systemd-resolved > /dev/null 2>&1
 
         # Disables and stops the systemd-resolved service
         systemctl disable --now systemd-resolved --quiet
@@ -311,14 +320,13 @@ network() {
 firewall() {
     printf "\e[32m*\e[0m SETTING UP FIREWALL\n"
 
-    # Adding Firewall Configuration File
-    cp systemd/scripts/firewall.sh /root/.services && chmod 700 /root/.services/firewall.sh
+    # Install required dependencies
+    apt-get -y install nftables rsyslog > /dev/null 2>&1
 
-    # Install nftables
-    apt -y install nftables > /dev/null 2>&1
-
-    # Disables the nftables service and stops it
+    # Configure firewall services and scripts
     systemctl disable --now nftables --quiet
+    cp -r systemd/scripts/firewall /root/.services/
+    chmod 700 /root/.services/firewall/*.sh && chattr +i /root/.services/firewall/{a.sh,b.sh}
 }
 
 mount() {
