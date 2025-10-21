@@ -6,8 +6,8 @@ set -e
 # Physical interfaces
 interfaces() {
     nic0() {
-        dhclient -r "$NIC0_ALT"
-        dhclient -v "$NIC0_ALT"
+        dhcpcd --release "$NIC0_ALT"
+        dhcpcd --rebind "$NIC0_ALT"
     }
 
     nic1() {
