@@ -547,7 +547,7 @@ spawn() {
     printf "\e[32m*\e[0m CONFIGURING SPAWN SERVICE\n"
 
     # Copy the necessary files to the service directory
-    cp -r spawn /etc/ && chmod 700 /etc/spawn/CT/*.sh
+    cp -r spawn /etc/ && chmod 700 -R /etc/spawn/*.sh
     ln -s /etc/spawn/CT/spawn.sh /home/"$TARGET_USER"/.spawn
     ln -s /etc/spawn/CT/spawn.sh /root/.spawn && chown sysop:sysop /root/.spawn
 }
