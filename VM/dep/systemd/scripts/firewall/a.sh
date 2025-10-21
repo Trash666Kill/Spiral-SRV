@@ -38,7 +38,6 @@ main_table() {
 # Create chains with default accept policy
 chains() {
     echo "Creating chains..."
-    nft add chain inet firelux input { type filter hook input priority filter \; policy accept \; }
     nft add chain inet firelux forward { type filter hook forward priority filter \; policy drop \; }
     nft add chain inet firelux prerouting { type nat hook prerouting priority 0 \; policy accept \; }
     nft add chain inet firelux postrouting { type nat hook postrouting priority srcnat \; policy accept \; }
