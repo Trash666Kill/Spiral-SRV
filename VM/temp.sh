@@ -340,36 +340,13 @@ ssh() {
     printf "\e[32m*\e[0m SETTING UP SSH\n"
 
     # Install the required packages
-    apt-get -y install openssh-server > /dev/null 2>&1
+    apt-get -y install openssh-server sshfs autossh > /dev/null 2>&1
 
     # Remove existing SSH configuration
     rm /etc/ssh/sshd_config
 
-    # Creates a new configuration file for SSH with the desired settings
-    printf 'Include /etc/ssh/sshd_config.d/*.conf
-
-#ListenAddress 10.0.10.0
-Port 22
-AllowTcpForwarding no
-GatewayPorts no
-
-PubkeyAuthentication yes
-PermitRootLogin prohibit-password
-
-ChallengeResponseAuthentication no
-
-UsePAM yes
-
-X11Forwarding no
-PrintMotd no
-PrintLastLog no
-
-AcceptEnv LANG LC_*
-
-Subsystem       sftp    /usr/lib/openssh/sftp-server' > /etc/ssh/sshd_config; chmod 644 /etc/ssh/sshd_config
-
-    # Remove the old motd file and create a new empty one
-    rm /etc/motd && touch /etc/motd
+    # Add new SSH configuration file with custom parameters
+    cp sshd_config /etc/ssh/ && chmod 644 /etc/ssh/sshd_config
 
     # Remove the old motd file and create a new empty one
     rm /etc/motd && touch /etc/motd
