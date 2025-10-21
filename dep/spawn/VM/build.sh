@@ -17,6 +17,8 @@ update() {
 }
 
 cloud_kernel() {
+    printf "\e[32m*\e[0m INSTALLING AND CONFIGURING CLOUD KERNEL\n"
+
     # Checks if hardware type is 'vm'
     HTYPE=$(hostnamectl chassis)
     if [ "$HTYPE" != "vm" ]; then
