@@ -26,8 +26,7 @@ cloud_kernel() {
         exit 1
     fi
 
-    apt-get update
-    apt-get install -y linux-image-cloud-amd64 linux-headers-cloud-amd64
+    apt-get install -y linux-image-cloud-amd64 linux-headers-cloud-amd64 > /dev/null 2>&1
 
     # Creates the cleanup script that will run at boot
     cat << 'EOF' > /usr/local/sbin/kernel-cleanup.sh
