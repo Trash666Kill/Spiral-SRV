@@ -16,7 +16,6 @@ import shutil
 # --- Constantes de Configuração ---
 VMS_DIR = Path("vms")
 GLOBAL_CONF = Path("global.conf")
-# (DEFAULT_POOL_DIR removido, pois agora está definido no config)
 QEMU_BIN = "qemu-system-x86_64"
 
 # --- Conteúdo Padrão para global.conf ---
@@ -69,7 +68,6 @@ smp = 2
 memory = 1G
 disk_size = 16G
 """
-# --- FIM DO BLOCO ATUALIZADO ---
 
 def _generate_mac() -> str:
     """Gera um MAC address aleatório com prefixo QEMU (52:54:00)."""
@@ -175,12 +173,14 @@ def _show_vm_details(vm_name: str):
     print(f"\n[Hardware (Configurado)]")
     firmware = config.get('hardware', 'firmware', fallback='bios') 
     chipset = config.get('hardware', 'chipset', fallback='N/A (i440fx)') 
-    vm_uuid = config.get('hardware', 'uuid', fallback='N/A') 
+    vm_uuid = config.get('hardware', 'uuid', fallback='N/A')
+    os_type = config.get('hardware', 'os_type', fallback='generic') # <-- LÊ OS_TYPE
     print(f"  Memória:    {config.get('hardware', 'memory', fallback='N/A')}")
     print(f"  SMP (vCPUs):{config.get('hardware', 'smp', fallback='N/A')}")
     print(f"  Firmware:   {firmware.upper()}") 
     print(f"  Chipset:    {chipset}") 
     print(f"  UUID:       {vm_uuid}") 
+    print(f"  OS Type:    {os_type}") # <-- EXIBE OS_TYPE
     print(f"  CPU (fixo): host")
     print(f"  KVM (fixo): habilitado")
 
@@ -256,6 +256,13 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
     chipset = config.get("hardware", "chipset", fallback=None)
     if chipset:
         qemu_cmd.extend(["-machine", chipset])
+
+    # --- LÓGICA DE SERIAL (TTY) ---
+    os_type = config.get("hardware", "os_type", fallback="generic")
+    if os_type == "linux":
+        print("Tipo OS 'linux' detectado. Adicionando console serial (-serial pty)...")
+        qemu_cmd.extend(["-serial", "pty"])
+    # --- FIM DA LÓGICA DE SERIAL ---
 
     # 4. Lógica de Boot e Gráficos
     qemu_cmd.extend(["-boot", "order=c,menu=on"])
@@ -450,7 +457,8 @@ def handle_create(args):
         "memory": memory,
         "firmware": g_config.get("hardware", "firmware", fallback="uefi"),
         "chipset": g_config.get("hardware", "chipset", fallback="q35"),
-        "uuid": vm_uuid 
+        "uuid": vm_uuid,
+        "os_type": args.os_type # <-- SALVA O OS_TYPE
     }
     new_config["network"] = {
         "bridge": bridge,
@@ -671,9 +679,6 @@ def main():
             with open(GLOBAL_CONF, 'w') as f:
                 f.write(DEFAULT_GLOBAL_CONF)
             print(f"Arquivo '{GLOBAL_CONF}' criado com sucesso.")
-            
-            # (Removida a criação do DEFAULT_POOL_DIR, pois handle_create
-            # agora garante que o pool de destino exista)
             
             print("\n!!! ATENÇÃO: Edite o global.conf para ajustar os caminhos (bridge, firmware_paths) !!!\n")
             
