@@ -13,42 +13,49 @@ import uuid
 from pathlib import Path
 import shutil
 
-# --- Constantes de Configuração ---
+# --- Configuration Constants ---
 VMS_DIR = Path("vms")
 GLOBAL_CONF = Path("global.conf")
 QEMU_BIN = "qemu-system-x86_64"
 
-# --- Conteúdo Padrão para global.conf ---
+# --- ANSI Color Codes for Output ---
+COLOR_GREEN = "\033[32m"
+COLOR_RED = "\033[31m"
+COLOR_YELLOW = "\033[33m"
+COLOR_BLUE = "\033[34m" # For informational messages/paths
+COLOR_RESET = "\033[0m"
+
+# --- Default Content for global.conf ---
 DEFAULT_GLOBAL_CONF = f"""
 ;
-; Arquivo de configuração global padrão para vm_manager.py
+; Default global configuration file for vm_manager.py
 ;
-; Este arquivo foi gerado automaticamente.
-; Por favor, revise os caminhos (especialmente [pools] e [firmware_paths])
-; para que correspondam ao seu sistema.
+; This file was automatically generated.
+; Please review the paths (especially [pools] and [firmware_paths])
+; to ensure they match your system configuration.
 ;
 
 [pools]
-; O pool de armazenamento padrão se --pool não for usado em 'create'
+; The default storage pool if --pool is not used during 'create'
 default = /home/sysop/.virt
 Container-A = /mnt/Temp/Container/A/Virt
 
 [network]
-; A bridge de rede padrão. (Altere para a sua bridge ex: br0, virbr0)
+; The default network bridge. (Change to your bridge, e.g., br0, virbr0)
 bridge = br0
 
 [disks]
-; O formato de imagem de disco padrão
+; The default disk image format
 image_format = qcow2
 
 [hardware]
-; O firmware padrão (uefi ou bios)
+; Default firmware (uefi or bios)
 firmware = uefi
-; O chipset padrão (q35 ou i440fx)
+; Default chipset (q35 or i440fx)
 chipset = q35
 
 [firmware_paths]
-; (IMPORTANTE) Verifique se estes caminhos estão corretos para o seu sistema!
+; (IMPORTANT) Verify these paths are correct for your system!
 ; (Debian/Ubuntu: apt install ovmf)
 uefi_code = /usr/share/OVMF/OVMF_CODE_4M.fd
 uefi_vars_template = /usr/share/OVMF/OVMF_VARS_4M.fd
@@ -69,8 +76,17 @@ memory = 1G
 disk_size = 16G
 """
 
+def _print_info(message):
+    print(f"{COLOR_GREEN}*{COLOR_RESET} {message}")
+
+def _print_warn(message):
+    print(f"{COLOR_YELLOW}*{COLOR_RESET} {message}")
+
+def _print_error(message):
+    print(f"{COLOR_RED}*{COLOR_RESET} {message}", file=sys.stderr)
+
 def _generate_mac() -> str:
-    """Gera um MAC address aleatório com prefixo QEMU (52:54:00)."""
+    """Generates a random MAC address with QEMU prefix (52:54:00)."""
     mac = [0x52, 0x54, 0x00,
            random.randint(0x00, 0xff),
            random.randint(0x00, 0xff),
@@ -78,53 +94,57 @@ def _generate_mac() -> str:
     return ':'.join(f"{x:02x}" for x in mac)
 
 def get_vm_config(vm_name: str) -> configparser.ConfigParser:
-    """Lê o global.conf e o .conf específico da VM em ordem."""
+    """Reads global.conf and the VM-specific .conf file in order."""
     conf_file = VMS_DIR / f"{vm_name}.conf"
     if not conf_file.exists():
-        print(f"Erro: Arquivo de configuração não encontrado: {conf_file}", file=sys.stderr)
+        _print_error(f"Configuration file not found: {COLOR_BLUE}{conf_file}{COLOR_RESET}")
         sys.exit(1)
 
     config = configparser.ConfigParser()
     try:
-        config.read([GLOBAL_CONF, conf_file])
+        read_files = config.read([GLOBAL_CONF, conf_file])
+        if GLOBAL_CONF not in [Path(f) for f in read_files]:
+             _print_warn(f"Global config '{GLOBAL_CONF}' not found or unreadable.")
         return config
     except configparser.Error as e:
-        print(f"Erro ao ler arquivos de configuração: {e}", file=sys.stderr)
+        _print_error(f"Error reading configuration files: {e}")
         sys.exit(1)
 
 def get_vm_paths(vm_name: str) -> (Path, Path):
-    """Retorna os caminhos para os arquivos .pid e .sock da VM."""
+    """Returns the paths for the VM's .pid and .sock files."""
     pid_file = VMS_DIR / f"{vm_name}.pid"
     sock_file = VMS_DIR / f"{vm_name}.sock"
     return pid_file, sock_file
 
 def is_vm_running(pid_file: Path) -> bool:
-    """Verifica se a VM está rodando com base no arquivo PID."""
+    """Checks if the VM is running based on the PID file."""
     if not pid_file.exists():
         return False
-    
-    try:
-        pid = int(pid_file.read_text())
-    except (ValueError, FileNotFoundError):
-        return False 
 
     try:
-        os.kill(pid, 0)
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, FileNotFoundError):
+        return False # Corrupt or vanished PID file
+
+    try:
+        os.kill(pid, 0) # Send signal 0 to check if process exists
     except ProcessLookupError:
-        return False 
+        return False # Process does not exist (stale PID)
     except PermissionError:
+        # Process exists but we don't own it (likely root's QEMU process)
+        # Since script runs as root, this means it's running.
         return True
-    
-    return True 
+
+    return True # Process exists and we can signal it (unlikely if run as root)
 
 def resolve_image_path(config: configparser.ConfigParser) -> (str, str):
-    """Resolve o caminho final do image_file usando a lógica de pools."""
+    """Resolves the final image_file path using pool logic."""
     try:
         image_file = config.get("disks", "image_file")
         image_format = config.get("disks", "image_format")
     except configparser.NoOptionError as e:
-        print(f"Erro: Configuração obrigatória '{e.option}' não encontrada na seção [disks].", file=sys.stderr)
-        print(f"Dica: Verifique se '{e.option}' está em [disks] no seu global.conf ou vm.conf.", file=sys.stderr)
+        _print_error(f"Mandatory configuration '{e.option}' not found in section [disks].")
+        _print_error(f"Hint: Ensure '{e.option}' is defined in {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET} or your VM's .conf file.")
         sys.exit(1)
 
     if Path(image_file).is_absolute():
@@ -132,86 +152,91 @@ def resolve_image_path(config: configparser.ConfigParser) -> (str, str):
 
     try:
         pool_name = config.get("disks", "image_pool", fallback="default")
-        pool_path = config.get("pools", pool_name)
+        pool_path_str = config.get("pools", pool_name)
+        pool_path = Path(pool_path_str) # Convert to Path object early
     except configparser.NoSectionError:
-        print(f"Erro: Seção [pools] não encontrada em {GLOBAL_CONF}", file=sys.stderr)
+        _print_error(f"Section [pools] not found in {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET}")
         sys.exit(1)
     except configparser.NoOptionError:
-        print(f"Erro: Pool '{pool_name}' não definido em {GLOBAL_CONF} [pools]", file=sys.stderr)
+        _print_error(f"Pool '{pool_name}' not defined in {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET} [pools]")
         sys.exit(1)
+    except Exception as e:
+         _print_error(f"Error resolving pool path for pool '{pool_name}': {e}")
+         sys.exit(1)
 
-    final_path = Path(pool_path) / image_file
+
+    final_path = pool_path / image_file
     return str(final_path), image_format
 
 def _show_vm_details(vm_name: str):
-    """Busca e exibe informações detalhadas de uma única VM."""
+    """Fetches and displays detailed information for a single VM."""
     try:
         config = get_vm_config(vm_name)
     except SystemExit:
-        return 
+        return # Error already printed by get_vm_config
 
     pid_file, sock_file = get_vm_paths(vm_name)
     running = is_vm_running(pid_file)
-    
-    print(f"--- Detalhes da VM: {vm_name} ---")
-    
-    status_str = "Rodando" if running else "Parado"
-    print(f"\n[Status de Execução]")
-    print(f"  Estado:     {status_str}")
+
+    print(f"--- VM Details: {COLOR_BLUE}{vm_name}{COLOR_RESET} ---")
+
+    status_str = f"{COLOR_GREEN}Running{COLOR_RESET}" if running else f"{COLOR_RED}Stopped{COLOR_RESET}"
+    print(f"\n{COLOR_BLUE}[Execution Status]{COLOR_RESET}")
+    print(f"  State:      {status_str}")
     if running:
         try:
             print(f"  PID:        {pid_file.read_text().strip()}")
             print(f"  Monitor:    {sock_file.resolve()}")
         except FileNotFoundError:
-            print("  PID/Monitor: (Arquivo desapareceu, limpando...)")
+            _print_warn("  PID/Monitor: (Files missing, attempting cleanup...)")
             if pid_file.exists(): pid_file.unlink()
             if sock_file.exists(): sock_file.unlink()
     else:
         print(f"  PID:        N/A")
         print(f"  Monitor:    N/A")
 
-    print(f"\n[Hardware (Configurado)]")
-    firmware = config.get('hardware', 'firmware', fallback='bios') 
-    chipset = config.get('hardware', 'chipset', fallback='N/A (i440fx)') 
+    print(f"\n{COLOR_BLUE}[Hardware (Configured)]{COLOR_RESET}")
+    firmware = config.get('hardware', 'firmware', fallback='bios')
+    chipset = config.get('hardware', 'chipset', fallback='N/A (i440fx)')
     vm_uuid = config.get('hardware', 'uuid', fallback='N/A')
-    os_type = config.get('hardware', 'os_type', fallback='generic') # <-- LÊ OS_TYPE
-    print(f"  Memória:    {config.get('hardware', 'memory', fallback='N/A')}")
+    os_type = config.get('hardware', 'os_type', fallback='generic')
+    print(f"  Memory:     {config.get('hardware', 'memory', fallback='N/A')}")
     print(f"  SMP (vCPUs):{config.get('hardware', 'smp', fallback='N/A')}")
-    print(f"  Firmware:   {firmware.upper()}") 
-    print(f"  Chipset:    {chipset}") 
-    print(f"  UUID:       {vm_uuid}") 
-    print(f"  OS Type:    {os_type}") # <-- EXIBE OS_TYPE
-    print(f"  CPU (fixo): host")
-    print(f"  KVM (fixo): habilitado")
+    print(f"  Firmware:   {firmware.upper()}")
+    print(f"  Chipset:    {chipset}")
+    print(f"  UUID:       {vm_uuid}")
+    print(f"  OS Type:    {os_type}")
+    print(f"  CPU (fixed): host")
+    print(f"  KVM (fixed): enabled")
 
-    print(f"\n[Disks (Resolvido)]")
+    print(f"\n{COLOR_BLUE}[Disks (Resolved)]{COLOR_RESET}")
     try:
         image_path, image_format = resolve_image_path(config)
         print(f"  Pool:       {config.get('disks', 'image_pool', fallback='default')}")
-        print(f"  Imagem:     {image_path}")
-        print(f"  Formato:    {image_format}")
+        print(f"  Image:      {image_path}")
+        print(f"  Format:     {image_format}")
     except Exception as e:
-        print(f"  Imagem:     (Erro ao resolver: {e})")
+        _print_error(f"  Image:     (Error resolving: {e})")
 
-    print(f"\n[Network (Resolvido)]")
+    print(f"\n{COLOR_BLUE}[Network (Resolved)]{COLOR_RESET}")
     print(f"  Bridge:     {config.get('network', 'bridge', fallback='N/A')}")
-    print(f"  MAC:        {config.get('network', 'mac', fallback='N/A')}") 
+    print(f"  MAC:        {config.get('network', 'mac', fallback='N/A')}")
 
-    print(f"\n[Options (Configurado)]")
-    extra_flags = config.get('options', 'extra_flags', fallback="Nenhum")
-    print(f"  Flags Extras: {extra_flags}")
+    print(f"\n{COLOR_BLUE}[Options (Configured)]{COLOR_RESET}")
+    extra_flags = config.get('options', 'extra_flags', fallback="None")
+    print(f"  Extra Flags: {extra_flags}")
 
 def handle_list(args):
-    """Lista todas as VMs ou detalhes de uma VM específica."""
+    """Lists all defined VMs or details for a specific VM."""
     if args.vm_name:
         _show_vm_details(args.vm_name)
         return
 
-    print("VMs definidas:")
-    
+    _print_info("Defined VMs:")
+
     vm_files = sorted(list(VMS_DIR.glob("*.conf")))
     if not vm_files:
-        print(f"  (Nenhum arquivo .conf encontrado em '{VMS_DIR}/')")
+        _print_info(f"  (No .conf files found in '{VMS_DIR}/')")
         return
 
     max_len = max(len(f.stem) for f in vm_files) if vm_files else 0
@@ -219,28 +244,28 @@ def handle_list(args):
     for conf_file in vm_files:
         vm_name = conf_file.stem
         pid_file, _ = get_vm_paths(vm_name)
-        status = "Rodando" if is_vm_running(pid_file) else "Parado"
+        status = f"{COLOR_GREEN}Running{COLOR_RESET}" if is_vm_running(pid_file) else f"{COLOR_RED}Stopped{COLOR_RESET}"
         print(f"  - {vm_name:<{max_len}}   ({status})")
 
 def handle_status(args):
-    """Verifica e reporta o status de uma VM específica."""
+    """Checks and reports the status of a specific VM."""
     vm_name = args.vm_name
     pid_file, _ = get_vm_paths(vm_name)
-    status = "Rodando" if is_vm_running(pid_file) else "Parado"
-    print(f"VM '{vm_name}' está: {status}")
+    status = f"{COLOR_GREEN}Running{COLOR_RESET}" if is_vm_running(pid_file) else f"{COLOR_RED}Stopped{COLOR_RESET}"
+    print(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' is: {status}")
 
 def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_list: list = None, graphical_mode: bool = False) -> list:
-    """Função auxiliar interna para construir a lista de comandos QEMU."""
-    
-    # 1. Resolver caminhos de imagem
+    """Internal helper function to build the QEMU command list."""
+
+    # 1. Resolve image path
     image_path, image_format = resolve_image_path(config)
-    
+
     if not Path(image_path).exists():
-        print(f"Erro: Arquivo de imagem não encontrado: {image_path}", file=sys.stderr)
-        print("Dica: Use o comando 'create' para criar esta VM e seu disco.", file=sys.stderr)
+        _print_error(f"Image file not found: {COLOR_BLUE}{image_path}{COLOR_RESET}")
+        _print_error("Hint: Use the 'create' command to create this VM and its disk first.")
         sys.exit(1)
 
-    # 2. Montar o comando QEMU base
+    # 2. Base QEMU command
     qemu_cmd = [
         QEMU_BIN,
         "-enable-kvm",
@@ -252,30 +277,31 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
     if config.has_option("hardware", "uuid"):
         qemu_cmd.extend(["-uuid", config.get("hardware", "uuid")])
 
-    # 3. Lógica de Chipset
+    # 3. Chipset
     chipset = config.get("hardware", "chipset", fallback=None)
     if chipset:
         qemu_cmd.extend(["-machine", chipset])
 
-    # --- LÓGICA DE SERIAL (TTY) ---
+    # 4. Serial Console (for Linux guests)
     os_type = config.get("hardware", "os_type", fallback="generic")
     if os_type == "linux":
-        print("Tipo OS 'linux' detectado. Adicionando console serial (-serial pty)...")
+        _print_info("OS Type 'linux' detected. Adding serial console (-serial pty)...")
         qemu_cmd.extend(["-serial", "pty"])
-    # --- FIM DA LÓGICA DE SERIAL ---
 
-    # 4. Lógica de Boot e Gráficos
-    qemu_cmd.extend(["-boot", "order=c,menu=on"])
-
+    # 5. Boot Order, Graphics, and Daemonization
     if graphical_mode:
-        print("Modo Gráfico: Iniciando em primeiro plano.")
+        _print_info("Graphical Mode: Starting in foreground.")
+        qemu_cmd.extend(["-boot", "order=c,menu=on"]) # Keep menu for graphical
         if config.has_option("options", "extra_flags"):
              extra_flags = config.get("options", "extra_flags")
              qemu_cmd.extend(shlex.split(extra_flags))
+        # Use default display or extra_flags
     else:
-        # Modo 'start' (headless)
-        print("Modo Headless: Iniciando em segundo plano.")
-        qemu_cmd.extend(["-vga", "none", "-nographic"])
+        # Headless Mode
+        _print_info("Headless Mode: Starting in background.")
+        qemu_cmd.extend(["-boot", "order=c,menu=off"]) # No menu for headless
+        qemu_cmd.extend(["-vga", "none"]) # Ensure no virtual GPU
+        qemu_cmd.extend(["-display", "none"]) # Force no display output
         pid_file, sock_file = get_vm_paths(vm_name)
         qemu_cmd.extend([
             "-daemonize",
@@ -283,174 +309,196 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
             "-monitor", f"unix:{sock_file},server,nowait",
         ])
 
-    # 5. Lógica de Firmware (UEFI/BIOS)
+    # 6. Firmware (UEFI/BIOS)
     firmware_type = config.get("hardware", "firmware", fallback="bios")
     if firmware_type.lower() == "uefi":
         if not graphical_mode:
-            print("Configurando modo UEFI...")
+            _print_info("Configuring UEFI mode...")
         try:
-            code_path = config.get("firmware_paths", "uefi_code")
-            vars_template_path = config.get("firmware_paths", "uefi_vars_template")
+            code_path_str = config.get("firmware_paths", "uefi_code")
+            vars_template_path_str = config.get("firmware_paths", "uefi_vars_template")
+            code_path = Path(code_path_str)
+            vars_template_path = Path(vars_template_path_str)
         except (configparser.NoSectionError, configparser.NoOptionError) as e:
-            print(f"Erro: Firmware é 'uefi' mas a seção [firmware_paths] está incompleta ou ausente no {GLOBAL_CONF}", file=sys.stderr)
+            _print_error(f"UEFI firmware is set, but [firmware_paths] section is missing or incomplete in {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET}")
             sys.exit(1)
 
         vm_vars_path = VMS_DIR / f"{vm_name}_VARS.fd"
         if not vm_vars_path.exists():
             try:
-                # Checa se o template existe ANTES de tentar copiar
-                if not Path(vars_template_path).exists():
-                    print(f"Erro: Arquivo template UEFI VARS não encontrado: {vars_template_path}", file=sys.stderr)
-                    print(f"Verifique o caminho em {GLOBAL_CONF} [firmware_paths]")
+                if not vars_template_path.exists():
+                    _print_error(f"UEFI VARS template file not found: {COLOR_BLUE}{vars_template_path}{COLOR_RESET}")
+                    _print_error(f"Check the path in {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET} [firmware_paths]")
                     sys.exit(1)
-                print(f"Copiando template UEFI VARS para: {vm_vars_path}")
+                _print_info(f"Copying UEFI VARS template to: {COLOR_BLUE}{vm_vars_path}{COLOR_RESET}")
                 shutil.copyfile(vars_template_path, vm_vars_path)
             except Exception as e:
-                print(f"Erro ao copiar arquivo VARS UEFI: {e}", file=sys.stderr)
+                _print_error(f"Failed to copy UEFI VARS file: {e}")
                 sys.exit(1)
-        
-        # Checa se o CODE existe
-        if not Path(code_path).exists():
-            print(f"Erro: Arquivo UEFI CODE não encontrado: {code_path}", file=sys.stderr)
-            print(f"Verifique o caminho em {GLOBAL_CONF} [firmware_paths]")
+
+        if not code_path.exists():
+            _print_error(f"UEFI CODE file not found: {COLOR_BLUE}{code_path}{COLOR_RESET}")
+            _print_error(f"Check the path in {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET} [firmware_paths]")
             sys.exit(1)
-            
+
         qemu_cmd.extend([
-            "-drive", f"if=pflash,format=raw,readonly=on,file={code_path}",
+            "-drive", f"if=pflash,format=raw,readonly=on,file={code_path_str}",
             "-drive", f"if=pflash,format=raw,file={vm_vars_path}"
         ])
 
-    # 6. Disco Principal
+    # 7. Main Disk
     qemu_cmd.extend([
         "-drive", f"file={image_path},if=virtio,format={image_format},media=disk"
     ])
 
-    # 7. Rede (COM MAC)
-    bridge = config.get("network", "bridge")
-    mac = config.get("network", "mac", fallback=None) 
+    # 8. Network (with MAC)
+    try:
+        bridge = config.get("network", "bridge")
+        mac = config.get("network", "mac", fallback=None)
+    except configparser.NoOptionError as e:
+         _print_error(f"Network option '{e.option}' missing in [network] section.")
+         sys.exit(1)
+
 
     net_device_str = f"bridge,id=net0,br={bridge}"
     virtio_net_str = f"virtio-net-pci,netdev=net0"
-    
-    if mac: 
+
+    if mac:
         virtio_net_str += f",mac={mac}"
-        
+
     qemu_cmd.extend(["-device", virtio_net_str, "-netdev", net_device_str])
 
-    # 8. ISOs (se fornecidos)
+    # 9. ISOs (if provided)
     if iso_list:
-        print(f"Anexando {len(iso_list)} ISO(s)...")
+        _print_info(f"Attaching {len(iso_list)} ISO(s)...")
         qemu_cmd.extend(["-device", "ahci,id=ahci0"])
-        
+
         for i, iso_path_str in enumerate(iso_list):
             iso_path = Path(iso_path_str)
             if not iso_path.exists():
-                print(f"Erro: Arquivo ISO não encontrado: {iso_path}", file=sys.stderr)
+                _print_error(f"ISO file not found: {COLOR_BLUE}{iso_path}{COLOR_RESET}")
                 sys.exit(1)
-            
+
             drive_id = f"cdrom_sata_{i}"
             qemu_cmd.extend([
                 "-drive", f"file={iso_path_str},id={drive_id},if=none,media=cdrom,readonly=on",
                 "-device", f"ide-cd,bus=ahci0.{i},drive={drive_id}"
             ])
-    
-    # 9. Flags Extras (Apenas para modo headless)
+
+    # 10. Extra Flags (Only applicable/checked for headless mode here)
     if not graphical_mode and config.has_option("options", "extra_flags"):
-        print("Aviso: [options]extra_flags são ignoradas no modo headless (start). Use --vga para aplicá-las.")
+        _print_warn("[options]extra_flags are ignored in headless mode ('start'). Use '--vga' to apply them.")
 
     return qemu_cmd
 
 def handle_start(args):
-    """Inicia uma VM em modo headless (padrão) ou gráfico (com --vga)."""
+    """Starts an existing VM (headless by default, graphical with --vga)."""
     vm_name = args.vm_name
-    config = get_vm_config(vm_name) 
+    try:
+        config = get_vm_config(vm_name)
+    except SystemExit:
+         return # Error already printed
     pid_file, sock_file = get_vm_paths(vm_name)
 
     if not args.vga and is_vm_running(pid_file):
-        print(f"Erro: VM '{vm_name}' já parece estar rodando (headless).", file=sys.stderr)
+        _print_error(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' already appears to be running (headless).")
         sys.exit(1)
     elif args.vga and is_vm_running(pid_file):
-        print(f"Aviso: VM '{vm_name}' já está rodando em headless.", file=sys.stderr)
-        print("Iniciar em modo gráfico pode causar conflitos. Continuando em 5s...")
+        _print_warn(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' is already running headless.")
+        _print_warn("Starting graphically may cause conflicts. Continuing in 5s...")
         time.sleep(5)
 
     try:
         qemu_cmd = _build_qemu_command(
-            vm_name, 
-            config, 
-            iso_list=args.iso, 
+            vm_name,
+            config,
+            iso_list=args.iso,
             graphical_mode=args.vga
         )
+    except SystemExit:
+        return # Error handled in _build_qemu_command
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
-        print(f"Erro: Opção de configuração ausente ou inválida: {e}", file=sys.stderr)
+        _print_error(f"Missing or invalid configuration option: {e}")
         sys.exit(1)
-    
-    # print(f"Comando: {' '.join(qemu_cmd)}") # Descomente para debug
-    
+    except Exception as e:
+        _print_error(f"Unexpected error building QEMU command: {e}")
+        sys.exit(1)
+
+    # print(f"Command: {' '.join(qemu_cmd)}") # Uncomment for debugging
+
     try:
         if args.vga:
-            print(f"Iniciando VM '{vm_name}' em modo GRÁFICO (foreground)...")
+            _print_info(f"Starting VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' in GRAPHICAL mode (foreground)...")
             subprocess.run(qemu_cmd, check=True)
-            print(f"Sessão gráfica de '{vm_name}' finalizada.")
+            _print_info(f"Graphical session for '{COLOR_BLUE}{vm_name}{COLOR_RESET}' ended.")
         else:
-            print(f"Iniciando VM '{vm_name}' (headless)...")
+            _print_info(f"Starting VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' (headless)...")
             subprocess.run(qemu_cmd, check=True)
-            
-            time.sleep(1) 
+
+            time.sleep(1.5) # Give daemon time to create files
             if is_vm_running(pid_file):
-                print(f"VM '{vm_name}' iniciada com sucesso.")
-                print(f"  PID: {pid_file.read_text().strip()}")
-                print(f"  Monitor: {sock_file}")
+                _print_info(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' started successfully.")
+                try:
+                    print(f"  PID:        {pid_file.read_text().strip()}")
+                    print(f"  Monitor:    {sock_file.resolve()}")
+                except FileNotFoundError:
+                     _print_warn("  Could not read PID or resolve Monitor path after start.")
             else:
-                print(f"Erro: A VM falhou ao iniciar. Verifique os logs do QEMU.", file=sys.stderr)
+                _print_error(f"VM failed to start. Check QEMU logs or system logs for details.")
 
     except subprocess.CalledProcessError as e:
-        print(f"\nErro ao executar o QEMU.", file=sys.stderr)
+        _print_error(f"QEMU execution failed.")
     except FileNotFoundError:
-        print(f"Erro: Comando '{QEMU_BIN}' não encontrado.", file=sys.stderr)
+        _print_error(f"Command '{QEMU_BIN}' not found. Is QEMU installed and in your PATH?")
         sys.exit(1)
+    except Exception as e:
+        _print_error(f"An unexpected error occurred during QEMU execution: {e}")
 
 
 def handle_create(args):
-    """Cria o .conf, cria o disco, e inicia o instalador gráfico."""
+    """Creates the .conf, disk image, and starts the graphical installer."""
     vm_name = args.vm_name
     conf_file = VMS_DIR / f"{vm_name}.conf"
-    
+
     if conf_file.exists():
-        print(f"Erro: VM '{vm_name}' já existe em {conf_file}", file=sys.stderr)
-        print("Use 'start' para iniciá-la ou apague o arquivo .conf para recriá-la.")
-        sys.exit(1)
-    
-    pid_file, _ = get_vm_paths(vm_name)
-    if is_vm_running(pid_file):
-        print(f"Erro: VM '{vm_name}' parece estar rodando (PID existe). Limpe manualmente.", file=sys.stderr)
+        _print_error(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' already exists ({COLOR_BLUE}{conf_file}{COLOR_RESET})")
+        _print_error("Use 'start' to run it or 'remove' to delete it first.")
         sys.exit(1)
 
-    # 1. Carregar defaults do global.conf
+    pid_file, _ = get_vm_paths(vm_name)
+    if is_vm_running(pid_file):
+        _print_error(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' appears to be running (PID file exists). Please clean up manually.")
+        sys.exit(1)
+
+    # 1. Load global defaults
     g_config = configparser.ConfigParser()
-    # (A verificação de existência do global.conf agora está no main())
-    g_config.read(GLOBAL_CONF)
-    
+    # (Global conf existence checked in main())
+    try:
+        g_config.read(GLOBAL_CONF)
+    except configparser.Error as e:
+        _print_error(f"Error reading global config {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET}: {e}")
+        sys.exit(1)
+
     os_profile_section = f"install_defaults_{args.os_type}"
     if not g_config.has_section(os_profile_section):
-        print(f"Aviso: Perfil de SO '{os_profile_section}' não encontrado. Usando 'generic'.", file=sys.stderr)
+        _print_warn(f"OS profile section '[{os_profile_section}]' not found in global config. Using 'generic'.")
         os_profile_section = "install_defaults_generic"
         if not g_config.has_section(os_profile_section):
-             print(f"Erro: Perfil 'install_defaults_generic' também não foi encontrado em {GLOBAL_CONF}", file=sys.stderr)
+             _print_error(f"Fallback profile '[install_defaults_generic]' also not found in {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET}")
              sys.exit(1)
-    
-    # 2. Definir valores (padrão do perfil, depois sobrescritos por args)
+
+    # 2. Determine final values (profile defaults overridden by args)
     smp = args.smp or g_config.get(os_profile_section, "smp", fallback="2")
     memory = args.mem or g_config.get(os_profile_section, "memory", fallback="2G")
     disk_size = args.size or g_config.get(os_profile_section, "disk_size", fallback="16G")
     bridge = args.bridge or g_config.get("network", "bridge", fallback="br0")
     pool_name = args.pool or "default"
-    
-    # 3. Gerar MAC e UUID
-    mac = _generate_mac()
-    vm_uuid = str(uuid.uuid4()) 
 
-    # 4. Preparar para criar o arquivo de config
+    # 3. Generate MAC and UUID
+    mac = _generate_mac()
+    vm_uuid = str(uuid.uuid4())
+
+    # 4. Prepare the new configuration object
     new_config = configparser.ConfigParser()
     new_config["hardware"] = {
         "smp": smp,
@@ -458,296 +506,432 @@ def handle_create(args):
         "firmware": g_config.get("hardware", "firmware", fallback="uefi"),
         "chipset": g_config.get("hardware", "chipset", fallback="q35"),
         "uuid": vm_uuid,
-        "os_type": args.os_type # <-- SALVA O OS_TYPE
+        "os_type": args.os_type
     }
     new_config["network"] = {
         "bridge": bridge,
         "mac": mac
     }
-    
-    image_file_name = f"{vm_name}.qcow2"
+
+    image_file_name = f"{vm_name}.qcow2" # Use VM name for disk image file
     disk_config = {
         "image_file": image_file_name,
         "image_format": g_config.get("disks", "image_format", fallback="qcow2")
     }
-    if args.pool and args.pool != "default": 
-        disk_config["image_pool"] = args.pool
-        
+    # Only store pool name if it's not the default
+    if pool_name != "default":
+        disk_config["image_pool"] = pool_name
+
     new_config["disks"] = disk_config
-    
-    print(f"--- Criando nova VM: {vm_name} ---")
-    print(f"  Tipo:     {args.os_type}")
-    print(f"  Memória:  {memory}, SMP: {smp}")
-    print(f"  Pool:     {pool_name}")
-    print(f"  Disco:    {image_file_name} ({disk_size})")
-    print(f"  Bridge:   {bridge}")
-    print(f"  MAC:      {mac}")
-    print(f"  UUID:     {vm_uuid}") 
-    
-    # 5. Escrever o arquivo .conf
+
+    print(f"--- Creating New VM: {COLOR_BLUE}{vm_name}{COLOR_RESET} ---")
+    print(f"  OS Type:    {args.os_type}")
+    print(f"  Memory:     {memory}, SMP: {smp}")
+    print(f"  Pool:       {pool_name}")
+    print(f"  Disk:       {image_file_name} ({disk_size})")
+    print(f"  Bridge:     {bridge}")
+    print(f"  MAC:        {mac}")
+    print(f"  UUID:       {vm_uuid}")
+
+    # 5. Write the .conf file
     try:
         with open(conf_file, 'w') as f:
-            f.write(f"; VM '{vm_name}' gerada por vm_manager.py\n")
+            f.write(f"; VM '{vm_name}' generated by vm_manager.py\n")
             new_config.write(f)
-        print(f"Arquivo de configuração salvo: {conf_file}")
+        _print_info(f"Configuration file saved: {COLOR_BLUE}{conf_file}{COLOR_RESET}")
     except Exception as e:
-        print(f"Erro ao salvar arquivo de configuração: {e}", file=sys.stderr)
+        _print_error(f"Failed to save configuration file: {e}")
         sys.exit(1)
-    
-    # 6. Criar o disco
+
+    # 6. Create the disk image
     try:
         try:
             pool_path_str = g_config.get("pools", pool_name)
         except (configparser.NoSectionError, configparser.NoOptionError):
-            print(f"Erro: Pool '{pool_name}' não definido em {GLOBAL_CONF} [pools]", file=sys.stderr)
-            raise
-            
+            _print_error(f"Pool '{pool_name}' not defined in {COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET} [pools]")
+            raise # Re-raise to trigger cleanup
+
         image_format = new_config.get("disks", "image_format")
-        
-        # Garante que o diretório do pool exista
         pool_path = Path(pool_path_str)
-        pool_path.mkdir(parents=True, exist_ok=True) # parents=True para caminhos aninhados
-        
+        pool_path.mkdir(parents=True, exist_ok=True) # Ensure pool directory exists
         image_path = pool_path / image_file_name
-        
-        print(f"Criando disco em: {image_path} (Tamanho: {disk_size})...")
-        subprocess.run(["qemu-img", "create", "-f", image_format, str(image_path), disk_size], check=True, capture_output=True)
+
+        _print_info(f"Creating disk at: {COLOR_BLUE}{image_path}{COLOR_RESET} (Size: {disk_size})...")
+        # Run qemu-img create
+        img_create_cmd = ["qemu-img", "create", "-f", image_format, str(image_path), disk_size]
+        result = subprocess.run(img_create_cmd, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+             _print_error(f"qemu-img create failed (rc={result.returncode}):")
+             _print_error(result.stderr or result.stdout)
+             raise subprocess.CalledProcessError(result.returncode, img_create_cmd, result.stdout, result.stderr)
+
     except Exception as e:
-        print(f"Falha ao criar imagem de disco: {e}", file=sys.stderr)
-        conf_file.unlink()
+        _print_error(f"Failed to create disk image: {e}")
+        _print_info(f"Cleaning up: removing {COLOR_BLUE}{conf_file}{COLOR_RESET}")
+        conf_file.unlink() # Clean up the conf file if disk creation fails
         sys.exit(1)
 
-    # 7. Iniciar o instalador (em primeiro plano)
-    print("\nIniciando instalador em modo gráfico...")
-    print("Selecione o dispositivo de boot no menu UEFI/BIOS.")
-    print("Feche a janela do QEMU quando a instalação terminar.")
-    
+    # 7. Start the installer (graphical mode)
+    _print_info("\nStarting installer in graphical mode...")
+    _print_info("Select boot device from the UEFI/BIOS menu if needed.")
+    _print_info("Close the QEMU window when installation is complete.")
+
     try:
+        # We need to re-read the config to get the fully merged view (global + new file)
         merged_config = get_vm_config(vm_name)
         qemu_cmd = _build_qemu_command(vm_name, merged_config, iso_list=args.iso, graphical_mode=True)
+    except SystemExit:
+         return # Error handled previously
     except Exception as e:
-        print(f"Erro ao construir comando QEMU: {e}", file=sys.stderr)
+        _print_error(f"Error building QEMU command for installer: {e}")
         sys.exit(1)
 
-    # print(f"Comando: {' '.join(qemu_cmd)}") # Debug
+    # print(f"Command: {' '.join(qemu_cmd)}") # Debug
     try:
         subprocess.run(qemu_cmd, check=True)
     except Exception as e:
-        print(f"\nO processo QEMU falhou. {e}", file=sys.stderr)
+        _print_error(f"QEMU installer process failed: {e}")
 
-    print(f"Instalação de '{vm_name}' finalizada.")
+    _print_info(f"Installation for '{COLOR_BLUE}{vm_name}{COLOR_RESET}' finished.")
 
 
 def send_monitor_command(sock_file: Path, command: str) -> bool:
-    """Envia um comando para o soquete do monitor QEMU."""
+    """Sends a command to the QEMU monitor socket."""
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(2) # Prevent hanging indefinitely
             s.connect(str(sock_file))
             s.sendall(command.encode('utf-8'))
+            s.recv(1024) # Try to read a response to ensure command was likely processed
             return True
-    except (FileNotFoundError, ConnectionRefusedError) as e:
-        print(f"Não foi possível conectar ao monitor da VM: {e}", file=sys.stderr)
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout) as e:
+        _print_error(f"Could not connect to VM monitor socket: {e}")
+        return False
+    except Exception as e:
+        _print_error(f"Error sending monitor command '{command.strip()}': {e}")
         return False
 
+
 def handle_stop(args):
-    """Envia um comando de desligamento (powerdown ou quit) para a VM."""
+    """Sends a shutdown command (powerdown or quit) to the VM."""
     vm_name = args.vm_name
     pid_file, sock_file = get_vm_paths(vm_name)
 
     if not is_vm_running(pid_file):
-        print(f"Erro: VM '{vm_name}' não está rodando.", file=sys.stderr)
-        if pid_file.exists(): pid_file.unlink()
-        if sock_file.exists(): sock_file.unlink()
+        _print_error(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' is not running.")
+        # Clean up stale files if they exist
+        if pid_file.exists():
+            _print_warn(f"Removing stale PID file: {COLOR_BLUE}{pid_file}{COLOR_RESET}")
+            pid_file.unlink()
+        if sock_file.exists():
+            _print_warn(f"Removing stale monitor socket: {COLOR_BLUE}{sock_file}{COLOR_RESET}")
+            sock_file.unlink()
         sys.exit(1)
 
+    # Shutdown logic: forced or graceful
     if args.force:
-        print(f"Forçando 'quit' (desligamento imediato) para '{vm_name}'...")
+        _print_warn(f"Forcing 'quit' (immediate shutdown) for '{COLOR_BLUE}{vm_name}{COLOR_RESET}'...")
         if not send_monitor_command(sock_file, "quit\n"):
             sys.exit(1)
     else:
-        print(f"Tentando desligamento ACPI (powerdown) para '{vm_name}'...")
+        _print_info(f"Attempting ACPI shutdown (powerdown) for '{COLOR_BLUE}{vm_name}{COLOR_RESET}'...")
         if not send_monitor_command(sock_file, "system_powerdown\n"):
-            sys.exit(1)
-        
-        for i in range(15):
-            if not is_vm_running(pid_file):
-                print("VM desligada com sucesso (powerdown).")
-                if sock_file.exists(): sock_file.unlink() 
-                return
-            time.sleep(1)
+             _print_warn("Failed to send powerdown command, trying 'quit'...")
+             if not send_monitor_command(sock_file, "quit\n"):
+                  sys.exit(1)
+        else:
+             # Wait up to 15 seconds for graceful shutdown
+            _print_info("Waiting up to 15 seconds for VM to shut down...")
+            for i in range(15):
+                if not is_vm_running(pid_file):
+                    _print_info("VM shut down successfully (powerdown).")
+                    if sock_file.exists(): sock_file.unlink() # QEMU should remove pidfile
+                    return # Success
+                time.sleep(1)
 
-        print("VM não respondeu ao powerdown. Forçando 'quit'...")
-        if not send_monitor_command(sock_file, "quit\n"):
-            sys.exit(1)
+            # If still running, force quit
+            _print_warn("VM did not respond to powerdown. Forcing 'quit'...")
+            if not send_monitor_command(sock_file, "quit\n"):
+                sys.exit(1)
 
-    print("Aguardando processo QEMU finalizar...")
-    for _ in range(5): 
+    # Final check block (for forced quit or fallback)
+    _print_info("Waiting for QEMU process to terminate...")
+    for _ in range(5): # Wait 5 seconds for 'quit'
         if not is_vm_running(pid_file):
-            print("VM finalizada.")
+            _print_info("VM terminated.")
             if sock_file.exists(): sock_file.unlink()
-            return
+            return # Success
         time.sleep(1)
 
-    print(f"Erro: A VM ainda está rodando. Verifique o PID: {pid_file.read_text().strip()}", file=sys.stderr)
+    _print_error(f"VM may still be running. Check PID: {pid_file.read_text().strip()}")
 
 def handle_remove(args):
-    """Para, remove o .conf, o disco .qcow2, e os arquivos _VARS.fd de uma VM."""
+    """Stops, then removes the .conf, disk image, and _VARS.fd files for a VM."""
     vm_name = args.vm_name
     conf_file = VMS_DIR / f"{vm_name}.conf"
     uefi_vars_file = VMS_DIR / f"{vm_name}_VARS.fd"
     pid_file, _ = get_vm_paths(vm_name)
 
-    # 1. Tentar ler o config. Se não existir, não há o que remover.
+    # 1. Try to read the config. If it doesn't exist, nothing to remove.
     try:
         config = get_vm_config(vm_name)
     except SystemExit:
-        sys.exit(1) 
+        # If .conf is missing, check for other stray files
+        _print_warn(f"Config file for '{vm_name}' not found.")
+        stray_files = [uefi_vars_file] # Can't resolve disk without config
+        found_stray = False
+        if not args.force:
+             print("Checking for other related files...")
+             for f in stray_files:
+                  if f.exists():
+                       print(f"  - {f}")
+                       found_stray = True
+             if found_stray:
+                  confirm = input("Stray files found. Remove them? (yes/no): ")
+                  if confirm.lower() != 'yes':
+                       print("Removal cancelled.")
+                       sys.exit(0)
+             else:
+                  print("No related files found.")
+                  sys.exit(0)
+        # Proceed to delete stray files if forced or confirmed
+        print("Removing stray files...")
+        for f in stray_files:
+             if f.exists():
+                  try:
+                       f.unlink()
+                       _print_info(f"Removed: {COLOR_BLUE}{f}{COLOR_RESET}")
+                  except Exception as e:
+                       _print_error(f"Error removing {f}: {e}")
+        sys.exit(0)
 
-    # 2. Parar a VM se estiver rodando
+
+    # 2. Stop the VM if running
     if is_vm_running(pid_file):
-        print(f"VM '{vm_name}' está rodando. Forçando o desligamento...")
+        _print_warn(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' is running. Forcing shutdown...")
+        # Simulate args for 'handle_stop' with force=True
         stop_args = argparse.Namespace(vm_name=vm_name, force=True)
         handle_stop(stop_args)
         print("---")
 
-    # 3. Encontrar todos os arquivos
+    # 3. Find all associated files
     try:
         disk_file_str, _ = resolve_image_path(config)
         disk_file = Path(disk_file_str)
+    except SystemExit:
+         return # Error handled by resolve_image_path
     except Exception as e:
-        print(f"Erro ao resolver caminho do disco: {e}", file=sys.stderr)
-        print("Não é possível continuar sem o caminho do disco. Remoção falhou.")
+        _print_error(f"Error resolving disk path: {e}")
+        _print_error("Cannot continue without disk path. Removal failed.")
         sys.exit(1)
 
-    # 4. Confirmar com o usuário
+    # 4. Confirm with user
+    files_to_delete = [conf_file, disk_file, uefi_vars_file]
+    existing_files_to_delete = [f for f in files_to_delete if f.exists()]
+
+    if not existing_files_to_delete:
+         _print_info(f"No files associated with VM '{vm_name}' found. Nothing to remove.")
+         sys.exit(0)
+
     if not args.force:
-        print(f"ATENÇÃO: Você está prestes a remover permanentemente '{vm_name}'.")
-        print("Os seguintes arquivos serão excluídos:")
-        
-        files_to_delete = [conf_file, disk_file, uefi_vars_file]
-        found_files = False
-        for f in files_to_delete:
-            if f.exists():
-                print(f"  - {f}")
-                found_files = True
-        
-        if not found_files:
-            print("Nenhum arquivo associado foi encontrado. Limpeza desnecessária.")
-            sys.exit(0)
+        _print_warn(f"WARNING: You are about to permanently remove '{COLOR_BLUE}{vm_name}{COLOR_RESET}'.")
+        print("The following files will be deleted:")
+        for f in existing_files_to_delete:
+            print(f"  - {f}")
 
         try:
-            confirm = input("Digite 'yes' para confirmar a remoção: ")
+            confirm = input("Type 'yes' to confirm removal: ")
         except EOFError:
-            print("\nCancelado.")
+            print("\nCancelled.")
             sys.exit(1)
-            
-        if confirm != "yes":
-            print("Remoção cancelada.")
+
+        if confirm.lower() != "yes":
+            print("Removal cancelled.")
             sys.exit(0)
-    
-    # 5. Excluir os arquivos
-    print(f"Removendo VM '{vm_name}'...")
-    try:
-        if conf_file.exists():
-            conf_file.unlink()
-            print(f"Removido: {conf_file}")
-        
-        if disk_file.exists():
-            disk_file.unlink()
-            print(f"Removido: {disk_file}")
-            
-        if uefi_vars_file.exists():
-            uefi_vars_file.unlink()
-            print(f"Removido: {uefi_vars_file}")
-            
-    except Exception as e:
-        print(f"Erro durante a exclusão de arquivos: {e}", file=sys.stderr)
-        print("Alguns arquivos podem ter permanecido.")
+
+    # 5. Delete the files
+    _print_info(f"Removing VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}'...")
+    all_removed = True
+    for f in existing_files_to_delete:
+        try:
+            f.unlink()
+            _print_info(f"Removed: {COLOR_BLUE}{f}{COLOR_RESET}")
+        except Exception as e:
+            _print_error(f"Error removing file {f}: {e}")
+            all_removed = False
+
+    if all_removed:
+        _print_info(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' removed successfully.")
+    else:
+        _print_error("Some files may not have been removed.")
+        sys.exit(1)
+
+def handle_serialpty(args):
+    """Finds and displays the serial PTY device for a running Linux VM."""
+    vm_name = args.vm_name
+    pid_file, _ = get_vm_paths(vm_name)
+
+    # Check if VM is running first
+    if not is_vm_running(pid_file):
+        _print_error(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' is not running.")
         sys.exit(1)
         
-    print(f"VM '{vm_name}' removida com sucesso.")
+    # Check if VM is Linux type
+    try:
+        config = get_vm_config(vm_name)
+        os_type = config.get("hardware", "os_type", fallback="generic")
+        if os_type != "linux":
+            _print_warn(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' OS type is '{os_type}', not 'linux'.")
+            _print_warn("Serial console may not be configured or useful.")
+            # Continue anyway, it might work
+    except SystemExit:
+        return # Error already printed by get_vm_config
+    except Exception as e:
+         _print_error(f"Could not read OS type for VM '{vm_name}': {e}")
+         sys.exit(1)
+
+
+    try:
+        pid = pid_file.read_text().strip()
+    except Exception as e:
+        _print_error(f"Error reading PID file {COLOR_BLUE}{pid_file}{COLOR_RESET}: {e}")
+        sys.exit(1)
+
+    _print_info(f"Searching for PTY for VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' (PID: {pid})...")
+
+    try:
+        # Execute lsof for the specific PID
+        cmd = ["lsof", "-p", pid]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False) # check=False to handle errors manually
+
+        if result.returncode != 0:
+            # Check if lsof failed because the process died just now
+            if not is_vm_running(pid_file):
+                _print_error(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' stopped while searching for PTY.")
+                sys.exit(1)
+            else:
+                _print_error(f"lsof command failed (rc={result.returncode}):")
+                _print_error(result.stderr or result.stdout or "No output from lsof.")
+                sys.exit(1)
+
+        pty_path = None
+        # Search output lines for /dev/pts/
+        for line in result.stdout.splitlines():
+            # Look for lines indicating a character device (like PTY) and containing /dev/pts/
+            # Example line: qemu-syst 12345 root 3u CHR 136,5 0t0 8 /dev/pts/5
+            if "CHR" in line and "/dev/pts/" in line:
+                parts = line.split()
+                if parts and parts[-1].startswith("/dev/pts/"):
+                    pty_path = parts[-1]
+                    break # Found the PTY
+
+        if pty_path:
+            _print_info(f"Serial console found at: {COLOR_BLUE}{pty_path}{COLOR_RESET}")
+            print(f"Use: screen {pty_path} 115200 (or minicom, picocom, etc.)")
+        else:
+            _print_warn("No PTY found associated with this process.")
+            _print_warn("Ensure the VM's os_type is 'linux' in its .conf file or that it was started with '-serial pty'.")
+
+    except FileNotFoundError:
+        _print_error("Command 'lsof' not found. Please ensure 'lsof' is installed and in your PATH.")
+        sys.exit(1)
+    except Exception as e:
+        _print_error(f"An unexpected error occurred while searching for PTY: {e}")
+        sys.exit(1)
 
 
 def main():
-    # Garante que os diretórios e o config padrão existam
+    # Ensure base directories and default config exist
     VMS_DIR.mkdir(exist_ok=True)
-    
+
     if not GLOBAL_CONF.exists():
-        print(f"Aviso: Arquivo de configuração global '{GLOBAL_CONF}' não encontrado.")
-        print("Criando um arquivo padrão...")
+        _print_warn(f"Global configuration file '{COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET}' not found.")
+        _print_info("Creating a default file...")
         try:
             with open(GLOBAL_CONF, 'w') as f:
-                f.write(DEFAULT_GLOBAL_CONF)
-            print(f"Arquivo '{GLOBAL_CONF}' criado com sucesso.")
-            
-            print("\n!!! ATENÇÃO: Edite o global.conf para ajustar os caminhos (bridge, firmware_paths) !!!\n")
-            
+                # Use strip() to remove leading/trailing whitespace from the multi-line string
+                f.write(DEFAULT_GLOBAL_CONF.strip())
+            _print_info(f"File '{COLOR_BLUE}{GLOBAL_CONF}{COLOR_RESET}' created successfully.")
+            _print_warn(f"\n{COLOR_YELLOW}!!! ATTENTION: Please edit '{GLOBAL_CONF}' to adjust paths (bridge, firmware_paths, pools) !!!{COLOR_RESET}\n")
+
         except Exception as e:
-            print(f"Erro ao criar '{GLOBAL_CONF}': {e}", file=sys.stderr)
+            _print_error(f"Failed to create '{GLOBAL_CONF}': {e}")
             sys.exit(1)
-    
+
     parser = argparse.ArgumentParser(
-        description="Gerenciador simples de VMs QEMU",
+        description="Simple QEMU VM Manager",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, metavar='COMMAND')
 
-    # Comando 'list'
-    list_parser = subparsers.add_parser("list", help="Lista todas as VMs ou detalhes de uma específica.")
-    list_parser.add_argument("vm_name", nargs="?", default=None, help="Nome opcional da VM para listar detalhes.")
+    # 'list' command
+    list_parser = subparsers.add_parser("list", help="List all VMs or details for a specific VM.")
+    list_parser.add_argument("vm_name", nargs="?", default=None, help="Optional VM name to show details.")
     list_parser.set_defaults(func=handle_list)
 
-    # Comando 'status'
-    status_parser = subparsers.add_parser("status", help="Verifica o status de uma VM.")
-    status_parser.add_argument("vm_name", help="O nome da VM (ex: windows10)")
+    # 'status' command
+    status_parser = subparsers.add_parser("status", help="Check the status of a specific VM.")
+    status_parser.add_argument("vm_name", help="Name of the VM (e.g., windows10)")
     status_parser.set_defaults(func=handle_status)
 
-    # Comando 'start'
-    start_parser = subparsers.add_parser("start", help="Inicia uma VM existente (headless ou gráfica).")
-    start_parser.add_argument("vm_name", help="O nome da VM (ex: windows10)")
+    # 'start' command
+    start_parser = subparsers.add_parser("start", help="Start an existing VM (headless or graphical).")
+    start_parser.add_argument("vm_name", help="Name of the VM (e.g., windows10)")
     start_parser.add_argument(
-        "--iso", 
-        action="append", 
-        help="Caminho opcional para um ISO (modo de manutenção)."
+        "--iso",
+        action="append", # Can be specified multiple times
+        help="Optional path to an ISO file (for maintenance mode)."
     )
     start_parser.add_argument(
-        "--vga", 
-        action="store_true", 
-        help="Inicia em modo gráfico (primeiro plano) para manutenção."
+        "--vga",
+        action="store_true", # Becomes True if flag is present
+        help="Start in graphical mode (foreground) for maintenance."
     )
     start_parser.set_defaults(func=handle_start)
 
-    # Comando 'create'
-    create_parser = subparsers.add_parser("create", help="Cria e inicia o instalador de uma nova VM.")
-    create_parser.add_argument("vm_name", help="O nome da nova VM a ser criada (ex: windows11)")
+    # 'create' command
+    create_parser = subparsers.add_parser("create", help="Create a new VM and start the graphical installer.")
+    create_parser.add_argument("vm_name", help="Name for the new VM (e.g., windows11)")
     create_parser.add_argument(
-        "--iso", 
-        required=True, 
-        action="append", 
-        help="Caminho para um ISO. Use múltiplas vezes (ex: --iso win.iso --iso drivers.iso)"
+        "--iso",
+        required=True,
+        action="append", # Can specify multiple ISOs
+        help="Path to an ISO file. Use multiple times for multiple ISOs (e.g., --iso win.iso --iso drivers.iso)"
     )
-    create_parser.add_argument("--os-type", choices=['windows', 'linux', 'generic'], default='generic', help="Tipo de SO para aplicar padrões (default: generic)")
-    create_parser.add_argument("--smp", help="Sobrescreve o SMP padrão (ex: 8)")
-    create_parser.add_argument("--mem", help="Sobrescreve a Memória padrão (ex: 8G)")
-    create_parser.add_argument("--size", help="Sobrescreve o Tamanho de disco padrão (ex: 100G)")
-    create_parser.add_argument("--bridge", help="Sobrescreve a Bridge padrão (ex: br_tap114)")
-    create_parser.add_argument("--pool", help="Nome do pool de armazenamento a ser usado (default: 'default')")
+    create_parser.add_argument("--os-type", choices=['windows', 'linux', 'generic'], default='generic', help="OS type for applying defaults (default: generic)")
+    create_parser.add_argument("--smp", help="Override default SMP cores (e.g., 8)")
+    create_parser.add_argument("--mem", help="Override default Memory (e.g., 8G)")
+    create_parser.add_argument("--size", help="Override default Disk size (e.g., 100G)")
+    create_parser.add_argument("--bridge", help="Override default Bridge (e.g., br_tap114)")
+    create_parser.add_argument("--pool", help="Name of the storage pool to use (default: 'default')")
     create_parser.set_defaults(func=handle_create)
 
-    # Comando 'stop'
-    stop_parser = subparsers.add_parser("stop", help="Desliga uma VM (via ACPI powerdown).")
-    stop_parser.add_argument("vm_name", help="O nome da VM (ex: windows10)")
-    stop_parser.add_argument("--force", action="store_true", help="Força o desligamento (hard 'quit') sem tentar powerdown.")
+    # 'stop' command
+    stop_parser = subparsers.add_parser("stop", help="Shut down a running VM (uses ACPI powerdown).")
+    stop_parser.add_argument("vm_name", help="Name of the VM (e.g., windows10)")
+    stop_parser.add_argument("--force", action="store_true", help="Force shutdown (hard 'quit') without trying powerdown.")
     stop_parser.set_defaults(func=handle_stop)
 
-    # Comando 'remove'
-    remove_parser = subparsers.add_parser("remove", help="Remove uma VM (disco, config, e vars).")
-    remove_parser.add_argument("vm_name", help="O nome da VM a ser removida.")
-    remove_parser.add_argument("--force", action="store_true", help="Pula a confirmação de remoção.")
+    # 'remove' command
+    remove_parser = subparsers.add_parser("remove", help="Remove a VM (disk, config, vars). Stops if running.")
+    remove_parser.add_argument("vm_name", help="Name of the VM to remove.")
+    remove_parser.add_argument("--force", action="store_true", help="Skip removal confirmation.")
     remove_parser.set_defaults(func=handle_remove)
 
-    args = parser.parse_args()
-    args.func(args)
+    # 'serialpty' command
+    serialpty_parser = subparsers.add_parser("serialpty", help="Find the serial console PTY for a running Linux VM.")
+    serialpty_parser.add_argument("vm_name", help="Name of the running VM.")
+    serialpty_parser.set_defaults(func=handle_serialpty)
+
+    # Parse arguments and call the relevant function
+    try:
+        args = parser.parse_args()
+        args.func(args)
+    except Exception as e:
+        _print_error(f"An unexpected error occurred: {e}")
+        # Consider adding more detailed error handling or logging here if needed
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
