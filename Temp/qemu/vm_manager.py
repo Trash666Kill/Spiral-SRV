@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import shutil
 
 # --- Constantes de Configuração ---
 VMS_DIR = Path("vms")
@@ -45,37 +46,31 @@ def is_vm_running(pid_file: Path) -> bool:
     try:
         pid = int(pid_file.read_text())
     except (ValueError, FileNotFoundError):
-        return False # Arquivo PID corrompido ou desapareceu
+        return False 
 
     try:
-        # Envia um "sinal 0" para o processo.
-        # Não faz nada, mas falha se o processo não existir.
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False # Processo não existe (PID "velho")
+        return False 
     except PermissionError:
-        # Processo existe, mas não somos donos (provavelmente do root)
-        # Como o script deve rodar como root, isso indica que ele está rodando.
         return True
     
-    return True # Processo existe
+    return True 
 
 def resolve_image_path(config: configparser.ConfigParser) -> (str, str):
     """Resolve o caminho final do image_file usando a lógica de pools."""
     try:
         image_file = config.get("disks", "image_file")
-        image_format = config.get("disks", "image_format", fallback="qcow2")
+        image_format = config.get("disks", "image_format")
     except configparser.NoOptionError as e:
         print(f"Erro: Configuração obrigatória '{e.option}' não encontrada na seção [disks].", file=sys.stderr)
+        print(f"Dica: Verifique se '{e.option}' está em [disks] no seu global.conf ou vm.conf.", file=sys.stderr)
         sys.exit(1)
 
-    # Se o caminho for absoluto, use-o diretamente.
     if Path(image_file).is_absolute():
         return image_file, image_format
 
-    # Se for relativo, use os pools
     try:
-        # Tenta pegar o pool nomeado; se não existir, usa 'default'
         pool_name = config.get("disks", "image_pool", fallback="default")
         pool_path = config.get("pools", pool_name)
     except configparser.NoSectionError:
@@ -91,10 +86,9 @@ def resolve_image_path(config: configparser.ConfigParser) -> (str, str):
 def _show_vm_details(vm_name: str):
     """Busca e exibe informações detalhadas de uma única VM."""
     try:
-        # get_vm_config já lida com o erro de arquivo não encontrado
         config = get_vm_config(vm_name)
     except SystemExit:
-        return # Erro já foi impresso por get_vm_config
+        return 
 
     pid_file, sock_file = get_vm_paths(vm_name)
     running = is_vm_running(pid_file)
@@ -119,8 +113,12 @@ def _show_vm_details(vm_name: str):
 
     # --- Configuração de Hardware ---
     print(f"\n[Hardware (Configurado)]")
+    firmware = config.get('hardware', 'firmware', fallback='bios') 
+    chipset = config.get('hardware', 'chipset', fallback='N/A (i440fx)') # Pega o chipset
     print(f"  Memória:    {config.get('hardware', 'memory', fallback='N/A')}")
     print(f"  SMP (vCPUs):{config.get('hardware', 'smp', fallback='N/A')}")
+    print(f"  Firmware:   {firmware.upper()}") 
+    print(f"  Chipset:    {chipset}") # Mostra o chipset
     print(f"  CPU (fixo): host")
     print(f"  KVM (fixo): habilitado")
 
@@ -148,11 +146,9 @@ def _show_vm_details(vm_name: str):
 def handle_list(args):
     """Lista todas as VMs ou detalhes de uma VM específica."""
     if args.vm_name:
-        # Se um nome foi fornecido, mostre detalhes e saia
         _show_vm_details(args.vm_name)
         return
 
-    # Se nenhum nome foi fornecido, liste todas as VMs (lógica antiga)
     print("VMs definidas:")
     
     vm_files = sorted(list(VMS_DIR.glob("*.conf")))
@@ -160,7 +156,6 @@ def handle_list(args):
         print(f"  (Nenhum arquivo .conf encontrado em '{VMS_DIR}/')")
         return
 
-    # Encontra o nome mais longo para formatação
     max_len = max(len(f.stem) for f in vm_files) if vm_files else 0
 
     for conf_file in vm_files:
@@ -197,17 +192,62 @@ def handle_start(args):
     try:
         qemu_cmd = [
             QEMU_BIN,
-            # --- Início das Flags Hardcoded ---
             "-enable-kvm",
             "-cpu", "host",
-            # --- Fim das Flags Hardcoded ---
             "-smp", config.get("hardware", "smp", fallback="2"),
             "-m", config.get("hardware", "memory", fallback="2G"),
-            "-boot", "menu=on",
+            # -boot será adicionado abaixo
             "-daemonize",
             "-pidfile", str(pid_file),
             "-monitor", f"unix:{sock_file},server,nowait",
         ]
+
+        # --- INÍCIO: LÓGICA DE CHIPSET (Q35) ---
+        chipset = config.get("hardware", "chipset", fallback=None)
+        if chipset:
+            qemu_cmd.extend(["-machine", chipset])
+        
+        # --- INÍCIO: LÓGICA DE BOOT (ISO) ---
+        if args.iso:
+            # Se --iso é usado, boot 'd' (CD-ROM) primeiro
+            qemu_cmd.extend(["-boot", "order=d,menu=on"])
+        else:
+            # Senão, boot 'c' (disco) primeiro
+            qemu_cmd.extend(["-boot", "order=c,menu=on"])
+
+
+        # --- INÍCIO: LÓGICA DO FIRMWARE (UEFI/BIOS) ---
+        firmware_type = config.get("hardware", "firmware", fallback="bios")
+
+        if firmware_type.lower() == "uefi":
+            print("Configurando modo UEFI...")
+            try:
+                code_path = config.get("firmware_paths", "uefi_code")
+                vars_template_path = config.get("firmware_paths", "uefi_vars_template")
+            except (configparser.NoSectionError, configparser.NoOptionError) as e:
+                print(f"Erro: Firmware é 'uefi' mas a seção [firmware_paths] está incompleta ou ausente no {GLOBAL_CONF}", file=sys.stderr)
+                sys.exit(1)
+
+            vm_vars_path = VMS_DIR / f"{vm_name}_VARS.fd"
+
+            if not vm_vars_path.exists():
+                try:
+                    print(f"Copiando template UEFI VARS para: {vm_vars_path}")
+                    shutil.copyfile(vars_template_path, vm_vars_path)
+                except FileNotFoundError:
+                    print(f"Erro: Arquivo template UEFI VARS não encontrado: {vars_template_path}", file=sys.stderr)
+                    sys.exit(1)
+                except Exception as e:
+                    print(f"Erro ao copiar arquivo VARS UEFI: {e}", file=sys.stderr)
+                    sys.exit(1)
+            
+            qemu_cmd.extend([
+                "-drive", f"if=pflash,format=raw,readonly=on,file={code_path}",
+                "-drive", f"if=pflash,format=raw,file={vm_vars_path}"
+            ])
+        
+        # --- FIM: LÓGICA DO FIRMWARE ---
+
 
         # 3. Adicionar disco principal (VirtIO)
         qemu_cmd.extend([
@@ -263,7 +303,7 @@ def handle_start(args):
         sys.exit(1)
     
     # 8. Verificar sucesso
-    time.sleep(1) # Dá tempo para o -daemonize criar o pidfile
+    time.sleep(1) 
     if is_vm_running(pid_file):
         print(f"VM '{vm_name}' iniciada com sucesso.")
         print(f"  PID: {pid_file.read_text().strip()}")
@@ -289,39 +329,32 @@ def handle_stop(args):
 
     if not is_vm_running(pid_file):
         print(f"Erro: VM '{vm_name}' não está rodando.", file=sys.stderr)
-        # Limpa arquivos "velhos" se existirem
         if pid_file.exists(): pid_file.unlink()
         if sock_file.exists(): sock_file.unlink()
         sys.exit(1)
 
-    # Lógica de desligamento: forçado ou graceful
     if args.force:
-        # --force: Envia 'quit' imediatamente
         print(f"Forçando 'quit' (desligamento imediato) para '{vm_name}'...")
         if not send_monitor_command(sock_file, "quit\n"):
             sys.exit(1)
     else:
-        # Padrão: Tenta 'system_powerdown' primeiro
         print(f"Tentando desligamento ACPI (powerdown) para '{vm_name}'...")
         if not send_monitor_command(sock_file, "system_powerdown\n"):
             sys.exit(1)
         
-        # Espera até 15 segundos pelo desligamento
         for i in range(15):
             if not is_vm_running(pid_file):
                 print("VM desligada com sucesso (powerdown).")
-                if sock_file.exists(): sock_file.unlink() # pid_file é apagado pelo QEMU
+                if sock_file.exists(): sock_file.unlink() 
                 return
             time.sleep(1)
 
-        # Se ainda estiver rodando, força o 'quit'
         print("VM não respondeu ao powerdown. Forçando 'quit'...")
         if not send_monitor_command(sock_file, "quit\n"):
             sys.exit(1)
 
-    # Bloco final de verificação (para 'quit' forçado ou fallback)
     print("Aguardando processo QEMU finalizar...")
-    for _ in range(5): # Espera 5 segundos pelo 'quit'
+    for _ in range(5): 
         if not is_vm_running(pid_file):
             print("VM finalizada.")
             if sock_file.exists(): sock_file.unlink()
@@ -331,7 +364,6 @@ def handle_stop(args):
     print(f"Erro: A VM ainda está rodando. Verifique o PID: {pid_file.read_text().strip()}", file=sys.stderr)
 
 def main():
-    # Cria o diretório de VMs se não existir
     VMS_DIR.mkdir(exist_ok=True)
 
     parser = argparse.ArgumentParser(
