@@ -20,7 +20,7 @@ GLOBAL_CONF = Path("global.conf")
 QEMU_BIN = "qemu-system-x86_64"
 SPICE_PORT_MIN = 5900
 SPICE_PORT_MAX = 6000
-SPICE_PASSWORD_LENGTH = 8
+SPICE_PASSWORD_LENGTH = 8 # Mantido caso seja usado por outra coisa, mas não pelo SPICE
 
 # --- ANSI Color Codes for Output ---
 COLOR_GREEN = "\033[32m"
@@ -275,7 +275,7 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
              spice_port and spice_password are None if SPICE is not automatically configured.
     """
     spice_port = None
-    spice_password = None
+    spice_password = None # Definido como None pois sasl=off
 
     # 1. Resolve image path
     try:
@@ -334,7 +334,7 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
             qemu_cmd.extend(extra_flags_list) # Apply manual flags
         else:
             # --- Configure Temporary SPICE ---
-            _print_info("Configuring temporary SPICE server...")
+            _print_info("Configuring temporary SPICE server (no password)...")
             # Port
             if spice_port_arg:
                 if SPICE_PORT_MIN <= spice_port_arg <= SPICE_PORT_MAX:
@@ -345,19 +345,11 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
             else:
                 spice_port = random.randint(SPICE_PORT_MIN, SPICE_PORT_MAX)
             
-            # 1. Definir o ID do secret e a senha
-            spice_secret_id = f"spice-secret-{vm_name}" # ID único para o objeto secret
-            spice_password = secrets.token_hex(SPICE_PASSWORD_LENGTH)
-
-            # 2. Adicionar o objeto secret à linha de comando
+            # --- CORREÇÃO (sasl=off) ---
+            # Remove a lógica de 'secret' e 'password-secret'
+            # Adiciona 'sasl=off' para garantir que nenhuma autenticação seja tentada
             qemu_cmd.extend([
-                "-object", f"secret,id={spice_secret_id},data={spice_password}"
-            ])
-
-            # 3. Referenciar o ID do secret no comando -spice
-            # --- CORREÇÃO: Adicionado 'sasl=on' ---
-            qemu_cmd.extend([
-                "-spice", f"port={spice_port},addr=0.0.0.0,disable-ticketing=on,sasl=on,password-secret={spice_secret_id}"
+                "-spice", f"port={spice_port},addr=0.0.0.0,disable-ticketing=on,sasl=off"
             ])
             # --- FIM DA CORREÇÃO ---
 
@@ -538,14 +530,13 @@ def handle_start(args):
     try:
         if args.vga:
             _print_info(f"Starting VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' in GRAPHICAL/SPICE mode (foreground)...")
-            # --- Print SPICE details if configured ---
-            if spice_port and spice_password:
+            
+            # --- CORREÇÃO (sasl=off): Ajuste na lógica de impressão ---
+            if spice_port:
                  _print_info(f"SPICE server configured on port: {COLOR_YELLOW}{spice_port}{COLOR_RESET}")
-                 _print_info(f"SPICE password: {COLOR_YELLOW}{spice_password}{COLOR_RESET}")
-                 # --- CORREÇÃO: Usar socket.gethostname() ---
                  hostname = socket.gethostname()
                  print(f"Connect using a SPICE client (e.g., remote-viewer spice://{hostname}:{spice_port})")
-                 # --- FIM DA CORREÇÃO ---
+            # --- FIM DA CORREÇÃO ---
             elif not (config.has_option('options','extra_flags') and any(f in config.get('options','extra_flags') for f in ['-spice','-vnc','-display','-nographic'])):
                  _print_warn("ATTENTION: No manual SPICE/VNC/display flags found and automatic SPICE disabled.")
                  _print_warn("VM will likely start with default QEMU display (SDL/GTK if available).")
@@ -727,13 +718,12 @@ def handle_create(args):
         _print_error(f"ERROR: building QEMU command for installer: {e}")
         sys.exit(1)
 
-    if spice_port and spice_password:
+    # --- CORREÇÃO (sasl=off): Ajuste na lógica de impressão ---
+    if spice_port:
         _print_info(f"SPICE server configured on port: {COLOR_YELLOW}{spice_port}{COLOR_RESET}")
-        _print_info(f"SPICE password: {COLOR_YELLOW}{spice_password}{COLOR_RESET}")
-        # --- CORREÇÃO: Usar socket.gethostname() ---
         hostname = socket.gethostname()
         print(f"Connect using a SPICE client (e.g., remote-viewer spice://{hostname}:{spice_port})")
-        # --- FIM DA CORREÇÃO ---
+    # --- FIM DA CORREÇÃO ---
     else:
         _print_warn("ATTENTION: SPICE was not configured. Installer may not be accessible.")
 
