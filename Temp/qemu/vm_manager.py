@@ -4,7 +4,7 @@ import argparse
 import configparser
 import os
 import random
-import secrets  # For secure random password generation
+# import secrets # Não é mais necessário com sasl=off
 import shlex
 import socket
 import subprocess
@@ -345,13 +345,10 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
             else:
                 spice_port = random.randint(SPICE_PORT_MIN, SPICE_PORT_MAX)
             
-            # --- CORREÇÃO (sasl=off) ---
-            # Remove a lógica de 'secret' e 'password-secret'
-            # Adiciona 'sasl=off' para garantir que nenhuma autenticação seja tentada
+            # (sasl=off) - Remove a lógica de 'secret' e 'password-secret'
             qemu_cmd.extend([
                 "-spice", f"port={spice_port},addr=0.0.0.0,disable-ticketing=on,sasl=off"
             ])
-            # --- FIM DA CORREÇÃO ---
 
             # VGA Adapter (conditional) - only if -vga wasn't in extra_flags
             if not has_manual_vga:
@@ -531,12 +528,10 @@ def handle_start(args):
         if args.vga:
             _print_info(f"Starting VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' in GRAPHICAL/SPICE mode (foreground)...")
             
-            # --- CORREÇÃO (sasl=off): Ajuste na lógica de impressão ---
             if spice_port:
                  _print_info(f"SPICE server configured on port: {COLOR_YELLOW}{spice_port}{COLOR_RESET}")
                  hostname = socket.gethostname()
                  print(f"Connect using a SPICE client (e.g., remote-viewer spice://{hostname}:{spice_port})")
-            # --- FIM DA CORREÇÃO ---
             elif not (config.has_option('options','extra_flags') and any(f in config.get('options','extra_flags') for f in ['-spice','-vnc','-display','-nographic'])):
                  _print_warn("ATTENTION: No manual SPICE/VNC/display flags found and automatic SPICE disabled.")
                  _print_warn("VM will likely start with default QEMU display (SDL/GTK if available).")
@@ -566,6 +561,11 @@ def handle_start(args):
 
     except subprocess.CalledProcessError as e:
         _print_error(f"ERROR: QEMU execution failed.")
+    # --- INÍCIO DA CORREÇÃO (Ctrl+C) ---
+    except KeyboardInterrupt:
+        _print_warn(f"\nGraphical/SPICE session for '{COLOR_BLUE}{vm_name}{COLOR_RESET}' interrupted by user (Ctrl+C).")
+        # O QEMU já recebeu o sinal e está terminando, então apenas saímos
+    # --- FIM DA CORREÇÃO ---
     except FileNotFoundError:
         _print_error(f"ERROR: Command '{COLOR_BLUE}{QEMU_BIN}{COLOR_RED}' not found. Is QEMU installed and in your PATH?")
         sys.exit(1)
@@ -718,12 +718,10 @@ def handle_create(args):
         _print_error(f"ERROR: building QEMU command for installer: {e}")
         sys.exit(1)
 
-    # --- CORREÇÃO (sasl=off): Ajuste na lógica de impressão ---
     if spice_port:
         _print_info(f"SPICE server configured on port: {COLOR_YELLOW}{spice_port}{COLOR_RESET}")
         hostname = socket.gethostname()
         print(f"Connect using a SPICE client (e.g., remote-viewer spice://{hostname}:{spice_port})")
-    # --- FIM DA CORREÇÃO ---
     else:
         _print_warn("ATTENTION: SPICE was not configured. Installer may not be accessible.")
 
@@ -732,6 +730,11 @@ def handle_create(args):
         subprocess.run(qemu_cmd, check=True)
     except subprocess.CalledProcessError as e:
         _print_error(f"ERROR: QEMU installer process failed: {e}")
+    # --- INÍCIO DA CORREÇÃO (Ctrl+C) ---
+    except KeyboardInterrupt:
+        _print_warn(f"\nInstallation for '{COLOR_BLUE}{vm_name}{COLOR_RESET}' interrupted by user (Ctrl+C).")
+        # O QEMU já recebeu o sinal e está terminando, então apenas saímos
+    # --- FIM DA CORREÇÃO ---
     except Exception as e:
         _print_error(f"ERROR: QEMU installer process failed: {e}")
 
