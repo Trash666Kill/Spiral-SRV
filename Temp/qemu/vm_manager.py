@@ -19,7 +19,7 @@ VMS_DIR = Path("vms")
 GLOBAL_CONF = Path("global.conf")
 QEMU_BIN = "qemu-system-x86_64"
 SPICE_PORT_MIN = 5900
-SPICE_PORT_MAX = 6000
+SPICE_PORT_MAX = 5960
 SPICE_PASSWORD_LENGTH = 8 # Mantido caso seja usado por outra coisa, mas não pelo SPICE
 
 # --- ANSI Color Codes for Output ---
