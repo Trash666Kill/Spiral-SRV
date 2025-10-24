@@ -355,9 +355,11 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
             ])
 
             # 3. Referenciar o ID do secret no comando -spice
+            # --- CORREÇÃO: Adicionado 'sasl=on' ---
             qemu_cmd.extend([
-                "-spice", f"port={spice_port},addr=0.0.0.0,disable-ticketing=on,password-secret={spice_secret_id}"
+                "-spice", f"port={spice_port},addr=0.0.0.0,disable-ticketing=on,sasl=on,password-secret={spice_secret_id}"
             ])
+            # --- FIM DA CORREÇÃO ---
 
             # VGA Adapter (conditional) - only if -vga wasn't in extra_flags
             if not has_manual_vga:
@@ -540,7 +542,10 @@ def handle_start(args):
             if spice_port and spice_password:
                  _print_info(f"SPICE server configured on port: {COLOR_YELLOW}{spice_port}{COLOR_RESET}")
                  _print_info(f"SPICE password: {COLOR_YELLOW}{spice_password}{COLOR_RESET}")
-                 print(f"Connect using a SPICE client (e.g., remote-viewer spice://<SERVER_IP>:{spice_port})")
+                 # --- CORREÇÃO: Usar socket.gethostname() ---
+                 hostname = socket.gethostname()
+                 print(f"Connect using a SPICE client (e.g., remote-viewer spice://{hostname}:{spice_port})")
+                 # --- FIM DA CORREÇÃO ---
             elif not (config.has_option('options','extra_flags') and any(f in config.get('options','extra_flags') for f in ['-spice','-vnc','-display','-nographic'])):
                  _print_warn("ATTENTION: No manual SPICE/VNC/display flags found and automatic SPICE disabled.")
                  _print_warn("VM will likely start with default QEMU display (SDL/GTK if available).")
@@ -705,9 +710,6 @@ def handle_create(args):
 
     # 7. Start the installer (graphical mode - local display for create)
     
-    # --- INÍCIO DA CORREÇÃO ---
-    
-    # Corrigir a mensagem enganosa
     _print_info("\nStarting installer in graphical mode (remote SPICE)...")
     _print_info("Select boot device from the UEFI/BIOS menu if needed.")
     _print_info("Close the QEMU window when installation is complete.")
@@ -716,7 +718,6 @@ def handle_create(args):
         # Re-read the config to get the fully merged view (global + new file)
         merged_config = get_vm_config(vm_name)
         
-        # Capturar o spice_port e spice_password (em vez de usar _, _)
         qemu_cmd, spice_port, spice_password = _build_qemu_command(
             vm_name, merged_config, iso_list=args.iso, graphical_mode=True
         )
@@ -726,16 +727,15 @@ def handle_create(args):
         _print_error(f"ERROR: building QEMU command for installer: {e}")
         sys.exit(1)
 
-    # Adicionar a impressão dos detalhes do SPICE
     if spice_port and spice_password:
         _print_info(f"SPICE server configured on port: {COLOR_YELLOW}{spice_port}{COLOR_RESET}")
         _print_info(f"SPICE password: {COLOR_YELLOW}{spice_password}{COLOR_RESET}")
-        print(f"Connect using a SPICE client (e.g., remote-viewer spice://127.0.0.1:{spice_port})")
+        # --- CORREÇÃO: Usar socket.gethostname() ---
+        hostname = socket.gethostname()
+        print(f"Connect using a SPICE client (e.g., remote-viewer spice://{hostname}:{spice_port})")
+        # --- FIM DA CORREÇÃO ---
     else:
-        # Isso não deve acontecer com a lógica atual, mas é uma boa proteção
         _print_warn("ATTENTION: SPICE was not configured. Installer may not be accessible.")
-
-    # --- FIM DA CORREÇÃO ---
 
     # print(f"Command: {' '.join(qemu_cmd)}") # Debug
     try:
