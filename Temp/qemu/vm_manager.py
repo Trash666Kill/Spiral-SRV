@@ -4,6 +4,7 @@ import argparse
 import configparser
 import os
 import random
+import secrets  # For secure random password generation
 import shlex
 import socket
 import subprocess
@@ -17,6 +18,9 @@ import shutil
 VMS_DIR = Path("vms")
 GLOBAL_CONF = Path("global.conf")
 QEMU_BIN = "qemu-system-x86_64"
+SPICE_PORT_MIN = 5900
+SPICE_PORT_MAX = 6000
+SPICE_PASSWORD_LENGTH = 8
 
 # --- ANSI Color Codes for Output ---
 COLOR_GREEN = "\033[32m"
@@ -106,7 +110,7 @@ def get_vm_config(vm_name: str) -> configparser.ConfigParser:
     try:
         read_files = config.read([GLOBAL_CONF, conf_file])
         # Check if global was actually read, warn if not (but don't fail)
-        if GLOBAL_CONF not in [Path(f).resolve() for f in read_files if Path(f).exists()]:
+        if str(GLOBAL_CONF) not in read_files:
              _print_warn(f"ATTENTION: Global config '{COLOR_BLUE}{GLOBAL_CONF}{COLOR_YELLOW}' not found or unreadable. Using only VM config.")
         return config
     except configparser.Error as e:
@@ -185,12 +189,12 @@ def _show_vm_details(vm_name: str):
 
     status_str = f"{COLOR_GREEN}Running{COLOR_RESET}" if running else f"{COLOR_RED}Stopped{COLOR_RESET}"
     print(f"\n{COLOR_BLUE}[Execution Status]{COLOR_RESET}")
-    print(f"  State:      {status_str}")
+    print(f"  State:       {status_str}")
     if running:
         try:
-            print(f"  PID:        {pid_file.read_text().strip()}")
+            print(f"  PID:         {pid_file.read_text().strip()}")
             # Use resolve() to get absolute path for clarity
-            print(f"  Monitor:    {sock_file.resolve()}")
+            print(f"  Monitor:     {sock_file.resolve()}")
         except FileNotFoundError:
             _print_warn("ATTENTION: PID/Monitor files missing, attempting cleanup...")
             if pid_file.exists(): pid_file.unlink()
@@ -198,37 +202,37 @@ def _show_vm_details(vm_name: str):
         except Exception as e:
              _print_error(f"ERROR: Could not read runtime files: {e}")
     else:
-        print(f"  PID:        N/A")
-        print(f"  Monitor:    N/A")
+        print(f"  PID:         N/A")
+        print(f"  Monitor:     N/A")
 
     print(f"\n{COLOR_BLUE}[Hardware (Configured)]{COLOR_RESET}")
     firmware = config.get('hardware', 'firmware', fallback='bios')
     chipset = config.get('hardware', 'chipset', fallback='N/A (i440fx)')
     vm_uuid = config.get('hardware', 'uuid', fallback='N/A')
     os_type = config.get('hardware', 'os_type', fallback='generic')
-    print(f"  Memory:     {config.get('hardware', 'memory', fallback='N/A')}")
+    print(f"  Memory:      {config.get('hardware', 'memory', fallback='N/A')}")
     print(f"  SMP (vCPUs):{config.get('hardware', 'smp', fallback='N/A')}")
-    print(f"  Firmware:   {firmware.upper()}")
-    print(f"  Chipset:    {chipset}")
-    print(f"  UUID:       {vm_uuid}")
-    print(f"  OS Type:    {os_type}")
+    print(f"  Firmware:    {firmware.upper()}")
+    print(f"  Chipset:     {chipset}")
+    print(f"  UUID:        {vm_uuid}")
+    print(f"  OS Type:     {os_type}")
     print(f"  CPU (fixed): host")
     print(f"  KVM (fixed): enabled")
 
     print(f"\n{COLOR_BLUE}[Disks (Resolved)]{COLOR_RESET}")
     try:
         image_path, image_format = resolve_image_path(config)
-        print(f"  Pool:       {config.get('disks', 'image_pool', fallback='default')}")
-        print(f"  Image:      {image_path}")
-        print(f"  Format:     {image_format}")
+        print(f"  Pool:        {config.get('disks', 'image_pool', fallback='default')}")
+        print(f"  Image:       {image_path}")
+        print(f"  Format:      {image_format}")
     except SystemExit:
-         print(f"  Image:      (Error resolving path)") # Don't exit here, just report
+         print(f"  Image:       (Error resolving path)") # Don't exit here, just report
     except Exception as e:
-        _print_error(f"  Image:     (Error resolving: {e})")
+        _print_error(f"  Image:       (Error resolving: {e})")
 
     print(f"\n{COLOR_BLUE}[Network (Resolved)]{COLOR_RESET}")
-    print(f"  Bridge:     {config.get('network', 'bridge', fallback='N/A')}")
-    print(f"  MAC:        {config.get('network', 'mac', fallback='N/A')}")
+    print(f"  Bridge:      {config.get('network', 'bridge', fallback='N/A')}")
+    print(f"  MAC:         {config.get('network', 'mac', fallback='N/A')}")
 
     print(f"\n{COLOR_BLUE}[Options (Configured)]{COLOR_RESET}")
     extra_flags = config.get('options', 'extra_flags', fallback="None")
@@ -255,7 +259,7 @@ def handle_list(args):
         pid_file, _ = get_vm_paths(vm_name)
         status = f"{COLOR_GREEN}Running{COLOR_RESET}" if is_vm_running(pid_file) else f"{COLOR_RED}Stopped{COLOR_RESET}"
         # Use left-alignment with the max length found
-        print(f"  - {vm_name:<{max_len}}   ({status})")
+        print(f"  - {vm_name:<{max_len}}    ({status})")
 
 def handle_status(args):
     """Checks and reports the status of a specific VM."""
@@ -264,8 +268,14 @@ def handle_status(args):
     status = f"{COLOR_GREEN}Running{COLOR_RESET}" if is_vm_running(pid_file) else f"{COLOR_RED}Stopped{COLOR_RESET}"
     print(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' is: {status}")
 
-def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_list: list = None, graphical_mode: bool = False) -> list:
-    """Internal helper function to build the QEMU command list."""
+def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_list: list = None, graphical_mode: bool = False, spice_port_arg: int = None) -> tuple[list, int | None, str | None]:
+    """
+    Internal helper function to build the QEMU command list.
+    Returns: Tuple (qemu_cmd_list, spice_port, spice_password)
+             spice_port and spice_password are None if SPICE is not automatically configured.
+    """
+    spice_port = None
+    spice_password = None
 
     # 1. Resolve image path
     try:
@@ -301,18 +311,74 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
         _print_info("OS Type 'linux' detected. Adding serial console (-serial pty)...")
         qemu_cmd.extend(["-serial", "pty"])
 
-    # 5. Boot Order, Graphics, and Daemonization
+    # --- 5. Graphics, SPICE, Boot, Daemonization ---
+    extra_flags_str = config.get('options', 'extra_flags', fallback="").strip()
+    extra_flags_list = shlex.split(extra_flags_str) if extra_flags_str else []
+
+    # Check for manual graphics/remote display conflicts in extra_flags
+    has_manual_vga = any(arg.startswith("-vga") for arg in extra_flags_list)
+    has_manual_display = any(arg.startswith("-display") for arg in extra_flags_list)
+    has_manual_spice = any(arg.startswith("-spice") for arg in extra_flags_list)
+    has_manual_vnc = any(arg.startswith("-vnc") for arg in extra_flags_list)
+    has_manual_nographic = "-nographic" in extra_flags_list
+
+    qemu_cmd.extend(["-boot", "order=c"]) # Start with disk boot order
+
     if graphical_mode:
-        _print_info("Graphical Mode: Starting in foreground.")
-        qemu_cmd.extend(["-boot", "order=c,menu=on"]) # Keep menu for graphical
-        if config.has_option("options", "extra_flags"):
-             extra_flags = config.get("options", "extra_flags")
-             qemu_cmd.extend(shlex.split(extra_flags))
-        # Use default display or extra_flags
-    else:
-        # Headless Mode
+        _print_info("Graphical Mode requested (--vga).")
+        qemu_cmd.extend(["-boot", "menu=on"]) # Add menu=on for graphical modes
+
+        if has_manual_spice or has_manual_vnc or has_manual_display or has_manual_nographic:
+            _print_warn("ATTENTION: Manual graphics/display flags (-vga, -display, -spice, -vnc, -nographic) detected in [options]extra_flags.")
+            _print_warn("Automatic temporary SPICE configuration will be skipped.")
+            qemu_cmd.extend(extra_flags_list) # Apply manual flags
+        else:
+            # --- Configure Temporary SPICE ---
+            _print_info("Configuring temporary SPICE server...")
+            # Port
+            if spice_port_arg:
+                if SPICE_PORT_MIN <= spice_port_arg <= SPICE_PORT_MAX:
+                    spice_port = spice_port_arg
+                else:
+                    _print_error(f"ERROR: Specified SPICE port {COLOR_YELLOW}{spice_port_arg}{COLOR_RED} is outside the allowed range ({SPICE_PORT_MIN}-{SPICE_PORT_MAX}).")
+                    sys.exit(1)
+            else:
+                spice_port = random.randint(SPICE_PORT_MIN, SPICE_PORT_MAX)
+            
+            # 1. Definir o ID do secret e a senha
+            spice_secret_id = f"spice-secret-{vm_name}" # ID único para o objeto secret
+            spice_password = secrets.token_hex(SPICE_PASSWORD_LENGTH)
+
+            # 2. Adicionar o objeto secret à linha de comando
+            qemu_cmd.extend([
+                "-object", f"secret,id={spice_secret_id},data={spice_password}"
+            ])
+
+            # 3. Referenciar o ID do secret no comando -spice
+            qemu_cmd.extend([
+                "-spice", f"port={spice_port},addr=0.0.0.0,disable-ticketing=on,password-secret={spice_secret_id}"
+            ])
+
+            # VGA Adapter (conditional) - only if -vga wasn't in extra_flags
+            if not has_manual_vga:
+                if os_type == 'windows':
+                    _print_info("OS Type 'windows': using '-vga qxl' for SPICE.")
+                    qemu_cmd.extend(["-vga", "qxl"])
+                elif os_type == 'linux':
+                    _print_info("OS Type 'linux': using '-vga virtio' for SPICE.")
+                    qemu_cmd.extend(["-vga", "virtio"])
+                else:
+                     _print_warn("ATTENTION: OS Type is 'generic' or unknown. Using default VGA for SPICE (might not be optimal).")
+                     # Let QEMU use its default VGA when none is specified
+            else:
+                 _print_info("Using manual '-vga' configuration from extra_flags.")
+                 # Apply extra flags only if they weren't used to disable auto-spice
+                 qemu_cmd.extend(extra_flags_list)
+
+
+    else: # Headless Mode
         _print_info("Headless Mode: Starting in background.")
-        qemu_cmd.extend(["-boot", "order=c,menu=off"]) # No menu for headless
+        qemu_cmd.extend(["-boot", "menu=off"]) # No menu for headless
         qemu_cmd.extend(["-vga", "none"]) # Ensure no virtual GPU
         qemu_cmd.extend(["-display", "none"]) # Force no display output
         pid_file, sock_file = get_vm_paths(vm_name)
@@ -321,6 +387,8 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
             "-pidfile", str(pid_file),
             "-monitor", f"unix:{sock_file},server,nowait",
         ])
+        # Apply extra flags always now (moved outside conditional)
+
 
     # 6. Firmware (UEFI/BIOS)
     firmware_type = config.get("hardware", "firmware", fallback="bios")
@@ -400,14 +468,35 @@ def _build_qemu_command(vm_name: str, config: configparser.ConfigParser, iso_lis
                 "-device", f"ide-cd,bus=ahci0.{i},drive={drive_id}" # Connect to AHCI bus port i
             ])
 
-    # 10. Extra Flags (Only applicable/checked for headless mode here)
-    if not graphical_mode and config.has_option("options", "extra_flags"):
-        _print_warn("ATTENTION: [options]extra_flags are ignored in headless mode ('start'). Use '--vga' to apply them.")
+    # 10. Extra Flags (Applied unconditionally if present and not handled above)
+    #    Flags related to graphics that were already checked are skipped if needed.
+    #    Apply remaining flags.
+    if extra_flags_list:
+        apply_extra = True
+        if graphical_mode and (has_manual_spice or has_manual_vnc or has_manual_display or has_manual_nographic):
+            # Already applied these potentially conflicting flags above in graphical mode
+            apply_extra = False
+        elif graphical_mode and has_manual_vga:
+             apply_extra = False # Already applied these potentially conflicting flags above in graphical mode
 
-    return qemu_cmd
+        if apply_extra:
+             # Apply flags not related to auto-spice/vga logic or all flags in headless non-conflicting case
+             flags_to_apply = [f for f in extra_flags_list if not (
+                 (graphical_mode and (f.startswith("-spice") or f.startswith("-vnc") or f.startswith("-display") or f == "-nographic"))
+                 or
+                 (graphical_mode and has_manual_vga and f.startswith("-vga")) # Avoid double -vga if manually set
+             )]
+             if flags_to_apply:
+                  flags_str = ' '.join(flags_to_apply)
+                  _print_info(f"Applying extra flags: {flags_str}")
+                  qemu_cmd.extend(flags_to_apply)
+
+
+    return qemu_cmd, spice_port, spice_password
+
 
 def handle_start(args):
-    """Starts an existing VM (headless by default, graphical with --vga)."""
+    """Starts an existing VM (headless by default, graphical/SPICE with --vga)."""
     vm_name = args.vm_name
     try:
         config = get_vm_config(vm_name)
@@ -419,18 +508,19 @@ def handle_start(args):
     if not args.vga and is_vm_running(pid_file):
         _print_error(f"ERROR: VM '{COLOR_BLUE}{vm_name}{COLOR_RED}' already appears to be running (headless).")
         sys.exit(1)
-    # Warn if switching from headless to graphical
+    # Warn if switching from headless to graphical/SPICE
     elif args.vga and is_vm_running(pid_file):
         _print_warn(f"ATTENTION: VM '{COLOR_BLUE}{vm_name}{COLOR_YELLOW}' is already running headless.")
-        _print_warn("Starting graphically may cause conflicts. Continuing in 5 seconds...")
+        _print_warn("Starting graphically/SPICE may cause conflicts. Continuing in 5 seconds...")
         time.sleep(5)
 
     try:
-        qemu_cmd = _build_qemu_command(
+        qemu_cmd, spice_port, spice_password = _build_qemu_command(
             vm_name,
             config,
             iso_list=args.iso,
-            graphical_mode=args.vga
+            graphical_mode=args.vga,
+            spice_port_arg=args.spice_port # Pass the optional port
         )
     except SystemExit:
         return # Error handled in _build_qemu_command
@@ -445,10 +535,19 @@ def handle_start(args):
 
     try:
         if args.vga:
-            _print_info(f"Starting VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' in GRAPHICAL mode (foreground)...")
+            _print_info(f"Starting VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' in GRAPHICAL/SPICE mode (foreground)...")
+            # --- Print SPICE details if configured ---
+            if spice_port and spice_password:
+                 _print_info(f"SPICE server configured on port: {COLOR_YELLOW}{spice_port}{COLOR_RESET}")
+                 _print_info(f"SPICE password: {COLOR_YELLOW}{spice_password}{COLOR_RESET}")
+                 print(f"Connect using a SPICE client (e.g., remote-viewer spice://<SERVER_IP>:{spice_port})")
+            elif not (config.has_option('options','extra_flags') and any(f in config.get('options','extra_flags') for f in ['-spice','-vnc','-display','-nographic'])):
+                 _print_warn("ATTENTION: No manual SPICE/VNC/display flags found and automatic SPICE disabled.")
+                 _print_warn("VM will likely start with default QEMU display (SDL/GTK if available).")
+
             # Run QEMU directly, wait for it to finish
             subprocess.run(qemu_cmd, check=True)
-            _print_info(f"Graphical session for '{COLOR_BLUE}{vm_name}{COLOR_RESET}' ended.")
+            _print_info(f"Graphical/SPICE session for '{COLOR_BLUE}{vm_name}{COLOR_RESET}' ended.")
         else:
             _print_info(f"Starting VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' (headless)...")
             # Run QEMU (daemonized)
@@ -460,8 +559,8 @@ def handle_start(args):
                 _print_info(f"VM '{COLOR_BLUE}{vm_name}{COLOR_RESET}' started successfully.")
                 try:
                     # Use standard print for details, aligned
-                    print(f"  PID:        {pid_file.read_text().strip()}")
-                    print(f"  Monitor:    {sock_file.resolve()}")
+                    print(f"  PID:         {pid_file.read_text().strip()}")
+                    print(f"  Monitor:     {sock_file.resolve()}")
                 except FileNotFoundError:
                      _print_warn("ATTENTION: Could not read PID or resolve Monitor path after start.")
                 except Exception as e:
@@ -470,9 +569,7 @@ def handle_start(args):
                 _print_error(f"ERROR: VM failed to start. Check QEMU output or system logs for details.")
 
     except subprocess.CalledProcessError as e:
-        # QEMU exited with an error code
         _print_error(f"ERROR: QEMU execution failed.")
-        # If possible, include QEMU's error output (might require changes if daemonized)
     except FileNotFoundError:
         _print_error(f"ERROR: Command '{COLOR_BLUE}{QEMU_BIN}{COLOR_RED}' not found. Is QEMU installed and in your PATH?")
         sys.exit(1)
@@ -549,20 +646,28 @@ def handle_create(args):
 
     new_config["disks"] = disk_config
 
+    # Add placeholder [options] section
+    new_config["options"] = {
+        "; Example: Add custom QEMU flags below (uncomment the line)": "", # Use empty string
+        "; extra_flags": "-vga virtio -display gtk,gl=on"
+    }
+
+
     print(f"--- Creating New VM: {COLOR_BLUE}{vm_name}{COLOR_RESET} ---")
-    print(f"  OS Type:    {args.os_type}")
-    print(f"  Memory:     {memory}, SMP: {smp}")
-    print(f"  Pool:       {pool_name}")
-    print(f"  Disk:       {image_file_name} ({disk_size})")
-    print(f"  Bridge:     {bridge}")
-    print(f"  MAC:        {mac}")
-    print(f"  UUID:       {vm_uuid}")
+    print(f"  OS Type:     {args.os_type}")
+    print(f"  Memory:      {memory}, SMP: {smp}")
+    print(f"  Pool:        {pool_name}")
+    print(f"  Disk:        {image_file_name} ({disk_size})")
+    print(f"  Bridge:      {bridge}")
+    print(f"  MAC:         {mac}")
+    print(f"  UUID:        {vm_uuid}")
 
     # 5. Write the .conf file
     try:
         with open(conf_file, 'w') as f:
             f.write(f"; VM '{vm_name}' generated by vm_manager.py\n")
-            new_config.write(f)
+            # Use space_around_delimiters=False to avoid '=' after comments
+            new_config.write(f, space_around_delimiters=False)
         _print_info(f"Configuration file saved: {COLOR_BLUE}{conf_file}{COLOR_RESET}")
     except Exception as e:
         _print_error(f"ERROR: Failed to save configuration file: {e}")
@@ -598,26 +703,48 @@ def handle_create(args):
         conf_file.unlink() # Clean up the conf file if disk creation fails
         sys.exit(1)
 
-    # 7. Start the installer (graphical mode)
-    _print_info("\nStarting installer in graphical mode...")
+    # 7. Start the installer (graphical mode - local display for create)
+    
+    # --- INÍCIO DA CORREÇÃO ---
+    
+    # Corrigir a mensagem enganosa
+    _print_info("\nStarting installer in graphical mode (remote SPICE)...")
     _print_info("Select boot device from the UEFI/BIOS menu if needed.")
     _print_info("Close the QEMU window when installation is complete.")
 
     try:
         # Re-read the config to get the fully merged view (global + new file)
         merged_config = get_vm_config(vm_name)
-        qemu_cmd = _build_qemu_command(vm_name, merged_config, iso_list=args.iso, graphical_mode=True)
+        
+        # Capturar o spice_port e spice_password (em vez de usar _, _)
+        qemu_cmd, spice_port, spice_password = _build_qemu_command(
+            vm_name, merged_config, iso_list=args.iso, graphical_mode=True
+        )
     except SystemExit:
          return # Error handled previously
     except Exception as e:
         _print_error(f"ERROR: building QEMU command for installer: {e}")
         sys.exit(1)
 
+    # Adicionar a impressão dos detalhes do SPICE
+    if spice_port and spice_password:
+        _print_info(f"SPICE server configured on port: {COLOR_YELLOW}{spice_port}{COLOR_RESET}")
+        _print_info(f"SPICE password: {COLOR_YELLOW}{spice_password}{COLOR_RESET}")
+        print(f"Connect using a SPICE client (e.g., remote-viewer spice://127.0.0.1:{spice_port})")
+    else:
+        # Isso não deve acontecer com a lógica atual, mas é uma boa proteção
+        _print_warn("ATTENTION: SPICE was not configured. Installer may not be accessible.")
+
+    # --- FIM DA CORREÇÃO ---
+
     # print(f"Command: {' '.join(qemu_cmd)}") # Debug
     try:
         subprocess.run(qemu_cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        _print_error(f"ERROR: QEMU installer process failed: {e}")
     except Exception as e:
         _print_error(f"ERROR: QEMU installer process failed: {e}")
+
 
     _print_info(f"Installation for '{COLOR_BLUE}{vm_name}{COLOR_RESET}' finished.")
 
@@ -668,8 +795,8 @@ def handle_stop(args):
         if not send_monitor_command(sock_file, "system_powerdown\n"):
              _print_warn("ATTENTION: Failed to send powerdown command, trying 'quit'...")
              if not send_monitor_command(sock_file, "quit\n"):
-                  _print_error("Failed to send 'quit' command after powerdown failure.")
-                  sys.exit(1)
+                   _print_error("Failed to send 'quit' command after powerdown failure.")
+                   sys.exit(1)
         else:
              # Wait up to 15 seconds for graceful shutdown
             _print_info("Waiting up to 15 seconds for VM to shut down...")
@@ -738,24 +865,24 @@ def handle_remove(args):
              for f in existing_stray:
                   print(f"  - {f}")
              try:
-                  confirm = input("Stray files found. Remove them anyway? (yes/no): ")
+                 confirm = input("Stray files found. Remove them anyway? (yes/no): ")
              except EOFError:
-                  print("\nCancelled.")
-                  sys.exit(1)
+                 print("\nCancelled.")
+                 sys.exit(1)
              if confirm.lower() != 'yes':
-                  print("Removal cancelled.")
-                  sys.exit(0)
+                 print("Removal cancelled.")
+                 sys.exit(0)
 
         # Proceed to delete stray files if forced or confirmed
         _print_info("Removing stray files...")
         all_removed = True
         for f in existing_stray:
              try:
-                  f.unlink()
-                  _print_info(f"Removed: {COLOR_BLUE}{f}{COLOR_RESET}")
+                 f.unlink()
+                 _print_info(f"Removed: {COLOR_BLUE}{f}{COLOR_RESET}")
              except Exception as e:
-                  _print_error(f"ERROR: removing {f}: {e}")
-                  all_removed = False
+                 _print_error(f"ERROR: removing {f}: {e}")
+                 all_removed = False
         sys.exit(0 if all_removed else 1)
 
     # 2. Stop the VM if running
@@ -860,7 +987,7 @@ def main():
     status_parser.set_defaults(func=handle_status)
 
     # 'start' command
-    start_parser = subparsers.add_parser("start", help="Start an existing VM (headless or graphical).")
+    start_parser = subparsers.add_parser("start", help="Start an existing VM (headless or graphical/SPICE).")
     start_parser.add_argument("vm_name", metavar='VM_NAME', help="Name of the VM (e.g., windows10)")
     start_parser.add_argument(
         "--iso",
@@ -871,7 +998,13 @@ def main():
     start_parser.add_argument(
         "--vga",
         action="store_true", # Becomes True if flag is present
-        help="Start in graphical mode (foreground) for maintenance."
+        help="Start in SPICE mode (foreground) for remote graphical maintenance."
+    )
+    start_parser.add_argument(
+        "--spice-port",
+        type=int,
+        metavar='PORT',
+        help=f"Specify a SPICE port (range: {SPICE_PORT_MIN}-{SPICE_PORT_MAX}) for --vga mode. Random if omitted."
     )
     start_parser.set_defaults(func=handle_start)
 
@@ -910,7 +1043,7 @@ def main():
     # Parse arguments and call the relevant function
     try:
         args = parser.parse_args()
-        # Ensure script is run as root (needed for bridge, maybe lsof in future)
+        # Ensure script is run as root (needed for bridge, etc.)
         if os.geteuid() != 0:
              _print_error("ERROR: This script must be run as root (or using sudo).")
              sys.exit(1)
