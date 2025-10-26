@@ -9,10 +9,10 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStart=/bin/sh -c "\
-  rm /etc/network/interfaces\
+  rm /etc/network/interfaces; \
   ip link set ens3 up; \
   ip addr add 10.0.12.249/24 dev ens3; \
-  ip route add default via 10.0.12.254 dev ens3\
+  ip route add default via 10.0.12.254 dev ens3; \
   sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config; \
   sed -i '/^PermitEmptyPasswords/d' /etc/ssh/sshd_config; \
   echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config; \
