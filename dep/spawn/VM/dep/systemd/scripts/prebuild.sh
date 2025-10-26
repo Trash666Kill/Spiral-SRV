@@ -1,23 +1,21 @@
 #!/bin/bash
 
-set -euo pipefail  # Exit on error, undefined variable, or pipeline failure
+set -euo pipefail
 
-printf "\e[32m*\e[0m PERFORMING SUBSEQUENT PROCEDURES\n"
-
-# Function to log successful operations
-success() {
-    printf "\e[32mOK\e[0m %s\n" "$1"
+print_ok() {
+    printf "\e[32m*\e[0m %s\n" "$1"
 }
 
-# Function to log errors and exit
-error() {
-    printf "\e[31mERROR\e[0m %s\n" "$1" >&2
-    printf "\e[31mERROR CRITICAL FAILURE: SYSTEM WILL NOT SHUT DOWN\e[0m\n"
+print_err() {
+    printf "\e[31m*\e[0m %s\n" "$1" >&2
+    printf "\e[31m*\e[0m CRITICAL FAILURE: SYSTEM WILL NOT SHUT DOWN\n"
     exit 1
 }
 
+printf "\e[32m*\e[0m PERFORMING SUBSEQUENT PROCEDURES\n"
+
 # Create systemd service file
-printf "\e[34m>\e[0m Creating systemd service: /etc/systemd/system/prebuild.service\n"
+printf "\e[33m*\e[0m ATTENTION: CREATING SYSTEMD SERVICE \033[32m/etc/systemd/system/prebuild.service\033[0m\n"
 if cat << 'EOF' > /etc/systemd/system/prebuild.service
 [Unit]
 Description=Prebuild - Spawn Project
@@ -43,27 +41,29 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 then
-    success "Service file created successfully"
+    print_ok "SYSTEMD SERVICE FILE CREATED SUCCESSFULLY"
 else
-    error "Failed to create service file"
+    print_err "ERROR: FAILED TO CREATE SERVICE FILE \033[32m/etc/systemd/system/prebuild.service\033[0m"
 fi
 
-# Reload systemd daemon and enable service
-printf "\e[34m>\e[0m Reloading systemd daemon and enabling service\n"
+# Reload daemon
+printf "\e[33m*\e[0m ATTENTION: RELOADING SYSTEMD DAEMON\n"
 if systemctl daemon-reload; then
-    success "Systemd daemon reloaded successfully"
+    print_ok "SYSTEMD DAEMON RELOADED SUCCESSFULLY"
 else
-    error "Failed to reload systemd daemon"
+    print_err "ERROR: FAILED TO RELOAD SYSTEMD DAEMON"
 fi
 
+# Enable service
+printf "\e[33m*\e[0m ATTENTION: ENABLING SERVICE \033[32mprebuild.service\033[0m\n"
 if systemctl enable prebuild.service --quiet; then
-    success "Service 'prebuild.service' enabled successfully"
+    print_ok "SERVICE \033[32mprebuild.service\033[0m ENABLED SUCCESSFULLY"
 else
-    error "Failed to enable service"
+    print_err "ERROR: FAILED TO ENABLE SERVICE \033[32mprebuild.service\033[0m"
 fi
 
-# All operations completed successfully
-printf "\e[32mOK ALL OPERATIONS COMPLETED SUCCESSFULLY\e[0m\n"
-printf "\e[33m> Shutting down system in 5 seconds...\e[0m\n"
+# All steps succeeded → shutdown
+print_ok "ALL OPERATIONS COMPLETED SUCCESSFULLY"
+printf "\e[33m*\e[0m ATTENTION: SHUTTING DOWN SYSTEM IN 5 SECONDS...\n"
 sleep 5
 poweroff
