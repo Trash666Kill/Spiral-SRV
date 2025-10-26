@@ -25,7 +25,7 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload && systemctl enable kernel-cleanup.service --quiet
+    systemctl daemon-reload && systemctl enable prebuild.service --quiet
 
 
 
