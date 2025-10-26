@@ -13,18 +13,32 @@ YELLOW = '\033[33m'
 RESET = '\033[0m'
 CYAN = '\033[36m'
 
-# --- Global Constants ---
+# =============================================================================
+# --- Global Constants (Padrões Editáveis) ---
+# =============================================================================
+
+# --- Caminhos de Binários e Helper ---
+QEMU_BINARY = 'qemu-system-x86_64'
+QEMU_IMG_BINARY = 'qemu-img'
+QEMU_BRIDGE_HELPER = '/usr/lib/qemu/qemu-bridge-helper'
+
+# --- Caminhos de Diretório Padrão ---
 DEFAULT_IMG_DIR = "/var/lib/libvirt/images"
 DEFAULT_NVRAM_DIR = "/var/lib/libvirt/qemu/nvram"
 
-# Caminho OVMF Padrão
+# --- Padrões de OVMF (UEFI) ---
 OVMF_CODE_PATH = '/usr/share/OVMF/OVMF_CODE_4M.fd'
-
-# Caminhos de Template NVRAM (VARS) Padrão
 NVRAM_TEMPLATES = [
     '/usr/share/OVMF/OVMF_VARS_4M.fd',
     '/usr/share/OVMF/OVMF_VARS.fd'
 ]
+
+# --- Padrões de Recursos da VM ---
+DEFAULT_SMP = '2'
+DEFAULT_MEM = '2G'
+DEFAULT_BRIDGE = 'br_tap112'
+
+# =============================================================================
 
 
 def run_command(cmd_list):
@@ -42,31 +56,25 @@ def run_command(cmd_list):
 
 def print_custom_help():
     """Prints the custom help message when no command is given."""
-    # Nome atualizado aqui
     print(f"\n{GREEN}*{RESET} {CYAN}vm_manager.py: QEMU VM Manager{RESET}")
     print(f"\n{YELLOW}ATTENTION: You must specify an operation mode: 'new', 'run', 'list', or 'remove'.{RESET}\n")
     
     print(f"  {GREEN}To create a new VM:{RESET}")
     print(f"    Use the {CYAN}new{RESET} command:")
-    # Nome atualizado aqui
     print(f"    {YELLOW}Example:{RESET} ./vm_manager.py new MyVM --size 20G --iso /path/to/install.iso\n")
     
     print(f"  {GREEN}To run an existing VM:{RESET}")
     print(f"    Use the {CYAN}run{RESET} command (disk path is optional):")
-    # Nome atualizado aqui
     print(f"    {YELLOW}Example:{RESET} ./vm_manager.py run MyVM\n")
     
     print(f"  {GREEN}To list available VM disks:{RESET}")
     print(f"    Use the {CYAN}list{RESET} command:")
-    # Nome atualizado aqui
     print(f"    {YELLOW}Example:{RESET} ./vm_manager.py list\n")
 
     print(f"  {GREEN}To remove a VM:{RESET}")
     print(f"    Use the {CYAN}remove{RESET} command:")
-    # Nome atualizado aqui
     print(f"    {YELLOW}Example:{RESET} ./vm_manager.py remove MyVM\n")
 
-    # Nome atualizado aqui
     print(f"For full options on a command, run:\n    {YELLOW}./vm_manager.py <command> --help{RESET}\n")
 
 def find_nvram_template():
@@ -103,7 +111,7 @@ def main():
     # --- Parser Principal ---
     parser = argparse.ArgumentParser(
         description="Script to create, run, list, or remove QEMU VMs.",
-        formatter_class=argparse.RawDescriptionHelpFormatter # Permite quebras de linha na ajuda
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     subparsers = parser.add_subparsers(dest='command', help='Operation mode', metavar='COMMAND')
@@ -123,9 +131,10 @@ def main():
     new_opt_args.add_argument('--disk', metavar='<path>', type=str, help=f"Full path for new .qcow2. (Defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
     
     new_res_args = new_parser.add_argument_group('Resource Overrides')
-    new_res_args.add_argument('--smp', metavar='<cores>', type=str, default='2', help="Number of CPU cores. Default: 2")
-    new_res_args.add_argument('--mem', metavar='<size>', type=str, default='2G', help="Amount of memory. Default: 2G")
-    new_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default='br_tap112', help="Network bridge interface. Default: br_tap112")
+    # Usa as variáveis globais para os padrões
+    new_res_args.add_argument('--smp', metavar='<cores>', type=str, default=DEFAULT_SMP, help=f"Number of CPU cores. Default: {DEFAULT_SMP}")
+    new_res_args.add_argument('--mem', metavar='<size>', type=str, default=DEFAULT_MEM, help=f"Amount of memory. Default: {DEFAULT_MEM}")
+    new_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default=DEFAULT_BRIDGE, help=f"Network bridge interface. Default: {DEFAULT_BRIDGE}")
     
     # --- Sub-comando 'run' ---
     run_parser = subparsers.add_parser(
@@ -141,9 +150,10 @@ def main():
     run_opt_args.add_argument('--iso', metavar='<path>', type=str, help="Path to an ISO image for live boot or repair.")
     
     run_res_args = run_parser.add_argument_group('Resource Overrides')
-    run_res_args.add_argument('--smp', metavar='<cores>', type=str, default='2', help="Number of CPU cores. Default: 2")
-    run_res_args.add_argument('--mem', metavar='<size>', type=str, default='2G', help="Amount of memory. Default: 2G")
-    run_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default='br_tap112', help="Network bridge interface. Default: br_tap112")
+    # Usa as variáveis globais para os padrões
+    run_res_args.add_argument('--smp', metavar='<cores>', type=str, default=DEFAULT_SMP, help=f"Number of CPU cores. Default: {DEFAULT_SMP}")
+    run_res_args.add_argument('--mem', metavar='<size>', type=str, default=DEFAULT_MEM, help=f"Amount of memory. Default: {DEFAULT_MEM}")
+    run_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default=DEFAULT_BRIDGE, help=f"Network bridge interface. Default: {DEFAULT_BRIDGE}")
 
     # --- Sub-comando 'remove' ---
     remove_parser = subparsers.add_parser(
@@ -312,7 +322,7 @@ def main():
 
         # 4. Criar Disco
         print(f"{GREEN}*{RESET} INFO: Creating new disk {GREEN}{disk_path}{RESET} with size {GREEN}{args.size}{RESET}...")
-        create_cmd = ['qemu-img', 'create', '-f', 'qcow2', disk_path, args.size]
+        create_cmd = [QEMU_IMG_BINARY, 'create', '-f', 'qcow2', disk_path, args.size] # Usa a variável
         if run_command(create_cmd) != 0:
              print(f"{RED}*{RESET} ERROR: qemu-img create failed.", file=sys.stderr)
              sys.exit(1)
@@ -356,15 +366,16 @@ def main():
 
     # --- Construção e Execução do Comando QEMU (para 'new' e 'run') ---
 
+    # Usa as variáveis globais
     qemu_command = [
-        'qemu-system-x86_64',
+        QEMU_BINARY,
         '-enable-kvm',
         '-cpu', 'host',
         '-smp', args.smp,
         '-m', args.mem,
         '-drive', f'file={disk_path},if=virtio,format=qcow2', 
         '-device', 'virtio-net-pci,netdev=net0',
-        '-netdev', f'tap,id=net0,br={args.bridge},helper=/usr/lib/qemu/qemu-bridge-helper',
+        '-netdev', f'tap,id=net0,br={args.bridge},helper={QEMU_BRIDGE_HELPER}', # Usa as variáveis
         '-device', 'virtio-vga',
         '-drive', f'if=pflash,format=raw,readonly=on,file={ovmf_code_path}',
         '-drive', f'if=pflash,format=raw,file={nvram_path}',
