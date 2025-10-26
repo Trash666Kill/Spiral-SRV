@@ -24,7 +24,7 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStart=/bin/sh -c "\
-  dhcpcd --release ens2
+  dhcpcd --release ens2 > /dev/null 2>&1; \
   rm /etc/network/interfaces; \
   ip link set ens2 up; \
   ip addr add 10.0.12.249/24 dev ens2; \
