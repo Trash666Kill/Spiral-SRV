@@ -20,7 +20,9 @@ NVRAM_TEMPLATES = [
     '/usr/share/OVMF/OVMF_VARS_4M.fd',
     '/usr/share/OVMF/OVMF_VARS.fd'
 ]
-OVMF_CODE_PATH = '/usr/share/OVMF/OVMF_CODE_4M.fd'
+# Caminhos OVMF (agora separados)
+OVMF_CODE_DEFAULT = '/usr/share/OVMF/OVMF_CODE_4M.fd'
+OVMF_CODE_SECBOOT = '/usr/share/OVMF/OVMF_CODE_4M.secboot.fd'
 
 
 def run_command(cmd_list):
@@ -102,6 +104,7 @@ def main():
     new_parser.add_argument('--smp', type=str, default='2', help="Number of CPU cores. Default: 2")
     new_parser.add_argument('--mem', type=str, default='2G', help="Amount of memory. Default: 2G")
     new_parser.add_argument('--bridge', type=str, default='br_tap112', help="Network bridge interface. Default: br_tap112")
+    new_parser.add_argument('--secboot', action='store_true', help='Enable Secure Boot (uses ...secboot.fd)') # NOVO
     
     # --- Sub-comando 'run' ---
     run_parser = subparsers.add_parser('run', help='Run an existing VM')
@@ -111,6 +114,7 @@ def main():
     run_parser.add_argument('--smp', type=str, default='2', help="Number of CPU cores. Default: 2")
     run_parser.add_argument('--mem', type=str, default='2G', help="Amount of memory. Default: 2G")
     run_parser.add_argument('--bridge', type=str, default='br_tap112', help="Network bridge interface. Default: br_tap112")
+    run_parser.add_argument('--secboot', action='store_true', help='Enable Secure Boot (uses ...secboot.fd)') # NOVO
 
     # --- Sub-comando 'remove' ---
     remove_parser = subparsers.add_parser('remove', help='Remove a VM (disk and NVRAM)')
@@ -212,10 +216,21 @@ def main():
          sys.exit(1)
     nvram_path = f"{DEFAULT_NVRAM_DIR}/{args.guest_name}_VARS.fd"
 
+    # --- INÍCIO DA LÓGICA SECBOOT ---
+    # Determinar qual arquivo OVMF_CODE usar
+    if args.secboot:
+        print(f"{GREEN}*{RESET} INFO: Secure Boot enabled.")
+        ovmf_code_path = OVMF_CODE_SECBOOT
+    else:
+        ovmf_code_path = OVMF_CODE_DEFAULT
+
     # Validar OVMF_CODE principal
-    if not os.path.exists(OVMF_CODE_PATH):
-        print(f"{RED}*{RESET} ERROR: Base OVMF CODE file not found: {YELLOW}{OVMF_CODE_PATH}{RESET}", file=sys.stderr)
+    if not os.path.exists(ovmf_code_path):
+        print(f"{RED}*{RESET} ERROR: Base OVMF CODE file not found: {YELLOW}{ovmf_code_path}{RESET}", file=sys.stderr)
+        if args.secboot:
+             print(f"{RED}*{RESET} ERROR: Is the 'ovmf-ia32-x64-secboot' package installed?", file=sys.stderr)
         sys.exit(1)
+    # --- FIM DA LÓGICA SECBOOT ---
 
 
     if args.command == 'new':
@@ -319,7 +334,8 @@ def main():
         '-device', 'virtio-net-pci,netdev=net0',
         '-netdev', f'tap,id=net0,br={args.bridge},helper=/usr/lib/qemu/qemu-bridge-helper',
         '-device', 'virtio-vga',
-        '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF_CODE_PATH}',
+        # MODIFICADO: usa o caminho do OVMF selecionado (normal ou secboot)
+        '-drive', f'if=pflash,format=raw,readonly=on,file={ovmf_code_path}',
         '-drive', f'if=pflash,format=raw,file={nvram_path}',
     ]
 
