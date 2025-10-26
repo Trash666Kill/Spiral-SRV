@@ -490,6 +490,9 @@ finish() {
     # Remove unused packages and unnecessary dependencies
     apt-get -y autoremove > /dev/null 2>&1
 
+    # Disabling and Removing the Pre-Build Service
+    systemctl disable --now prebuild && rm -v /etc/systemd/system/prebuild.service
+
     # Remove default network configuration file to avoid conflicts, with warning if not found
     if [[ ! -f /etc/network/interfaces ]]; then
         printf "\e[33m* WARNING: /etc/network/interfaces does not exist, skipping removal\e[0m\n"
