@@ -24,10 +24,11 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStart=/bin/sh -c "\
+  dhcpcd --release ens2
   rm /etc/network/interfaces; \
-  ip link set ens3 up; \
-  ip addr add 10.0.12.249/24 dev ens3; \
-  ip route add default via 10.0.12.254 dev ens3; \
+  ip link set ens2 up; \
+  ip addr add 10.0.12.249/24 dev ens2; \
+  ip route add default via 10.0.12.254 dev ens2; \
   sed -i '1,$ c nameserver 10.0.6.62' /etc/resolv.conf; \
   sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config; \
   sed -i '/^PermitEmptyPasswords/d' /etc/ssh/sshd_config; \
