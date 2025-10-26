@@ -16,13 +16,15 @@ CYAN = '\033[36m'
 # --- Global Constants ---
 DEFAULT_IMG_DIR = "/var/lib/libvirt/images"
 DEFAULT_NVRAM_DIR = "/var/lib/libvirt/qemu/nvram"
+
+# Caminho OVMF Padrão
+OVMF_CODE_PATH = '/usr/share/OVMF/OVMF_CODE_4M.fd'
+
+# Caminhos de Template NVRAM (VARS) Padrão
 NVRAM_TEMPLATES = [
     '/usr/share/OVMF/OVMF_VARS_4M.fd',
     '/usr/share/OVMF/OVMF_VARS.fd'
 ]
-# Caminhos OVMF (agora separados)
-OVMF_CODE_DEFAULT = '/usr/share/OVMF/OVMF_CODE_4M.fd'
-OVMF_CODE_SECBOOT = '/usr/share/OVMF/OVMF_CODE_4M.secboot.fd'
 
 
 def run_command(cmd_list):
@@ -40,29 +42,35 @@ def run_command(cmd_list):
 
 def print_custom_help():
     """Prints the custom help message when no command is given."""
-    print(f"\n{GREEN}*{RESET} {CYAN}base_builder.py: QEMU VM Manager{RESET}")
+    # Nome atualizado aqui
+    print(f"\n{GREEN}*{RESET} {CYAN}vm_manager.py: QEMU VM Manager{RESET}")
     print(f"\n{YELLOW}ATTENTION: You must specify an operation mode: 'new', 'run', 'list', or 'remove'.{RESET}\n")
     
     print(f"  {GREEN}To create a new VM:{RESET}")
     print(f"    Use the {CYAN}new{RESET} command:")
-    print(f"    {YELLOW}Example:{RESET} ./base_builder.py new MyVM --size 20G --iso /path/to/install.iso\n")
+    # Nome atualizado aqui
+    print(f"    {YELLOW}Example:{RESET} ./vm_manager.py new MyVM --size 20G --iso /path/to/install.iso\n")
     
     print(f"  {GREEN}To run an existing VM:{RESET}")
     print(f"    Use the {CYAN}run{RESET} command (disk path is optional):")
-    print(f"    {YELLOW}Example:{RESET} ./base_builder.py run MyVM\n")
+    # Nome atualizado aqui
+    print(f"    {YELLOW}Example:{RESET} ./vm_manager.py run MyVM\n")
     
     print(f"  {GREEN}To list available VM disks:{RESET}")
     print(f"    Use the {CYAN}list{RESET} command:")
-    print(f"    {YELLOW}Example:{RESET} ./base_builder.py list\n")
+    # Nome atualizado aqui
+    print(f"    {YELLOW}Example:{RESET} ./vm_manager.py list\n")
 
     print(f"  {GREEN}To remove a VM:{RESET}")
     print(f"    Use the {CYAN}remove{RESET} command:")
-    print(f"    {YELLOW}Example:{RESET} ./base_builder.py remove MyVM\n")
+    # Nome atualizado aqui
+    print(f"    {YELLOW}Example:{RESET} ./vm_manager.py remove MyVM\n")
 
-    print(f"For full options on a command, run:\n    {YELLOW}./base_builder.py <command> --help{RESET}\n")
+    # Nome atualizado aqui
+    print(f"For full options on a command, run:\n    {YELLOW}./vm_manager.py <command> --help{RESET}\n")
 
 def find_nvram_template():
-    """Finds the first available OVMF VARS template."""
+    """Finds the first available *default* OVMF VARS template."""
     for path in NVRAM_TEMPLATES:
         if os.path.exists(path):
             return path
@@ -73,9 +81,14 @@ def create_nvram_file(guest_name, nvram_dest_path):
     print(f"{GREEN}*{RESET} INFO: Preparing NVRAM file at {CYAN}{nvram_dest_path}{RESET}...")
     
     nvram_template_src = find_nvram_template()
+
     if not nvram_template_src:
-        print(f"{RED}*{RESET} ERROR: Could not find OVMF_VARS template (tried {NVRAM_TEMPLATES})", file=sys.stderr)
+        print(f"{RED}*{RESET} ERROR: Could not find a suitable NVRAM template (tried {NVRAM_TEMPLATES})", file=sys.stderr)
         return False
+        
+    if not os.path.exists(nvram_template_src):
+         print(f"{RED}*{RESET} ERROR: NVRAM template file not found: {YELLOW}{nvram_template_src}{RESET}", file=sys.stderr)
+         return False
 
     try:
         print(f"{CYAN}*{RESET} EXECUTING: copy {nvram_template_src} to {nvram_dest_path}")
@@ -90,39 +103,66 @@ def main():
     # --- Parser Principal ---
     parser = argparse.ArgumentParser(
         description="Script to create, run, list, or remove QEMU VMs.",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter # Permite quebras de linha na ajuda
     )
     
-    subparsers = parser.add_subparsers(dest='command', help='Operation mode')
+    subparsers = parser.add_subparsers(dest='command', help='Operation mode', metavar='COMMAND')
 
     # --- Sub-comando 'new' ---
-    new_parser = subparsers.add_parser('new', help='Create a new VM')
-    new_parser.add_argument('guest_name', type=str, help="Name for the new guest (e.g., 'SpiralVM').")
-    new_parser.add_argument('--iso', type=str, required=True, help="Path to the ISO image (Mandatory for new).")
-    new_parser.add_argument('--size', type=str, required=True, help="Size for new disk (e.g., 20G) (Mandatory for new).")
-    new_parser.add_argument('--disk', type=str, help=f"Full path for new .qcow2. (Defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
-    new_parser.add_argument('--smp', type=str, default='2', help="Number of CPU cores. Default: 2")
-    new_parser.add_argument('--mem', type=str, default='2G', help="Amount of memory. Default: 2G")
-    new_parser.add_argument('--bridge', type=str, default='br_tap112', help="Network bridge interface. Default: br_tap112")
-    new_parser.add_argument('--secboot', action='store_true', help='Enable Secure Boot (uses ...secboot.fd)') # NOVO
+    new_parser = subparsers.add_parser(
+        'new', 
+        help='Create a new VM',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    new_key_args = new_parser.add_argument_group('Required Arguments')
+    new_key_args.add_argument('guest_name', metavar='GUEST_NAME', type=str, help="Name for the new guest (e.g., 'SpiralVM').")
+    new_key_args.add_argument('--iso', metavar='<path>', type=str, required=True, help="Path to the ISO image (Mandatory for new).")
+    new_key_args.add_argument('--size', metavar='<size>', type=str, required=True, help="Size for new disk (e.g., 20G) (Mandatory for new).")
+    
+    new_opt_args = new_parser.add_argument_group('Optional Arguments')
+    new_opt_args.add_argument('--disk', metavar='<path>', type=str, help=f"Full path for new .qcow2. (Defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
+    
+    new_res_args = new_parser.add_argument_group('Resource Overrides')
+    new_res_args.add_argument('--smp', metavar='<cores>', type=str, default='2', help="Number of CPU cores. Default: 2")
+    new_res_args.add_argument('--mem', metavar='<size>', type=str, default='2G', help="Amount of memory. Default: 2G")
+    new_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default='br_tap112', help="Network bridge interface. Default: br_tap112")
     
     # --- Sub-comando 'run' ---
-    run_parser = subparsers.add_parser('run', help='Run an existing VM')
-    run_parser.add_argument('guest_name', type=str, help="Name of the guest to run (e.g., 'SpiralVM').")
-    run_parser.add_argument('--disk', type=str, help=f"Path to the .qcow2 disk. (Optional, defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
-    run_parser.add_argument('--iso', type=str, help="Path to an ISO image for live boot or repair.")
-    run_parser.add_argument('--smp', type=str, default='2', help="Number of CPU cores. Default: 2")
-    run_parser.add_argument('--mem', type=str, default='2G', help="Amount of memory. Default: 2G")
-    run_parser.add_argument('--bridge', type=str, default='br_tap112', help="Network bridge interface. Default: br_tap112")
-    run_parser.add_argument('--secboot', action='store_true', help='Enable Secure Boot (uses ...secboot.fd)') # NOVO
+    run_parser = subparsers.add_parser(
+        'run', 
+        help='Run an existing VM',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    run_key_args = run_parser.add_argument_group('Required Arguments')
+    run_key_args.add_argument('guest_name', metavar='GUEST_NAME', type=str, help="Name of the guest to run (e.g., 'SpiralVM').")
+
+    run_opt_args = run_parser.add_argument_group('Optional Arguments')
+    run_opt_args.add_argument('--disk', metavar='<path>', type=str, help=f"Path to the .qcow2 disk. (Optional, defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
+    run_opt_args.add_argument('--iso', metavar='<path>', type=str, help="Path to an ISO image for live boot or repair.")
+    
+    run_res_args = run_parser.add_argument_group('Resource Overrides')
+    run_res_args.add_argument('--smp', metavar='<cores>', type=str, default='2', help="Number of CPU cores. Default: 2")
+    run_res_args.add_argument('--mem', metavar='<size>', type=str, default='2G', help="Amount of memory. Default: 2G")
+    run_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default='br_tap112', help="Network bridge interface. Default: br_tap112")
 
     # --- Sub-comando 'remove' ---
-    remove_parser = subparsers.add_parser('remove', help='Remove a VM (disk and NVRAM)')
-    remove_parser.add_argument('guest_name', type=str, help="Name of the guest to remove (e.g., 'SpiralVM').")
-    remove_parser.add_argument('--disk', type=str, help=f"Path to the .qcow2 disk. (Optional, defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
+    remove_parser = subparsers.add_parser(
+        'remove', 
+        help='Remove a VM (disk and NVRAM)',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    remove_key_args = remove_parser.add_argument_group('Required Arguments')
+    remove_key_args.add_argument('guest_name', metavar='GUEST_NAME', type=str, help="Name of the guest to remove (e.g., 'SpiralVM').")
+    
+    remove_opt_args = remove_parser.add_argument_group('Optional Arguments')
+    remove_opt_args.add_argument('--disk', metavar='<path>', type=str, help=f"Path to the .qcow2 disk. (Optional, defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
 
     # --- Sub-comando 'list' ---
-    list_parser = subparsers.add_parser('list', help='List available VM disks in the default directory')
+    list_parser = subparsers.add_parser(
+        'list', 
+        help='List available VM disks in the default directory',
+        description=f"Scans the default directory ({DEFAULT_IMG_DIR}) for .qcow2 files."
+    )
 
     # --- Lógica de Validação ---
     
@@ -216,21 +256,13 @@ def main():
          sys.exit(1)
     nvram_path = f"{DEFAULT_NVRAM_DIR}/{args.guest_name}_VARS.fd"
 
-    # --- INÍCIO DA LÓGICA SECBOOT ---
-    # Determinar qual arquivo OVMF_CODE usar
-    if args.secboot:
-        print(f"{GREEN}*{RESET} INFO: Secure Boot enabled.")
-        ovmf_code_path = OVMF_CODE_SECBOOT
-    else:
-        ovmf_code_path = OVMF_CODE_DEFAULT
+    # Definir caminho do OVMF CODE (agora apenas o padrão)
+    ovmf_code_path = OVMF_CODE_PATH
 
     # Validar OVMF_CODE principal
     if not os.path.exists(ovmf_code_path):
         print(f"{RED}*{RESET} ERROR: Base OVMF CODE file not found: {YELLOW}{ovmf_code_path}{RESET}", file=sys.stderr)
-        if args.secboot:
-             print(f"{RED}*{RESET} ERROR: Is the 'ovmf-ia32-x64-secboot' package installed?", file=sys.stderr)
         sys.exit(1)
-    # --- FIM DA LÓGICA SECBOOT ---
 
 
     if args.command == 'new':
@@ -285,7 +317,7 @@ def main():
              print(f"{RED}*{RESET} ERROR: qemu-img create failed.", file=sys.stderr)
              sys.exit(1)
 
-        # 5. Criar NVRAM
+        # 5. Criar NVRAM (lógica padrão)
         if not create_nvram_file(args.guest_name, nvram_path):
             print(f"{RED}*{RESET} ERROR: Failed to create NVRAM file.", file=sys.stderr)
             sys.exit(1)
@@ -334,7 +366,6 @@ def main():
         '-device', 'virtio-net-pci,netdev=net0',
         '-netdev', f'tap,id=net0,br={args.bridge},helper=/usr/lib/qemu/qemu-bridge-helper',
         '-device', 'virtio-vga',
-        # MODIFICADO: usa o caminho do OVMF selecionado (normal ou secboot)
         '-drive', f'if=pflash,format=raw,readonly=on,file={ovmf_code_path}',
         '-drive', f'if=pflash,format=raw,file={nvram_path}',
     ]
