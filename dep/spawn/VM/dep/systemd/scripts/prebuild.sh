@@ -12,8 +12,6 @@ print_err() {
     exit 1
 }
 
-printf "\e[32m*\e[0m PERFORMING SUBSEQUENT PROCEDURES\n"
-
 # Create systemd service file
 printf "\e[33m*\e[0m ATTENTION: CREATING SYSTEMD SERVICE \033[32m/etc/systemd/system/prebuild.service\033[0m\n"
 if cat << 'EOF' > /etc/systemd/system/prebuild.service
