@@ -1,38 +1,32 @@
-#!/bin/sh
-set -e
-set -x # Shows each command being executed
-echo "--- WARNING: STARTING INSECURE CONFIGURATION SCRIPT FOR TESTING ---"
-echo "Pausing for 3 seconds..."
-sleep 3
-# --- 1. Network Configuration ---
-# Using the correct IP for the QEMU 'user' network
-echo "Configuring temporary network on ens3..."
-/sbin/ip link set ens3 up
-/sbin/ip addr add 10.0.2.15/24 dev ens3
-/sbin/ip route add default via 10.0.2.2
-echo "Network configured:"
-/sbin/ip a show ens3
-/sbin/ip route show
-# --- 2. SSHD Modification ---
-echo "Modifying /etc/ssh/sshd_config to allow insecure root login..."
-CONFIG_FILE="/etc/ssh/sshd_config"
-# Remove old lines to avoid duplicates
-sed -i '/^PermitRootLogin/d' "$CONFIG_FILE"
-sed -i '/^PermitEmptyPasswords/d' "$CONFIG_FILE"
-# Append the new insecure lines to the end of the file
-echo "PermitRootLogin yes" >> "$CONFIG_FILE"
-echo "PermitEmptyPasswords yes" >> "$CONFIG_FILE"
-echo "Restarting sshd service..."
-if command -v systemctl >/dev/null; then
-    systemctl restart sshd
-elif command -v service >/dev/null; then
-    service ssh restart
-else
-    echo "WARNING: Could not restart sshd. Do it manually."
-fi
-# --- 3. Remove Root Password ---
-echo "Removing password for root user..."
-passwd -d root
-echo "--- TEMPORARY CONFIGURATION COMPLETE ---"
-echo "Passwordless root login via SSH (port 22) should now be active."
-echo "Remember to revert this with your post-installation script."
+#!/bin/bash
+
+    # Creates the systemd service file
+    cat << EOF > /etc/systemd/system/prebuild.service
+[Unit]
+Description=Prebuild – Spawn Project
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "\
+  rm /etc/network/interfaces\
+  ip link set ens3 up; \
+  ip addr add 10.0.12.249/24 dev ens3; \
+  ip route add default via 10.0.12.254 dev ens3\
+  sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config; \
+  sed -i '/^PermitEmptyPasswords/d' /etc/ssh/sshd_config; \
+  echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config; \
+  echo 'PermitEmptyPasswords yes' >> /etc/ssh/sshd_config; \
+  systemctl try-restart sshd; \
+  passwd -d root"
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload && systemctl enable kernel-cleanup.service --quiet
+
+
+
+
