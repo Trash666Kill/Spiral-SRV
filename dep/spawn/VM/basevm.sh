@@ -241,7 +241,7 @@ packages() {
     extra_utils() {
         # Install additional utilities packages
         printf "\e[32m*\e[0m INSTALLING PACKAGE CATEGORY: ADDITIONAL UTILITIES\n"
-        EXTRA_UTILS="tree pwgen"
+        EXTRA_UTILS="tree pwgen uuid uuid-runtime"
         apt-get -y install $EXTRA_UTILS > /dev/null 2>&1
     }
 

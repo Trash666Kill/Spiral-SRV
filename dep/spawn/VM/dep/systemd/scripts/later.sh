@@ -5,10 +5,15 @@ unset HISTFILE
 
 NIC0=ens2
 
-hostname() {
-    # Install the required packages
-    apt-get -y install uuid uuid-runtime > /dev/null 2>&1
+network() {
+    # Restart the systemd-resolved service to ensure DNS resolution is active
+    systemctl restart systemd-resolved
 
+    # Stores the assigned IP address
+    IP_ADDRESS=$(ip -4 addr show "$NIC0" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+}
+
+hostname() {
     # Generates a new hostname based on the chassis type and a random value
     HOSTNAME="vm$(shuf -i 100000-999999 -n 1)"
 
@@ -26,14 +31,6 @@ hostname() {
 ::1     localhost ip6-localhost ip6-loopback
 ff02::1 ip6-allnodes
 ff02::2 ip6-allrouters" > /etc/hosts
-}
-
-network() {
-    # Restart the systemd-resolved service to ensure DNS resolution is active
-    systemctl restart systemd-resolved
-
-    # Stores the assigned IP address
-    IP_ADDRESS=$(ip -4 addr show "$NIC0" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
 }
 
 passwords() {
