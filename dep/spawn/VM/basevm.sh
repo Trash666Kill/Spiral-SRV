@@ -492,7 +492,6 @@ main() {
     interface
     hostname
     target_user
-    passwords
     packages
     directories
     trigger
