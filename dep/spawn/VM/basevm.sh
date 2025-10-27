@@ -470,19 +470,6 @@ finish() {
     else
         rm -f /etc/network/interfaces
     fi
-
-    printf "\e[32m*\e[0m INSTALLATION COMPLETED SUCCESSFULLY!\n"
-
-    read -p "DO YOU WANT TO RESTART? (Y/N): " response
-    response=${response^^}
-    if [[ "$response" == "Y" ]]; then
-        printf "\e[32m*\e[0m RESTARTING...\n"
-        systemctl reboot
-    elif [[ "$response" == "N" ]]; then
-        printf "\e[32m*\e[0m WILL NOT BE RESTARTED.\n"
-    else
-        printf "\e[31m*\e[0m ERROR: PLEASE ANSWER WITH 'Y' FOR YES OR 'N' FOR NO.\n"
-    fi
 }
 
 # Main function to orchestrate the setup
