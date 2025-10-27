@@ -3,6 +3,14 @@
 # Disable bash history
 unset HISTFILE
 
+connectiontest() {
+    # Tests connectivity to Debian repositories
+    if ! ping -4 -c 4 debian.org &>/dev/null; then
+        printf "ERROR: UNABLE TO CONNECT TO \e[32mDEBIAN REPOSITORIES\e[0m\n"
+        exit 1
+    fi
+}
+
 # Execution directory
 cd $PWD/dep
 
@@ -468,6 +476,7 @@ finish() {
 
 # Main function to orchestrate the setup
 main() {
+    connectiontest
     update
     cloud_kernel
     interface
