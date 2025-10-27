@@ -3,6 +3,8 @@
 # Disable bash history
 unset HISTFILE
 
+NIC0=ens2
+
 # Obtendo o hostname da máquina
 HOSTNAME=$(hostname)
 
@@ -14,12 +16,12 @@ network() {
 
     sleep 5
 
-    # Obtém um novo endereço IP via DHCP para a interface eth0
-    dhcpcd --release ens2
-    dhcpcd --rebind ens2
+    # Obtém um novo endereço IP via DHCP para a interface "$NIC0"
+    dhcpcd --release "$NIC0"
+    dhcpcd --rebind "$NIC0"
 
     # Armazena o endereço de IP atribuído
-    IP_ADDRESS=$(ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+    IP_ADDRESS=$(ip -4 addr show "$NIC0" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
 }
 
 passwords() {
