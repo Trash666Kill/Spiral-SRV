@@ -196,38 +196,6 @@ target_user() {
     /sbin/usermod -aG sudo "$TARGET_USER"
 }
 
-passwords() {
-    # Install the package required for password generation
-    apt-get -y install pwgen > /dev/null 2>&1
-
-    # Generate two secure passwords with special characters and 18 characters
-    PASSWORD_ROOT=$(pwgen -s 18 1)
-    PASSWORD_TARGET=$(pwgen -s 18 1)
-
-    # Check if the TARGET_USER exists in the system
-    if ! id "$TARGET_USER" &>/dev/null; then
-        printf "\e[31m* ERROR:\e[0m USER '$TARGET_USER' DOES NOT EXIST. TERMINATING SCRIPT.\n"
-        exit 1
-    fi
-
-    # Change the root user's password
-    echo "root:$PASSWORD_ROOT" | chpasswd
-    if [ $? -ne 0 ]; then
-        printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE ROOT PASSWORD.\n"
-        exit 1
-    fi
-
-    # Change the TARGET_USER's password
-    echo "$TARGET_USER:$PASSWORD_TARGET" | chpasswd
-    if [ $? -ne 0 ]; then
-        printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE PASSWORD FOR USER '$TARGET_USER'.\n"
-        exit 1
-    fi
-
-    echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mSysOp\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
-    echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mRoot\033[0m USER: \033[32m\"$PASSWORD_ROOT\"\033[0m"
-}
-
 packages() {
     text_editor() {
         # Install text editor package
