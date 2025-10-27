@@ -17,8 +17,6 @@ hostname() {
     # Generates a new hostname based on the chassis type and a random value
     HOSTNAME="vm$(shuf -i 100000-999999 -n 1)"
 
-    printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
-
     # Remove the /etc/hostname file and write the new hostname
     rm /etc/hostname
     printf "$HOSTNAME" > /etc/hostname
