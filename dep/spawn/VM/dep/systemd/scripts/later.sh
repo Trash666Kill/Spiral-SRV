@@ -9,16 +9,8 @@ NIC0=ens2
 HOSTNAME=$(hostname)
 
 network() {
-    sleep 10
-
     # Restart the systemd-resolved service to ensure DNS resolution is active
     systemctl restart systemd-resolved
-
-    sleep 5
-
-    # Obtain a new IP address via DHCP for the "$NIC0" interface
-    dhcpcd --release "$NIC0"
-    dhcpcd --rebind "$NIC0"
 
     # Stores the assigned IP address
     IP_ADDRESS=$(ip -4 addr show "$NIC0" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
