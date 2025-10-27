@@ -6,8 +6,8 @@ AllowTcpForwarding no
 GatewayPorts no
 
 PubkeyAuthentication yes
-PermitRootLogin prohibit-password
-PermitEmptyPasswords no
+#PermitRootLogin prohibit-password
+#PermitEmptyPasswords no
 
 ChallengeResponseAuthentication no
 
