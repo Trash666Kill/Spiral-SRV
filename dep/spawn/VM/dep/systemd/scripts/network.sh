@@ -3,6 +3,8 @@
 # Close on any error
 set -e
 
+NIC0=enp1s0
+
 # Physical interfaces
 interfaces() {
     nic0() {
