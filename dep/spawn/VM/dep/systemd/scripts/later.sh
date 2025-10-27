@@ -11,33 +11,33 @@ HOSTNAME=$(hostname)
 network() {
     sleep 10
 
-    # Reinicia o serviço systemd-resolved para garantir que a resolução de DNS esteja ativa
+    # Restart the systemd-resolved service to ensure DNS resolution is active
     systemctl restart systemd-resolved
 
     sleep 5
 
-    # Obtém um novo endereço IP via DHCP para a interface "$NIC0"
+    # Obtain a new IP address via DHCP for the "$NIC0" interface
     dhcpcd --release "$NIC0"
     dhcpcd --rebind "$NIC0"
 
-    # Armazena o endereço de IP atribuído
+    # Stores the assigned IP address
     IP_ADDRESS=$(ip -4 addr show "$NIC0" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
 }
 
 passwords() {
-    # Armazena o nome do usuário 'sysop' na variável TARGET_USER
+    # Stores the username 'sysop' in the variable TARGET_USER
     TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
 
-    # Gera duas senhas seguras com caracteres especiais e 12 caracteres
+    # Generates two secure passwords with special characters and 12 characters
     PASSWORD_TARGET=$(pwgen -s 18 1)
 
-    # Verifica se o usuário TARGET_USER existe no sistema
+    # Checks if the user TARGET_USER exists in the system
     if ! id "$TARGET_USER" &>/dev/null; then
         printf "\e[31m* ERROR:\e[0m USER '$TARGET_USER' DOES NOT EXIST. TERMINATING SCRIPT.\n"
         exit 1
     fi
 
-    # Altera a senha do usuário TARGET_USER
+    # Changes the password of the user TARGET_USER
     echo "$TARGET_USER:$PASSWORD_TARGET" | chpasswd
     if [ $? -ne 0 ]; then
         printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE PASSWORD FOR USER '$TARGET_USER'.\n"
@@ -52,10 +52,10 @@ baseboard() {
 }
 
 finish() {
-    # Remove pacotes não mais necessários
+    # Remove packages that are no longer needed
     apt -y autoremove > /dev/null 2>&1
 
-    # Remove o script atual (o arquivo que está executando)
+    # Remove the current script (the file that is running)
     rm -- "$0"
 }
 
