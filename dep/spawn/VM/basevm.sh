@@ -438,9 +438,6 @@ printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART
 # Short-Description: Procedures subsequent to instance construction only possible after reboot
 ### END INIT INFO
 
-# Removing the Pre-Build file Service
-rm /etc/systemd/system/prebuild.service
-
 # Terminates all processes of user TARGET_USER
 pkill -u %s
 
@@ -460,9 +457,6 @@ rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later && ch
 finish() {
     # Remove unused packages and unnecessary dependencies
     apt-get -y autoremove > /dev/null 2>&1
-
-    # Disabling and Removing the Pre-Build Service
-    systemctl disable prebuild --quiet
 
     # Remove default network configuration file to avoid conflicts, with warning if not found
     if [[ ! -f /etc/network/interfaces ]]; then
