@@ -55,12 +55,6 @@ finish() {
     # Remove packages that are no longer needed
     apt -y autoremove > /dev/null 2>&1
 
-    # Sealing ssh connection
-    sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config
-    sed -i '/^PermitEmptyPasswords/d' /etc/ssh/sshd_config
-    echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
-    echo 'PermitEmptyPasswords no' >> /etc/ssh/sshd_config
-
     # Remove the current script (the file that is running)
     rm -- "$0"
 }
