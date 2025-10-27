@@ -462,7 +462,7 @@ finish() {
     apt-get -y autoremove > /dev/null 2>&1
 
     # Disabling and Removing the Pre-Build Service
-    systemctl disable prebuild
+    systemctl disable prebuild --quiet
 
     # Remove default network configuration file to avoid conflicts, with warning if not found
     if [[ ! -f /etc/network/interfaces ]]; then
