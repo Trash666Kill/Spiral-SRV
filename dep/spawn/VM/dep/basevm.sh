@@ -388,7 +388,7 @@ firewall() {
     # Configure firewall services and scripts
     systemctl disable --now nftables --quiet
     cp -r systemd/scripts/firewall /root/.services/
-    chmod 700 /root/.services/firewall/*.sh && chattr +i /root/.services/firewall/{a.sh,b.sh}
+    chmod 700 /root/.services/firewall/*.sh && chattr +i /root/.services/firewall/{a.sh,c.sh}
 }
 
 mount() {
