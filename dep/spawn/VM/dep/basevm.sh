@@ -473,16 +473,16 @@ printf "\e[32m*\e[0m SCHEDULING SUBSEQUENT CONSTRUCTION PROCEDURES AFTER RESTART
 # Removing the Pre-Build file Service
 rm /etc/systemd/system/prebuild.service
 
-# Finaliza todos os processos do usuário TARGET_USER
+# Terminates all processes of user TARGET_USER
 pkill -u %s
 
-# Remove o usuário TARGET_USER e seu diretório home
+# Remove the user TARGET_USER and its home directory
 userdel -r %s
 
-# Remove a pasta VM do diretório /root
+# Remove the VM folder from the /root directory
 rm -rf /root/build.sh
 
-# Remove o script init.d depois que ele for executado
+# Remove the init.d script after it runs
 rm -f /etc/init.d/later' "$TARGET_USER" "$TARGET_USER" > /etc/init.d/later && chmod +x /etc/init.d/later
 
     # Add the script to the services that will start at boot
