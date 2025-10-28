@@ -35,7 +35,6 @@ passwords() {
 }
 
 baseboard() {
-    printf "\e[32m*\e[0m CONTAINER: \e[32m%s\e[0m\n" "$HOSTNAME"
     echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mSysOp\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
     printf "\e[32m*\e[0m IP ADDRESS: \e[32m%s\e[0m\n" "$IP_ADDRESS"
 }
