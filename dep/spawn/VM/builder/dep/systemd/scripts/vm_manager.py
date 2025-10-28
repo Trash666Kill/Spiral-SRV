@@ -67,7 +67,8 @@ def print_custom_help():
     
     print(f"  {GREEN}To run an existing VM:{RESET}")
     print(f"    Use the {CYAN}run{RESET} command (runs in background):")
-    print(f"    {YELLOW}Example:{RESET} ./vm_manager.py run MyVM\n")
+    print(f"    {YELLOW}Example:{RESET} ./vm_manager.py run MyVM")
+    print(f"    {YELLOW}Example (Headless):{RESET} ./vm_manager.py run MyVM --headless\n")
     
     print(f"  {GREEN}To stop a running VM:{RESET}")
     print(f"    Use the {CYAN}stop{RESET} command:")
@@ -161,6 +162,10 @@ def main():
     run_opt_args = run_parser.add_argument_group('Optional Arguments')
     run_opt_args.add_argument('--disk', metavar='<path>', type=str, help=f"Path to the .qcow2 disk. (Optional, defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
     run_opt_args.add_argument('--iso', metavar='<path>', type=str, help="Path to an ISO image for live boot or repair.")
+    
+    # <<< [MODIFICAÇÃO 1] Argumento --headless adicionado >>>
+    run_opt_args.add_argument('--headless', action='store_true', help="Run in headless mode (no graphical display).")
+    
     run_res_args = run_parser.add_argument_group('Resource Overrides')
     run_res_args.add_argument('--smp', metavar='<cores>', type=str, default=DEFAULT_SMP, help=f"Number of CPU cores. Default: {DEFAULT_SMP}")
     run_res_args.add_argument('--mem', metavar='<size>', type=str, default=DEFAULT_MEM, help=f"Amount of memory. Default: {DEFAULT_MEM}")
@@ -515,10 +520,27 @@ def main():
         '-drive', f'file={disk_path},if=virtio,format=qcow2', 
         '-device', 'virtio-net-pci,netdev=net0',
         '-netdev', f'tap,id=net0,br={args.bridge},helper={QEMU_BRIDGE_HELPER}',
-        '-device', 'virtio-vga',
+        # '-device', 'virtio-vga', # <-- [MODIFICAÇÃO 2] Removido daqui
         '-drive', f'if=pflash,format=raw,readonly=on,file={ovmf_code_path}',
         '-drive', f'if=pflash,format=raw,file={nvram_path}',
     ]
+
+    # <<< [MODIFICAÇÃO 3] Lógica de Gráficos (Headless ou VGA) >>>
+    # A flag --headless só existe no parser 'run'.
+    # Usamos getattr() para checar com segurança se a flag existe e é True.
+    # Se o comando for 'new', getattr() retornará False, e os gráficos serão habilitados.
+    is_headless = getattr(args, 'headless', False) 
+
+    if is_headless:
+        print(f"{GREEN}*{RESET} INFO: Headless mode enabled. Adding {CYAN}-vga none -display none{RESET}.")
+        # Remove o dispositivo VGA e garante que nenhuma janela gráfica seja aberta
+        qemu_command.extend(['-vga', 'none', '-display', 'none'])
+    else:
+        # Modo padrão (com gráficos) para 'new' ou 'run' normal
+        qemu_command.append('-device')
+        qemu_command.append('virtio-vga')
+    # <<< Fim da Modificação 3 >>>
+
 
     # --- Adiciona flags de daemonização APENAS para 'run' ---
     if args.command == 'run':
