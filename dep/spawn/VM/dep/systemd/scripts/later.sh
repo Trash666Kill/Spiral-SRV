@@ -49,6 +49,11 @@ finish() {
     echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
     echo 'PermitEmptyPasswords no' >> /etc/ssh/sshd_config
 
+    # Removing the Pre-Build file Service
+    rm /etc/systemd/system/prebuild.service
+    # Disabling and Removing the Pre-Build Service
+    systemctl disable prebuild --quiet
+
     # Remove the current script (the file that is running)
     rm -- "$0"
 }
