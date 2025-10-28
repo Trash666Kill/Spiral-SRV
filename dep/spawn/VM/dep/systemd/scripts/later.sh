@@ -18,11 +18,19 @@ passwords() {
     TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
 
     # Generates two secure passwords with special characters and 12 characters
+    PASSWORD_ROOT=$(pwgen -s 18 1)
     PASSWORD_TARGET=$(pwgen -s 18 1)
 
     # Checks if the user TARGET_USER exists in the system
     if ! id "$TARGET_USER" &>/dev/null; then
         printf "\e[31m* ERROR:\e[0m USER '$TARGET_USER' DOES NOT EXIST. TERMINATING SCRIPT.\n"
+        exit 1
+    fi
+
+    # Change the root user's password
+    echo "root:$PASSWORD_ROOT" | chpasswd
+    if [ $? -ne 0 ]; then
+        printf "\e[31m* ERROR:\e[0m FAILED TO CHANGE ROOT PASSWORD.\n"
         exit 1
     fi
 
@@ -36,7 +44,7 @@ passwords() {
 
 baseboard() {
     echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mSysOp\033[0m USER: \033[32m\"$PASSWORD_TARGET\"\033[0m"
-    printf "\e[32m*\e[0m IP ADDRESS: \e[32m%s\e[0m\n" "$IP_ADDRESS"
+    echo -e "\033[32m*\033[0m GENERATED PASSWORD FOR \033[32mRoot\033[0m USER: \033[32m\"$PASSWORD_ROOT\"\033[0m"
 }
 
 finish() {
