@@ -7,24 +7,39 @@ unset HISTFILE
 cd /etc/spawn/VM/
 
 BASE="SpiralVM"
-BASE_CT_FILES=(
+BASE_VM_FILES=(
+    "builder/basevm.sh"
+    "builder/dep/sshd_config"
+    "builder/dep/systemd/scripts/firewall/a.sh"
+    "builder/dep/systemd/scripts/firewall/c.sh"
+    "builder/dep/systemd/scripts/later.sh"
+    "builder/dep/systemd/scripts/main.sh"
+    "builder/dep/systemd/scripts/mount.sh"
+    "builder/dep/systemd/scripts/network.sh"
+    "builder/dep/systemd/scripts/prebuild.sh"
+    "builder/dep/systemd/scripts/vm_manager.py"
+    "builder/dep/systemd/trigger.service"
+    "builder/lease-monitor.sh"
+)
+
+BASE_VM_FILES=(
     "basect.sh"
     "systemd/scripts/main.sh"
     "systemd/scripts/network.sh"
 )
-NEW_CT="vm$(shuf -i 100000-999999 -n 1)"
-NEW_CT_FILES="later.sh"
+NEW_VM="vm$(shuf -i 100000-999999 -n 1)"
+NEW_VM_FILES="later.sh"
 
 basect() {
     # Checks if the files needed to create the base virtual machine exist
-    for file in $BASE_CT_FILES; do
+    for file in $BASE_VM_FILES; do
         if [[ ! -f "$file" ]]; then
-            printf "\e[31m*\e[0m ERROR: FILES REQUIRED TO BUILD THE BASE VIRTUAL MACHINE \033[32m%s\033[0m DO NOT EXIST.\n" "$file"
+            printf "VM[31m*\e[0m ERROR: FILES REQUIRED TO BUILD THE BASE VIRTUAL MACHINE \033[32m%s\033[0m DO NOT EXIST.\n" "$file"
             exit 1
         fi
     done
 
-    # Verifica se o virtual machine base já existe
+    # Verifica se a virtual machine base já existe
     if ! lxc-ls --filter "^${BASE}$" | grep -q "${BASE}"; then
         printf "\e[33m*\e[0m ATTENTION: THE BASE VIRTUAL MACHINE \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE"
 
@@ -82,7 +97,7 @@ basect() {
 
 newct() {
 # Verifica se os arquivos necessários para criar o novo virtual machine existem
-for file in $NEW_CT_FILES; do
+for file in $NEW_VM_FILES; do
     if [[ ! -f "$file" ]]; then
         printf "\e[31m*\e[0m ERROR: FILES REQUIRED TO BUILD THE NEW VIRTUAL MACHINE \033[32m%s\033[0m DO NOT EXIST.\n" "$file"
         exit 1
@@ -91,18 +106,18 @@ done
 
 # Inicia a criação do novo virtual machine a partir do virtual machine base
 printf "\e[32m*\e[0m CREATING VIRTUAL MACHINE FROM BASE, WAIT...\n"
-lxc-copy --name "${BASE}" --newname "${NEW_CT}"
+lxc-copy --name "${BASE}" --newname "${NEW_VM}"
 
 # Verifica se a cópia do virtual machine foi bem-sucedida
 if [ $? -eq 0 ]; then
     printf "\033[32m*\033[0m VIRTUAL MACHINE CREATED SUCCESSFULLY\n"
 
     # Caminho do arquivo de configuração do virtual machine
-    local lxc_config_path="/var/lib/lxc/$NEW_CT/config"
+    local lxc_config_path="/var/lib/lxc/$NEW_VM/config"
 
     # Verifica se o arquivo de configuração do virtual machine existe
     if [ ! -f "$lxc_config_path" ]; then
-        printf "\e[31m*\e[0m ERROR: VIRTUAL MACHINE CONFIGURATION FILE \033[32m%s\033[0m NOT FOUND\n" "$NEW_CT"
+        printf "\e[31m*\e[0m ERROR: VIRTUAL MACHINE CONFIGURATION FILE \033[32m%s\033[0m NOT FOUND\n" "$NEW_VM"
         exit 1
     fi
 
@@ -119,7 +134,7 @@ if [ $? -eq 0 ]; then
     local IP_ADDRESS=$(/etc/spawn/CT/grepip.sh)
 
     # Monta a string de reserva de DNS
-    RESULT="$MAC_ADDRESS,$IP_ADDRESS,$NEW_CT"
+    RESULT="$MAC_ADDRESS,$IP_ADDRESS,$NEW_VM"
     printf "\033[32m*\033[0m IP ADDRESS FIXED.\n"
 
     # Modifica a configuração do dnsmasq para adicionar a reserva de IP
@@ -144,14 +159,14 @@ if [ $? -eq 0 ]; then
 
     # Inicia o novo virtual machine
     printf "\033[32m*\033[0m STARTING...\n"
-    cp later.sh /var/lib/lxc/"${NEW_CT}"/rootfs/root/
-    lxc-start --name "${NEW_CT}"
+    cp later.sh /var/lib/lxc/"${NEW_VM}"/rootfs/root/
+    lxc-start --name "${NEW_VM}"
 
     # Torna o script later.sh executável e o executa dentro do virtual machine
-    lxc-attach --name "${NEW_CT}" -- chmod +x /root/later.sh
-    lxc-attach --name "${NEW_CT}" -- /root/later.sh
+    lxc-attach --name "${NEW_VM}" -- chmod +x /root/later.sh
+    lxc-attach --name "${NEW_VM}" -- /root/later.sh
 else
-    printf "\e[31m*\e[0m ERROR CREATING VIRTUAL MACHINE \033[32m%s\033[0m.\n" "$NEW_CT"
+    printf "\e[31m*\e[0m ERROR CREATING VIRTUAL MACHINE \033[32m%s\033[0m.\n" "$NEW_VM"
     exit 1
 fi
 }
