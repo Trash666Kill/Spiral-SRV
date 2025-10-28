@@ -42,7 +42,7 @@ baseboard() {
 
 finish() {
     # Remove packages that are no longer needed
-    apt -y autoremove > /dev/null 2>&1
+    apt-get -y autoremove > /dev/null 2>&1
 
     # Sealing ssh connection
     sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config
