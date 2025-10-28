@@ -53,7 +53,7 @@ basevm() {
     if [[ ! -f "$BASE_VM" ]]; then
         printf "\e[33m*\e[0m ATTENTION: THE BASE VIRTUAL MACHINE FILE \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE_VM"
         #
-        cp PRE_BASE_VM BASE_VM
+        cp -v "$PRE_BASE_VM" "$BASE_VM"
     
     fi
 }
