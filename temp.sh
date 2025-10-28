@@ -25,7 +25,6 @@ BASE_VM_FILES=(
     /var/lib/libvirt/images/SpiralVM-Pre.qcow2.bak
     /var/lib/libvirt/images/SpiralVM-Base.qcow2
 )
-PRE_BASE_VM="${BASE_VM_FILES[0]}"
 BASE_VM="${BASE_VM_FILES[1]}"
 BASE_NAME="SpiralVM"
 
@@ -52,10 +51,23 @@ basevm() {
     # Checks if the base virtual machine file already exists
     if [[ ! -f "$BASE_VM" ]]; then
         printf "\e[33m*\e[0m ATTENTION: THE BASE VIRTUAL MACHINE FILE \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE_VM"
-        #
-        cp -v "$PRE_BASE_VM" "$BASE_VM"
-    
-    fi
+        
+        local PRE_BASE_VM="${BASE_VM_FILES[0]}" # Agora aponta para ...Pre.qcow2.bak
+
+        # Now, check if the "Pre" file exists, which is needed to create the "Base" file
+        if [[ ! -f "$PRE_BASE_VM" ]]; then
+            printf "\e[31m*\e[0m ERROR: CANNOT CREATE BASE VM. THE PRE-REQUISITE FILE \033[32m%s\033[0m ALSO DOES NOT EXIST.\n" "$PRE_BASE_VM"
+            exit 1
+        else
+            printf "\e[32m*\e[0m INFO: Found \033[32m%s\033[0m. Proceeding to create Base VM...\n" "$PRE_BASE_VM"
+            #
+            cp "$PRE_BASE_VM" "$BASE_VM"
+            
+            # qemu-img create ...
+        fi
+
+    fi 
 }
+
 
 basevm
