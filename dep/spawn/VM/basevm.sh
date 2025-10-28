@@ -449,6 +449,9 @@ finish() {
     else
         rm -f /etc/network/interfaces
     fi
+
+    # Remove files used in construction
+    rm -rf /root/VM
 }
 
 # Main function to orchestrate the setup
