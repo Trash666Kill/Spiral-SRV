@@ -21,16 +21,10 @@ BASE_VM_FILES=(
     "builder/dep/systemd/trigger.service"
     "builder/lease-monitor.sh"
 )
-
-BASE_VM_FILES=(
-    "basect.sh"
-    "systemd/scripts/main.sh"
-    "systemd/scripts/network.sh"
-)
 NEW_VM="vm$(shuf -i 100000-999999 -n 1)"
 NEW_VM_FILES="later.sh"
 
-basect() {
+basevm() {
     # Checks if the files needed to create the base virtual machine exist
     for file in $BASE_VM_FILES; do
         if [[ ! -f "$file" ]]; then
