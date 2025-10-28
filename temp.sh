@@ -22,9 +22,10 @@ BASE_BUILDER_VM_FILES=(
 )
 
 BASE_VM_FILES=(
-    /var/lib/libvirt/images/SpiralVM-Pre.qcow2
+    /var/lib/libvirt/images/SpiralVM-Pre.qcow2.bak
     /var/lib/libvirt/images/SpiralVM-Base.qcow2
 )
+PRE_BASE_VM="${BASE_VM_FILES[0]}"
 BASE_VM="${BASE_VM_FILES[1]}"
 BASE_NAME="SpiralVM"
 
@@ -51,9 +52,8 @@ basevm() {
     # Checks if the base virtual machine file already exists
     if [[ ! -f "$BASE_VM" ]]; then
         printf "\e[33m*\e[0m ATTENTION: THE BASE VIRTUAL MACHINE FILE \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE_VM"
-        
-        # A lógica para *criar* o arquivo $BASE_VM (se ele não existe)
-        # provavelmente entraria aqui.
+        #
+        cp PRE_BASE_VM BASE_VM
     
     fi
 }
