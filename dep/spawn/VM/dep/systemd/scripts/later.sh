@@ -56,6 +56,10 @@ finish() {
 
     # Remove the current script (the file that is running)
     rm -- "$0"
+
+    # Reboot
+    printf "\e[33m*\e[0m RESTARTING THE NEW VIRTUAL MACHINE, WAIT FOR THE HOSTNAME AND IP ADDRESS TO BE DISPLAYED...\n"
+    systemctl reboot
 }
 
 main() {
