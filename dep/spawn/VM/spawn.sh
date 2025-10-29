@@ -21,7 +21,7 @@ NEW_VM_FILES=(
     "builder/lease-monitor.sh"
     "builder/vm_manager.py"
 )
-VM_MANAGER="${BASE_VM_FILES[2]}"
+VM_MANAGER=python3 "${BASE_VM_FILES[2]}"
 
 BASE_VM_NAME="SpiralVM"
 NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
@@ -46,7 +46,7 @@ basevm() {
     fi
 
     # Check if base virtual machine already exists
-    output=$(python3 vm_manager.py list)
+    output=$(eval "$VM_MANAGER" list)
 
     if ! echo "$output" | grep -q "$BASE_VM_NAME"; then
         printf "\e[33m*\e[0m ATTENTION: THE BASE VIRTUAL MACHINE \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE_VM_NAME"
