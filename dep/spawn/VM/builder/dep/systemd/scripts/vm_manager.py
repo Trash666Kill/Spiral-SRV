@@ -5,7 +5,7 @@ import argparse
 import sys
 import os
 import shutil
-import re  # <-- ADICIONADO para validação
+import re
 
 # --- ANSI Color Codes ---
 GREEN = '\033[32m'
@@ -26,7 +26,7 @@ QEMU_BRIDGE_HELPER = '/usr/lib/qemu/qemu-bridge-helper'
 # --- Caminhos de Diretório Padrão ---
 DEFAULT_IMG_DIR = "/var/lib/libvirt/images"
 DEFAULT_NVRAM_DIR = "/var/lib/libvirt/qemu/nvram"
-DEFAULT_STATE_DIR = "/var/run/qemu_vm_manager" # <-- ADICIONADO para PIDs
+DEFAULT_STATE_DIR = "/var/run/qemu_vm_manager"
 
 # --- Padrões de OVMF (UEFI) ---
 OVMF_CODE_PATH = '/usr/share/OVMF/OVMF_CODE_4M.fd'
@@ -59,7 +59,7 @@ def run_command(cmd_list):
 def print_custom_help():
     """Prints the custom help message when no command is given."""
     print(f"\n{GREEN}*{RESET} {CYAN}vm_manager.py: QEMU VM Manager{RESET}")
-    print(f"\n{YELLOW}ATTENTION: You must specify an operation mode: 'new', 'run', 'list', 'stop', or 'remove'.{RESET}\n")
+    print(f"\n{YELLOW}ATTENTION: You must specify an operation mode: 'new', 'run', 'list', 'stop', 'remove', or 'copy'.{RESET}\n")
     
     print(f"  {GREEN}To create a new VM:{RESET}")
     print(f"    Use the {CYAN}new{RESET} command (runs in foreground for installation):")
@@ -69,6 +69,10 @@ def print_custom_help():
     print(f"    Use the {CYAN}run{RESET} command (runs in background):")
     print(f"    {YELLOW}Example:{RESET} ./vm_manager.py run MyVM")
     print(f"    {YELLOW}Example (Headless):{RESET} ./vm_manager.py run MyVM --headless\n")
+
+    print(f"  {GREEN}To clone an existing VM:{RESET}")
+    print(f"    Use the {CYAN}copy{RESET} command:")
+    print(f"    {YELLOW}Example:{RESET} ./vm_manager.py copy MyVM MyVM-Backup\n")
     
     print(f"  {GREEN}To stop a running VM:{RESET}")
     print(f"    Use the {CYAN}stop{RESET} command:")
@@ -106,6 +110,16 @@ def create_nvram_file(guest_name, nvram_dest_path):
          return False
 
     try:
+        # Garante que o diretório de destino exista
+        nvram_dir = os.path.dirname(nvram_dest_path)
+        if not os.path.isdir(nvram_dir):
+            print(f"{YELLOW}*{RESET} ATTENTION: NVRAM directory not found. Creating {CYAN}{nvram_dir}{RESET}")
+            try:
+                os.makedirs(nvram_dir, 0o755)
+            except OSError as e:
+                print(f"{RED}*{RESET} ERROR: Failed to create NVRAM directory: {e}", file=sys.stderr)
+                return False
+
         print(f"{CYAN}*{RESET} EXECUTING: copy {nvram_template_src} to {nvram_dest_path}")
         shutil.copyfile(nvram_template_src, nvram_dest_path)
         return True
@@ -137,7 +151,6 @@ def main():
         help='Create a new VM (runs in foreground)',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    # ... (argumentos do 'new' permanecem os mesmos) ...
     new_key_args = new_parser.add_argument_group('Required Arguments')
     new_key_args.add_argument('guest_name', metavar='GUEST_NAME', type=str, help="Name for the new guest (e.g., 'SpiralVM').")
     new_key_args.add_argument('--iso', metavar='<path>', type=str, required=True, help="Path to the ISO image (Mandatory for new).")
@@ -156,16 +169,12 @@ def main():
         help='Run an existing VM (runs in background)',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    # ... (argumentos do 'run' permanecem os mesmos) ...
     run_key_args = run_parser.add_argument_group('Required Arguments')
     run_key_args.add_argument('guest_name', metavar='GUEST_NAME', type=str, help="Name of the guest to run (e.g., 'SpiralVM').")
     run_opt_args = run_parser.add_argument_group('Optional Arguments')
     run_opt_args.add_argument('--disk', metavar='<path>', type=str, help=f"Path to the .qcow2 disk. (Optional, defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
     run_opt_args.add_argument('--iso', metavar='<path>', type=str, help="Path to an ISO image for live boot or repair.")
-    
-    # <<< [MODIFICAÇÃO 1] Argumento --headless adicionado >>>
     run_opt_args.add_argument('--headless', action='store_true', help="Run in headless mode (no graphical display).")
-    
     run_res_args = run_parser.add_argument_group('Resource Overrides')
     run_res_args.add_argument('--smp', metavar='<cores>', type=str, default=DEFAULT_SMP, help=f"Number of CPU cores. Default: {DEFAULT_SMP}")
     run_res_args.add_argument('--mem', metavar='<size>', type=str, default=DEFAULT_MEM, help=f"Amount of memory. Default: {DEFAULT_MEM}")
@@ -178,14 +187,13 @@ def main():
         help='Remove a VM (disk and NVRAM)',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    # ... (argumentos do 'remove' permanecem os mesmos) ...
     remove_key_args = remove_parser.add_argument_group('Required Arguments')
     remove_key_args.add_argument('guest_name', metavar='GUEST_NAME', type=str, help="Name of the guest to remove (e.g., 'SpiralVM').")
     remove_opt_args = remove_parser.add_argument_group('Optional Arguments')
     remove_opt_args.add_argument('--disk', metavar='<path>', type=str, help=f"Path to the .qcow2 disk. (Optional, defaults to {DEFAULT_IMG_DIR}/<guest_name>.qcow2)")
 
     
-    # --- Sub-comando 'stop' (NOVO) ---
+    # --- Sub-comando 'stop' ---
     stop_parser = subparsers.add_parser(
         'stop', 
         help='Stop a running VM (sends SIGTERM)',
@@ -200,6 +208,16 @@ def main():
         help='List available VM disks and their status',
         description=f"Scans {DEFAULT_IMG_DIR} for .qcow2 files and checks status in {DEFAULT_STATE_DIR}."
     )
+    
+    # --- Sub-comando 'copy' ---
+    copy_parser = subparsers.add_parser(
+        'copy', 
+        help='Clone an existing VM to a new name',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    copy_parser.add_argument('source_name', metavar='SOURCE_NAME', type=str, help="Name of the existing guest to clone.")
+    copy_parser.add_argument('dest_name', metavar='DEST_NAME', type=str, help="Name for the new cloned guest.")
+
 
     # --- Lógica de Validação ---
     
@@ -212,6 +230,7 @@ def main():
     # =====================================================================
     # PASSO 2: Verificação de Segurança (Argument Injection)
     # =====================================================================
+    
     # Valida o guest_name para todos os comandos que o utilizam
     if args.command in ('new', 'run', 'remove', 'stop'):
         # Regex: Começa com letra/número, seguido por letras/números/hífen/underscore
@@ -219,9 +238,17 @@ def main():
             print(f"{RED}*{RESET} ERROR: 'guest_name' inválido ({YELLOW}{args.guest_name}{RESET}).", file=sys.stderr)
             print(f"{YELLOW}*{RESET} INFO: Use apenas letras, números, hífen (-) e underscore (_).")
             sys.exit(1)
+    elif args.command == 'copy':
+        # Validar AMBOS os nomes para 'copy'
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$', args.source_name):
+            print(f"{RED}*{RESET} ERROR: 'source_name' inválido ({YELLOW}{args.source_name}{RESET}).", file=sys.stderr)
+            sys.exit(1)
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$', args.dest_name):
+            print(f"{RED}*{RESET} ERROR: 'dest_name' inválido ({YELLOW}{args.dest_name}{RESET}).", file=sys.stderr)
+            sys.exit(1)
 
 
-    # --- Lógica do 'list' (ATUALIZADA) ---
+    # --- Lógica do 'list' ---
     if args.command == 'list':
         print(f"{GREEN}*{RESET} INFO: Verificando VMs em {CYAN}{DEFAULT_IMG_DIR}{RESET}...")
         if not os.path.isdir(DEFAULT_IMG_DIR):
@@ -273,7 +300,7 @@ def main():
             disk_path = f"{DEFAULT_IMG_DIR}/{args.guest_name}.qcow2"
             
         nvram_path = f"{DEFAULT_NVRAM_DIR}/{args.guest_name}_VARS.fd"
-        pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid" # <-- ADICIONADO
+        pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
         
         # Verifica se a VM está em execução
         if os.path.exists(pid_file_path):
@@ -329,7 +356,7 @@ def main():
         sys.exit(0) # Fim do 'remove'
 
 
-    # --- Lógica do 'stop' (NOVO) ---
+    # --- Lógica do 'stop' ---
     if args.command == 'stop':
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
         print(f"{GREEN}*{RESET} INFO: Attempting to stop VM: {YELLOW}{args.guest_name}{RESET}")
@@ -370,6 +397,81 @@ def main():
             sys.exit(1)
         
         sys.exit(0) # Fim do 'stop'
+        
+    
+    # <<< [LÓGICA 'COPY' CORRIGIDA] >>>
+    if args.command == 'copy':
+        print(f"{GREEN}*{RESET} INFO: Attempting to clone VM {CYAN}{args.source_name}{RESET} to {CYAN}{args.dest_name}{RESET}...")
+
+        # 0. Nomes não podem ser iguais
+        if args.source_name == args.dest_name:
+            print(f"{RED}*{RESET} ERROR: Source and destination names cannot be the same.", file=sys.stderr)
+            sys.exit(1)
+
+        # 1. Definir caminhos de Origem
+        src_disk_path = f"{DEFAULT_IMG_DIR}/{args.source_name}.qcow2"
+        src_pid_path = f"{DEFAULT_STATE_DIR}/{args.source_name}.pid"
+
+        # 2. Definir caminhos de Destino
+        dest_disk_path = f"{DEFAULT_IMG_DIR}/{args.dest_name}.qcow2"
+        dest_nvram_path = f"{DEFAULT_NVRAM_DIR}/{args.dest_name}_VARS.fd"
+
+        # 3. [CHECK] Verificar se a VM de origem está em execução
+        if os.path.exists(src_pid_path):
+            try:
+                with open(src_pid_path, 'r') as f: pid = int(f.read().strip())
+                os.kill(pid, 0) # Verifica o processo
+                print(f"{RED}*{RESET} ERROR: Source VM '{args.source_name}' is running (PID: {pid}).", file=sys.stderr)
+                print(f"{YELLOW}*{RESET} INFO: Please stop the VM with 'stop' before cloning.")
+                sys.exit(1)
+            except (OSError, ValueError, TypeError):
+                pass # PID obsoleto, seguro para continuar
+
+        # 4. [CHECK] Verificar se o arquivo de DISCO de origem existe
+        if not os.path.exists(src_disk_path):
+            print(f"{RED}*{RESET} ERROR: Source disk not found: {CYAN}{src_disk_path}{RESET}", file=sys.stderr)
+            sys.exit(1)
+        
+        # 5. [CHECK] Verificar se os arquivos de destino JÁ existem
+        if os.path.exists(dest_disk_path) or os.path.exists(dest_nvram_path):
+            print(f"{RED}*{RESET} ERROR: Destination VM '{args.dest_name}' already exists.", file=sys.stderr)
+            if os.path.exists(dest_disk_path):
+                print(f"{YELLOW}*{RESET} INFO: File found: {CYAN}{dest_disk_path}{RESET}")
+            if os.path.exists(dest_nvram_path):
+                print(f"{YELLOW}*{RESET} INFO: File found: {CYAN}{dest_nvram_path}{RESET}")
+            print(f"{YELLOW}*{RESET} INFO: Please remove the destination VM first or choose a different name.")
+            sys.exit(1)
+
+        # 6. Executar a Cópia
+        try:
+            print(f"{GREEN}*{RESET} INFO: Copying disk...")
+            print(f"{CYAN}*{RESET} EXECUTING: copy {src_disk_path} to {dest_disk_path}")
+            shutil.copyfile(src_disk_path, dest_disk_path)
+            
+            print(f"{GREEN}*{RESET} INFO: Creating new NVRAM for destination...")
+            # << [CORREÇÃO] Chamar create_nvram_file para o destino
+            if not create_nvram_file(args.dest_name, dest_nvram_path):
+                # Se create_nvram_file falhar, ele já imprime o erro.
+                # Lançamos uma exceção para acionar a limpeza do disco.
+                raise Exception("Failed to create new NVRAM file.")
+            
+            print(f"\n{GREEN}*{RESET} SUCCESS: VM '{args.source_name}' successfully cloned to '{args.dest_name}'.")
+        except Exception as e:
+            print(f"\n{RED}*{RESET} ERROR: Failed during clone operation: {e}", file=sys.stderr)
+            # Tentar limpar se algo deu errado (ex: copiou disco mas falhou no nvram)
+            if os.path.exists(dest_disk_path):
+                print(f"{YELLOW}*{RESET} ATTENTION: Cleaning up partial disk file...")
+                try: os.remove(dest_disk_path)
+                except OSError as e2: print(f"{RED}*{RESET} ERROR: Cleanup of partial disk failed: {e2}", file=sys.stderr)
+            if os.path.exists(dest_nvram_path):
+                print(f"{YELLOW}*{RESET} ATTENTION: Cleaning up partial NVRAM file...")
+                try: os.remove(dest_nvram_path)
+                except OSError as e2: print(f"{RED}*{RESET} ERROR: Cleanup of partial NVRAM failed: {e2}", file=sys.stderr)
+            sys.exit(1)
+        
+        sys.exit(0) # Fim do 'copy'
+    # <<< Fim da Lógica 'copy' >>>
+
 
     
     # --- Lógica para 'new' e 'run' ---
@@ -377,9 +479,15 @@ def main():
     is_install_boot = False
     
     # Definir caminhos NVRAM (comuns a 'new' e 'run')
+    # Validar diretório NVRAM
     if not os.path.isdir(DEFAULT_NVRAM_DIR):
-         print(f"{RED}*{RESET} ERROR: NVRAM directory not found: {YELLOW}{DEFAULT_NVRAM_DIR}{RESET}", file=sys.stderr)
-         sys.exit(1)
+         print(f"{YELLOW}*{RESET} ATTENTION: NVRAM directory not found. Creating {CYAN}{DEFAULT_NVRAM_DIR}{RESET}")
+         try:
+            os.makedirs(DEFAULT_NVRAM_DIR, 0o755)
+         except OSError as e:
+            print(f"{RED}*{RESET} ERROR: Failed to create NVRAM directory: {e}", file=sys.stderr)
+            sys.exit(1)
+            
     nvram_path = f"{DEFAULT_NVRAM_DIR}/{args.guest_name}_VARS.fd"
 
     # Definir caminho do OVMF CODE
@@ -453,7 +561,7 @@ def main():
         print(f"{GREEN}*{RESET} INFO: 'Run VM' mode enabled for {GREEN}{args.guest_name}{RESET}")
         print(f"{YELLOW}*{RESET} ATTENTION: A VM será iniciada em BACKGROUND.")
 
-        # --- Lógica de Gerenciamento de Estado (ATUALIZADO) ---
+        # --- Lógica de Gerenciamento de Estado ---
         if not os.path.exists(DEFAULT_STATE_DIR):
             try:
                 os.makedirs(DEFAULT_STATE_DIR, 0o755)
@@ -520,26 +628,19 @@ def main():
         '-drive', f'file={disk_path},if=virtio,format=qcow2', 
         '-device', 'virtio-net-pci,netdev=net0',
         '-netdev', f'tap,id=net0,br={args.bridge},helper={QEMU_BRIDGE_HELPER}',
-        # '-device', 'virtio-vga', # <-- [MODIFICAÇÃO 2] Removido daqui
         '-drive', f'if=pflash,format=raw,readonly=on,file={ovmf_code_path}',
         '-drive', f'if=pflash,format=raw,file={nvram_path}',
     ]
 
-    # <<< [MODIFICAÇÃO 3] Lógica de Gráficos (Headless ou VGA) >>>
-    # A flag --headless só existe no parser 'run'.
-    # Usamos getattr() para checar com segurança se a flag existe e é True.
-    # Se o comando for 'new', getattr() retornará False, e os gráficos serão habilitados.
+    # --- Lógica de Gráficos (Headless ou VGA) ---
     is_headless = getattr(args, 'headless', False) 
 
     if is_headless:
         print(f"{GREEN}*{RESET} INFO: Headless mode enabled. Adding {CYAN}-vga none -display none{RESET}.")
-        # Remove o dispositivo VGA e garante que nenhuma janela gráfica seja aberta
         qemu_command.extend(['-vga', 'none', '-display', 'none'])
     else:
-        # Modo padrão (com gráficos) para 'new' ou 'run' normal
         qemu_command.append('-device')
         qemu_command.append('virtio-vga')
-    # <<< Fim da Modificação 3 >>>
 
 
     # --- Adiciona flags de daemonização APENAS para 'run' ---
