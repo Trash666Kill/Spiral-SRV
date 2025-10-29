@@ -27,8 +27,6 @@ NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
 
 BASE_VM="${BASE_VM_FILES[1]}"
 
-
-
 basevm() {
     local missing_files=0 # Variable to count missing files
 
