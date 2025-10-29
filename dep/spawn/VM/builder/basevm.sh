@@ -361,7 +361,31 @@ ssh() {
     rm /etc/ssh/sshd_config
 
     # Add new SSH configuration file with custom parameters
-    cp sshd_config /etc/ssh/ && chmod 644 /etc/ssh/sshd_config
+    if cat << 'EOF' > /etc/ssh/sshd_config
+Include /etc/ssh/sshd_config.d/*.conf
+
+#ListenAddress 10.0.10.0
+Port 22
+AllowTcpForwarding no
+GatewayPorts no
+
+PubkeyAuthentication yes
+PermitRootLogin yes
+PermitEmptyPasswords yes
+
+ChallengeResponseAuthentication no
+
+UsePAM yes
+
+X11Forwarding no
+PrintMotd no
+PrintLastLog no
+
+AcceptEnv LANG LC_*
+
+Subsystem       sftp    /usr/lib/openssh/sftp-server
+EOF
+    chmod 644 /etc/ssh/sshd_config
 
     # Remove the old motd file and create a new empty one
     rm /etc/motd && touch /etc/motd
