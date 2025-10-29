@@ -8,6 +8,7 @@ cd /etc/spawn/VM/
 
 BASE_VM_FILES=(
     "builder/basevm.sh"
+    "systemd/scripts/trigger.service"
     "systemd/scripts/main.sh"
     "systemd/scripts/network.sh"
     "systemd/scripts/firewall/a.sh"
