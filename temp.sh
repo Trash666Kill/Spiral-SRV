@@ -1,3 +1,5 @@
+#!/bin/bash
+
 script() {
     # Remove existing SSH configuration
     rm /etc/ssh/sshd_config
@@ -5,7 +7,7 @@ script() {
     # Add new SSH configuration file with custom parameters
     if cat << 'EOF' > /usr/local/bin/prebuild.sh
 #!/bin/bash
-# Script to configure static network interface and enable root login via ssh
+    # Script to configure static network interface and enable root login via ssh
 
 network() {
     dhcpcd --release ens2 > /dev/null 2>&1
@@ -24,11 +26,12 @@ main() {
 
 main
 EOF
+    chmod -v 700 /usr/local/bin/prebuild.sh
 }
 
 ssh_config() {
     # Remove existing SSH configuration
-    rm /etc/ssh/sshd_config
+    rm -v /etc/ssh/sshd_config
 
     # Add new SSH configuration file with custom parameters
     if cat << 'EOF' > /etc/ssh/sshd_config
@@ -55,5 +58,7 @@ AcceptEnv LANG LC_*
 
 Subsystem       sftp    /usr/lib/openssh/sftp-server
 EOF
+    systemctl daemon-reload
+    systemctl enable prebuild
 }
 
