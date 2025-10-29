@@ -6,6 +6,8 @@ unset HISTFILE
 # Execution directory
 cd /etc/spawn/VM/
 
+PRE_BASE_VM="SpiralVM-Pre"
+
 BASE_VM_FILES=(
     "builder/basevm.sh"
     "systemd/scripts/main.sh"
