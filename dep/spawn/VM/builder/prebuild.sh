@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Funções de saída colorida
+# Color output functions
 print_ok() {
     printf "\e[32m[OK]\e[0m %s\n" "$1"
 }
