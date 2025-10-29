@@ -54,18 +54,13 @@ fi
 printf "\e[33m*\e[0m ATTENTION: CREATING SYSTEMD SERVICE \033[32m/etc/systemd/system/prebuild.service\033[0m\n"
 
 if cat > /etc/systemd/system/prebuild.service << 'EOF'
-[Unit]
-Description=Configure static network and enable root SSH (executed once at boot)
-After=network-pre.target
-Before=sshd.service
-Wants=network-pre.target
-ConditionPathExists=!/root/prebuild.sh.done
-
 [Service]
 Type=oneshot
-ExecStart=/root/prebuild.sh
-ExecStartPost=/bin/touch /root/prebuild.sh.done
-RemainAfterExit=yes
+ExecStartPre=/bin/sleep 10
+ExecStart=/root/prebuild.service
+RemainAfterExit=true
+Restart=on-failure
+RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 
