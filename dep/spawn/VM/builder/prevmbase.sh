@@ -57,7 +57,7 @@ if cat > /etc/systemd/system/prebuild.service << 'EOF'
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 10
-ExecStart=/root/prebuild.service
+ExecStart=/root/prebuild.sh
 RemainAfterExit=true
 Restart=on-failure
 RestartSec=5s
