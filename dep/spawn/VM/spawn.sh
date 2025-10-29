@@ -28,9 +28,9 @@ NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
 BASE_VM="${BASE_VM_FILES[1]}"
 
 basevm() {
+    # Checks if the files needed to create the base virtual machine exist 
     local missing_files=0 # Variable to count missing files
 
-    # Checks if the files needed to create the base virtual machine exist
     for file in "${BASE_VM_FILES[@]}"; do
         if [[ ! -f "$file" ]]; then
             printf "\e[31m*\e[0m ERROR: REQUIRED FILE DOES NOT EXIST: \033[32m%s\033[0m\n" "$file"
@@ -44,6 +44,12 @@ basevm() {
         exit 1
     fi
 
+    # Check if base virtual machine already exists
+    output=$(python3 vm_manager.py list)
+
+    if ! echo "$output" | grep -q "$BASE_VM_NAME"; then
+        printf "\e[33m*\e[0m ATTENTION: THE BASE VIRTUAL MACHINE \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE_VM_NAME"
+    fi
 
 }
 
