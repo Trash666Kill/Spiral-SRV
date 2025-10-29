@@ -3,16 +3,12 @@ if ! echo "$output" | grep -qE "${BASE_VM_NAME}[[:space:]]"; then
 
     # Create SpiralVM-Base
     eval "$VM_MANAGER" copy "$PRE_BASE_VM" "$BASE_VM_NAME"
+    sleep 5
+    eval "$VM_MANAGER" run "$BASE_VM_NAME"
     # Aguardando a Máquina Virtual iniciar
-    
-
+    waitobj 10.0.12.249 15 4 "$BASE_VM_NAME"
 
 else
-    # --- CASO POSITIVO ---
-    # (A VM JÁ existe)
-    
-    # 1. O "outro comando" para o caso positivo
-    # Substitua pela ação desejada (ex: pular a criação)
     printf "\e[32m*\e[0m INFO: A VM base \033[32m%s\033[0m já existe. Pulando criação.\n" "$BASE_VM_NAME"
-    # seu_comando_para_caso_positivo_aqui
+    newvm
 fi
