@@ -40,6 +40,7 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+
 then
     print_ok "SYSTEMD SERVICE FILE CREATED SUCCESSFULLY"
 else
