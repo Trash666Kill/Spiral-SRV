@@ -6,7 +6,7 @@ unset HISTFILE
 # Execution directory
 cd /etc/spawn/VM/
 
-BASE_BUILDER_VM_FILES=(
+BASE_BUILDER_FILES=(
     "builder/basevm.sh"
     "builder/dep/sshd_config"
     "builder/dep/systemd/scripts/firewall/a.sh"
