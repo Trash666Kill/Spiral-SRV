@@ -13,8 +13,8 @@ print_err() {
 }
 
 # Create systemd service file
-printf "\e[33m*\e[0m ATTENTION: CREATING SYSTEMD SERVICE \033[32m/etc/systemd/system/prebuild.service\033[0m\n"
-if cat << 'EOF' > /etc/systemd/system/prebuild.service
+    printf "\e[33m*\e[0m ATTENTION: CREATING SYSTEMD SERVICE \033[32m/etc/systemd/system/prebuild.service\033[0m\n"
+    if cat << 'EOF' > /etc/systemd/system/prebuild.service
 [Unit]
 Description=Prebuild - Spawn Project
 After=network.target
@@ -65,4 +65,9 @@ fi
 print_ok "ALL OPERATIONS COMPLETED SUCCESSFULLY"
 printf "\e[33m*\e[0m ATTENTION: SHUTTING DOWN SYSTEM IN 5 SECONDS...\n"
 sleep 5
-poweroff
+
+# Remove the current script (the file that is running)
+rm -- "$0"
+
+# Poweroff
+systemctl poweroff
