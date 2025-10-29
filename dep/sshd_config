@@ -1,1 +1,21 @@
-    asdasdasdasda
+Include /etc/ssh/sshd_config.d/*.conf
+
+#ListenAddress 172.16.0.0
+Port 4242
+AllowTcpForwarding no
+GatewayPorts no
+
+PubkeyAuthentication yes
+PermitRootLogin prohibit-password
+
+ChallengeResponseAuthentication no
+
+UsePAM yes
+
+X11Forwarding no
+PrintMotd no
+PrintLastLog no
+
+AcceptEnv LANG LC_*
+
+Subsystem       sftp    /usr/lib/openssh/sftp-server
