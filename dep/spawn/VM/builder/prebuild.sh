@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# Close on any error
 set -euo pipefail
 
 print_ok() {
