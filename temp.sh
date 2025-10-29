@@ -1,25 +1,17 @@
-    if cat << 'EOF' > /etc/ssh/sshd_config
-Include /etc/ssh/sshd_config.d/*.conf
+#!/bin/bash
 
-#ListenAddress 10.0.10.0
-Port 22
-AllowTcpForwarding no
-GatewayPorts no
+# Run the manager and capture the output
+output=$(python3 vm_manager.py list)
 
-PubkeyAuthentication yes
-PermitRootLogin yes
-PermitEmptyPasswords yes
-
-ChallengeResponseAuthentication no
-
-UsePAM yes
-
-X11Forwarding no
-PrintMotd no
-PrintLastLog no
-
-AcceptEnv LANG LC_*
-
-Subsystem       sftp    /usr/lib/openssh/sftp-server
-EOF
-    chmod 644 /etc/ssh/sshd_config
+# Check if the output contains a line with "SpiralVM"
+if echo "$output" | grep -q "SpiralVM"; then
+    printf "\e[32m*\e[0m 'SpiralVM' VM found. Continuing...\n"
+    
+    #
+    # Coloque seus comandos de continuação aqui
+    #
+    
+else
+    printf "\e[31m*\e[0m No 'SpiralVM' VM found. Aborting.\n"
+    # exit 1 # Descomente esta linha se desejar que o script pare aqui
+fi

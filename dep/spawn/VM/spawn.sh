@@ -33,7 +33,7 @@ basevm() {
     local missing_files=0 # Variable to count missing files
 
     # Checks if the files needed to create the base virtual machine exist
-    for file in "${BASE_BUILDER_VM_FILES[@]}"; do # Use "${BASE_BUILDER_VM_FILES[@]}" to handle names with spaces
+    for file in "${BASE_VM_FILE[@]}"; do
         if [[ ! -f "$file" ]]; then
             printf "\e[31m*\e[0m ERROR: REQUIRED FILE DOES NOT EXIST: \033[32m%s\033[0m\n" "$file"
             missing_files=$((missing_files + 1)) # Increment the counter
@@ -46,25 +46,7 @@ basevm() {
         exit 1
     fi
 
-    # Checks if the base virtual machine file already exists
-    if [[ ! -f "$BASE_VM" ]]; then
-        printf "\e[33m*\e[0m ATTENTION: THE BASE VIRTUAL MACHINE FILE \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE_VM"
-        
-        local PRE_BASE_VM="${BASE_VM_FILES[0]}" # Agora aponta para ...Pre.qcow2.bak
 
-        # Now, check if the "Pre" file exists, which is needed to create the "Base" file
-        if [[ ! -f "$PRE_BASE_VM" ]]; then
-            printf "\e[31m*\e[0m ERROR: CANNOT CREATE BASE VM. THE PRE-REQUISITE FILE \033[32m%s\033[0m ALSO DOES NOT EXIST.\n" "$PRE_BASE_VM"
-            exit 1
-        else
-            printf "\e[32m*\e[0m INFO: Found \033[32m%s\033[0m. Proceeding to create Base VM...\n" "$PRE_BASE_VM"
-            #
-            vm_manager.py copy SpiralVM-Pre SpiralVM-Base
-            
-            # qemu-img create ...
-        fi
-
-    fi 
 }
 
 
