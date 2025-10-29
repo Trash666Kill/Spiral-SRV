@@ -12,7 +12,7 @@ connectiontest() {
 }
 
 # Execution directory
-cd $PWD/dep
+cd $PWD
 
 update() {
     printf "\e[32m*\e[0m UPDATING EXISTING REPOSITORY AND PACKAGES\n"
