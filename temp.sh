@@ -61,7 +61,7 @@ basevm() {
         else
             printf "\e[32m*\e[0m INFO: Found \033[32m%s\033[0m. Proceeding to create Base VM...\n" "$PRE_BASE_VM"
             #
-            cp "$PRE_BASE_VM" "$BASE_VM"
+            vm_manager.py copy SpiralVM-Pre SpiralVM-Base
             
             # qemu-img create ...
         fi
