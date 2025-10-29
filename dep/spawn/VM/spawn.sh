@@ -8,7 +8,6 @@ cd /etc/spawn/VM/
 
 BASE_VM_FILES=(
     "builder/basevm.sh"
-    "systemd/scripts/trigger.service"
     "systemd/scripts/main.sh"
     "systemd/scripts/network.sh"
     "systemd/scripts/firewall/a.sh"
@@ -34,7 +33,7 @@ basevm() {
     local missing_files=0 # Variable to count missing files
 
     # Checks if the files needed to create the base virtual machine exist
-    for file in "${BASE_VM_FILE[@]}"; do
+    for file in "${BASE_VM_FILES[@]}"; do
         if [[ ! -f "$file" ]]; then
             printf "\e[31m*\e[0m ERROR: REQUIRED FILE DOES NOT EXIST: \033[32m%s\033[0m\n" "$file"
             missing_files=$((missing_files + 1)) # Increment the counter
