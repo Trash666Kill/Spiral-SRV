@@ -21,7 +21,7 @@ NEW_VM_FILES=(
     "builder/lease-monitor.sh"
     "builder/vm_manager.py"
 )
-VM_MANAGER=python3 "${BASE_VM_FILES[2]}"
+VM_MANAGER="python3 ${NEW_VM_FILES[2]}"
 
 BASE_VM_NAME="SpiralVM"
 NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
