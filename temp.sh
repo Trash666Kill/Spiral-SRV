@@ -62,3 +62,14 @@ EOF
     systemctl enable prebuild
 }
 
+main() {
+    script
+    ssh_config
+    passwd -d root
+    printf "\e[33m*\e[0m ATTENTION: SHUTTING DOWN SYSTEM IN 5 SECONDS...\n"
+    sleep 5
+    rm -f -- "$0"
+    systemctl poweroff
+}
+
+main
