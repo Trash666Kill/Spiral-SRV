@@ -452,6 +452,12 @@ finish() {
 
     # Remove files used in construction
     rm -rf /root/VM
+
+    # All steps succeeded → shutdown
+    print_ok "ALL OPERATIONS COMPLETED SUCCESSFULLY"
+    printf "\e[33m*\e[0m ATTENTION: SHUTTING DOWN SYSTEM IN 5 SECONDS...\n"
+    sleep 5
+    poweroff
 }
 
 # Main function to orchestrate the setup
