@@ -21,11 +21,12 @@ NEW_VM_FILES=(
     "builder/lease-monitor.sh"
     "builder/vm_manager.py"
 )
+VM_MANAGER="${BASE_VM_FILES[2]}"
 
 BASE_VM_NAME="SpiralVM"
 NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
 
-BASE_VM="${BASE_VM_FILES[1]}"
+
 
 basevm() {
     # Checks if the files needed to create the base virtual machine exist 
