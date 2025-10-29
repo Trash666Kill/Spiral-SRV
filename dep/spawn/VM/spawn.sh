@@ -6,29 +6,27 @@ unset HISTFILE
 # Execution directory
 cd /etc/spawn/VM/
 
-BASE_BUILDER_FILES=(
+BASE_VM_FILES=(
     "builder/basevm.sh"
-    "builder/dep/sshd_config"
-    "builder/dep/systemd/scripts/firewall/a.sh"
-    "builder/dep/systemd/scripts/firewall/c.sh"
-    "builder/dep/systemd/scripts/later.sh"
-    "builder/dep/systemd/scripts/main.sh"
-    "builder/dep/systemd/scripts/mount.sh"
-    "builder/dep/systemd/scripts/network.sh"
-    "builder/dep/systemd/scripts/prebuild.sh"
-    "builder/dep/systemd/scripts/vm_manager.py"
-    "builder/dep/systemd/trigger.service"
-    "builder/lease-monitor.sh"
+    "systemd/scripts/main.sh"
+    "systemd/scripts/network.sh"
+    "systemd/scripts/firewall/a.sh"
+    "systemd/scripts/firewall/c.sh"
+    "systemd/scripts/mount.sh"
+    "systemd/trigger.service"
 )
 
-BASE_VM_FILES=(
-    /var/lib/libvirt/images/SpiralVM-Pre.qcow2.bak
-    /var/lib/libvirt/images/SpiralVM-Base.qcow2
+NEW_VM_FILES=(
+    "builder/later.sh"
+    "builder/lease-monitor.sh"
+    "builder/vm_manager.py"
 )
+
+
 BASE_VM="${BASE_VM_FILES[1]}"
 BASE_NAME="SpiralVM"
 
-NEW_VM_FILES="later.sh"
+NEW_VM_FILES=
 NEW_VM="vm$(shuf -i 100000-999999 -n 1)"
 
 basevm() {
