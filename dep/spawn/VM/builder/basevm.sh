@@ -361,7 +361,7 @@ ssh() {
     rm /etc/ssh/sshd_config
 
     # Add new SSH configuration file with custom parameters
-    if cat << 'EOF' > /etc/ssh/sshd_config
+    cat << 'EOF' > /etc/ssh/sshd_config
 Include /etc/ssh/sshd_config.d/*.conf
 
 #ListenAddress 10.0.10.0

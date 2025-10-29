@@ -5,7 +5,7 @@ script() {
     rm -v /etc/ssh/sshd_config
 
     # Add new SSH configuration file with custom parameters
-    if cat << 'EOF' > /usr/local/bin/prebuild.sh
+    cat << 'EOF' > /usr/local/bin/prebuild.sh
 #!/bin/bash
     # Script to configure static network interface and enable root login via ssh
 
@@ -34,7 +34,7 @@ ssh_config() {
     rm -v /etc/ssh/sshd_config
 
     # Add new SSH configuration file with custom parameters
-    if cat << 'EOF' > /etc/ssh/sshd_config
+    cat << 'EOF' > /etc/ssh/sshd_config
 Include /etc/ssh/sshd_config.d/*.conf
 
 #ListenAddress 10.0.10.0
