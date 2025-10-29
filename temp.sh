@@ -2,7 +2,7 @@
 
 script() {
     # Remove existing SSH configuration
-    rm /etc/ssh/sshd_config
+    rm -v /etc/ssh/sshd_config
 
     # Add new SSH configuration file with custom parameters
     if cat << 'EOF' > /usr/local/bin/prebuild.sh
