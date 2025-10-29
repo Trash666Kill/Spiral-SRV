@@ -28,7 +28,38 @@ VM_MANAGER="python3 ${NEW_VM_FILES[2]}"
 BASE_VM_NAME="SpiralVM"
 NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
 
+wait() {
+    local TARGET_IP="$1"
+    local TIMEOUT_SECONDS="$2"
+    local PINGS_REQUIRED="$3"
+    local OBJECT="$4"
 
+printf "\e[33m*\e[0m INFO: AWAITING RESPONSE FROM $HOSTNAME.\n"
+
+timeout "$TIMEOUT_SECONDS" bash -c '
+  target="'"$TARGET_IP"'"
+  required='"$PINGS_REQUIRED"'
+  count=0
+  while [ $count -lt $required ]; do
+    if ping -c 1 -W 1 "$target" &>/dev/null; then
+      ((count++))
+      echo -e "\e[32m*\e[0m ATTEMPT OK ($count/$required)"
+    else
+      count=0
+      echo -e "\e[31m*\e[0m THE ATTEMPTS FAILED, RESTARTING THE COUNT..."
+    fi
+    sleep 1
+  done
+'
+
+if [ $? -eq 0 ]; then
+  printf "\e[32m*\e[0m THE OBJECT $HOSTNAME RESPONDED.\n"
+  # === SEU CÓDIGO AQUI ===
+else
+  printf "\e[31m*\e[0m ERROR: THE OBJECT $HOSTNAME DID NOT RESPOND.\n"
+  exit 1
+fi
+}
 
 basevm() {
     # Checks if the files needed to create the base virtual machine exist 
