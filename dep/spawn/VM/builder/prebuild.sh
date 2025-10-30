@@ -12,7 +12,7 @@ network() {
     ip link set ens2 up
     ip addr add 10.0.12.249/24 dev ens2
     ip route add default via 10.0.12.254 dev ens2
-    sed -i '1,$ c nameserver 10.0.6.62' /etc/resolv.conf
+    sed -i '1,$ c nameserver 8.8.8.8' /etc/resolv.conf
 }
 
 main() {
