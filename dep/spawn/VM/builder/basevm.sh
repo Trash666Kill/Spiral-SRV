@@ -162,7 +162,7 @@ interface() {
 hostname() {
     # Change hostname
     sed -i -E 's/(127\.0\.1\.1[[:space:]]+).*/\1spiralvm/' /etc/hosts
-    printf "spiralvm" > /etc/hostname
+    rm /etc/hostname && printf "spiralvm" > /etc/hostname
 }
 
 target_user() {
