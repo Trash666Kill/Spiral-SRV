@@ -6,7 +6,7 @@ import sys
 import os
 import shutil
 import re
-import configparser  # <<< [NOVO] Para gerenciar arquivos .ini
+import configparser
 
 # --- ANSI Color Codes ---
 GREEN = '\033[32m'
@@ -28,7 +28,7 @@ QEMU_BRIDGE_HELPER = '/usr/lib/qemu/qemu-bridge-helper'
 DEFAULT_IMG_DIR = "/var/lib/libvirt/images"
 DEFAULT_NVRAM_DIR = "/var/lib/libvirt/qemu/nvram"
 DEFAULT_STATE_DIR = "/var/run/qemu_vm_manager"
-DEFAULT_CONF_DIR = "/etc/vm_manager/vms"  # <<< [NOVO] Local das definições de VM
+DEFAULT_CONF_DIR = "/etc/vm_manager/vms" 
 
 # --- Padrões de OVMF (UEFI) ---
 OVMF_CODE_PATH = '/usr/share/OVMF/OVMF_CODE_4M.fd'
@@ -92,7 +92,6 @@ def create_nvram_file(guest_name, nvram_dest_path):
         print(f"{RED}*{RESET} ERROR: Failed to copy/create NVRAM file: {e}", file=sys.stderr)
         return False
 
-# <<< [NOVO] Helper para carregar config de VM >>>
 def load_vm_config(guest_name):
     """Loads VM configuration file and returns a dictionary."""
     conf_path = os.path.join(DEFAULT_CONF_DIR, f"{guest_name}.conf")
@@ -109,7 +108,6 @@ def load_vm_config(guest_name):
         print(f"{RED}*{RESET} ERROR: Failed to parse config file {conf_path}: {e}", file=sys.stderr)
         return {}
 
-# <<< [NOVO] Helper para escrever config de VM >>>
 def write_vm_config(guest_name, config_data):
     """Writes a dictionary to a VM configuration file."""
     try:
@@ -210,7 +208,6 @@ def main():
     run_key_args = run_parser.add_argument_group('Required Arguments')
     run_key_args.add_argument('guest_name', metavar='GUEST_NAME', type=str, help="Name of the defined guest to run (e.g., 'SpiralVM').")
     
-    # <<< [MODIFICADO] Defaults agora são None para permitir prioridade >>>
     run_opt_args = run_parser.add_argument_group('Optional Overrides')
     run_opt_args.add_argument('--disk', metavar='<path>', type=str, default=None, help=f"Override path to the .qcow2 disk.")
     run_opt_args.add_argument('--iso', metavar='<path>', type=str, default=None, help="Path to an ISO image for live boot or repair.")
@@ -244,7 +241,7 @@ def main():
     # --- Sub-comando 'list' ---
     list_parser = subparsers.add_parser(
         'list', 
-        help='List defined VMs and their status', # <<< [MODIFICADO] Help
+        help='List defined VMs and their status', 
         description=f"Scans {DEFAULT_CONF_DIR} for .conf files and checks status in {DEFAULT_STATE_DIR}."
     )
     
@@ -270,7 +267,6 @@ def main():
     # PASSO 2: Verificação de Segurança (Argument Injection)
     # =====================================================================
     
-    # Valida o guest_name para todos os comandos que o utilizam
     if args.command in ('new', 'run', 'remove', 'stop'):
         if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$', args.guest_name):
             print(f"{RED}*{RESET} ERROR: 'guest_name' inválido ({YELLOW}{args.guest_name}{RESET}).", file=sys.stderr)
@@ -288,7 +284,7 @@ def main():
     # --- Lógica dos Comandos ---
     # =====================================================================
 
-    # --- Lógica do 'list' (REESCRITO) ---
+    # --- Lógica do 'list' ---
     if args.command == 'list':
         print(f"{GREEN}*{RESET} INFO: Verificando VMs definidas em {CYAN}{DEFAULT_CONF_DIR}{RESET}...")
         if not os.path.isdir(DEFAULT_CONF_DIR):
@@ -317,14 +313,13 @@ def main():
                 try:
                     with open(pid_file_path, 'r') as pf:
                         pid = int(pf.read().strip())
-                    os.kill(pid, 0) # Verifica se o processo realmente existe
+                    os.kill(pid, 0)
                     status = f"{GREEN}RUNNING{RESET}"
                     pid_info = f"(PID: {pid})"
                 except (OSError, ValueError, TypeError):
                     status = f"{YELLOW}STALE_PID{RESET}"
                     pid_info = f"(Stale PID)"
 
-            # Carrega config para detalhes
             config = load_vm_config(guest_name)
             mem = config.get('mem', 'N/A')
             smp = config.get('smp', 'N/A')
@@ -334,32 +329,29 @@ def main():
             
         sys.exit(0)
 
-    # --- Lógica do 'remove' (REESCRITO) ---
+    # --- Lógica do 'remove' ---
     if args.command == 'remove':
         print(f"{RED}*{RESET} INFO: Attempting to remove VM: {YELLOW}{args.guest_name}{RESET}")
         
-        # 1. Carregar config
         config = load_vm_config(args.guest_name)
         if not config:
             print(f"{RED}*{RESET} ERROR: VM '{args.guest_name}' não está definida. (Arquivo .conf não encontrado)", file=sys.stderr)
             sys.exit(1)
             
-        # 2. Encontrar alvos
         disk_path = config.get('disk')
         nvram_path = config.get('nvram')
         conf_path = os.path.join(DEFAULT_CONF_DIR, f"{args.guest_name}.conf")
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
         
-        # 3. Verifica se a VM está em execução
         if os.path.exists(pid_file_path):
              try:
                 with open(pid_file_path, 'r') as f: pid = int(f.read().strip())
-                os.kill(pid, 0) # Verifica o processo
+                os.kill(pid, 0)
                 print(f"{RED}*{RESET} ERROR: VM '{args.guest_name}' appears to be running (PID: {pid}).", file=sys.stderr)
                 print(f"{YELLOW}*{RESET} INFO: Por favor, pare a VM com o comando 'stop' antes de remover.")
                 sys.exit(1)
              except (OSError, ValueError, TypeError):
-                pass # PID obsoleto, seguro para remover
+                pass 
 
         files_to_delete = []
         if disk_path and os.path.exists(disk_path): files_to_delete.append(disk_path)
@@ -367,7 +359,6 @@ def main():
         if os.path.exists(conf_path): files_to_delete.append(conf_path)
         if os.path.exists(pid_file_path): files_to_delete.append(pid_file_path)
             
-        # 4. Confirmar
         if not files_to_delete:
             print(f"{YELLOW}*{RESET} ATTENTION: No files found for guest '{args.guest_name}'. Nothing to do.", file=sys.stderr)
             sys.exit(0)
@@ -384,7 +375,6 @@ def main():
             print(f"{RED}*{RESET} ERROR: Operation aborted by user.", file=sys.stderr)
             sys.exit(1)
             
-        # 5. Excluir
         print(f"{GREEN}*{RESET} INFO: Proceeding with deletion...")
         success = True
         for f in files_to_delete:
@@ -401,10 +391,10 @@ def main():
             print(f"{RED}*{RESET} ERROR: One or more files could not be removed.", file=sys.stderr)
             sys.exit(1)
         
-        sys.exit(0) # Fim do 'remove'
+        sys.exit(0) 
 
 
-    # --- Lógica do 'stop' (Sem Mudanças) ---
+    # --- Lógica do 'stop' ---
     if args.command == 'stop':
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
         print(f"{GREEN}*{RESET} INFO: Attempting to stop VM: {YELLOW}{args.guest_name}{RESET}")
@@ -442,10 +432,10 @@ def main():
                 except OSError as e2: print(f"{RED}*{RESET} ERROR: Failed to remove stale PID file: {e2}", file=sys.stderr)
             sys.exit(1)
         
-        sys.exit(0) # Fim do 'stop'
+        sys.exit(0)
         
     
-    # --- Lógica 'copy' (REESCRITO) ---
+    # --- Lógica 'copy' ---
     if args.command == 'copy':
         print(f"{GREEN}*{RESET} INFO: Attempting to clone VM {CYAN}{args.source_name}{RESET} to {CYAN}{args.dest_name}{RESET}...")
 
@@ -453,7 +443,6 @@ def main():
             print(f"{RED}*{RESET} ERROR: Source and destination names cannot be the same.", file=sys.stderr)
             sys.exit(1)
 
-        # 1. Verificar configs
         source_config = load_vm_config(args.source_name)
         if not source_config:
             print(f"{RED}*{RESET} ERROR: Source VM '{args.source_name}' is not defined.", file=sys.stderr)
@@ -463,13 +452,11 @@ def main():
             print(f"{RED}*{RESET} ERROR: Destination VM '{args.dest_name}' is already defined.", file=sys.stderr)
             sys.exit(1)
 
-        # 2. Definir caminhos de Origem e Destino
         src_disk_path = source_config.get('disk')
         src_pid_path = f"{DEFAULT_STATE_DIR}/{args.source_name}.pid"
         dest_disk_path = os.path.join(DEFAULT_IMG_DIR, f"{args.dest_name}.qcow2")
         dest_nvram_path = os.path.join(DEFAULT_NVRAM_DIR, f"{args.dest_name}_VARS.fd")
 
-        # 3. [CHECK] Verificar se a VM de origem está em execução
         if os.path.exists(src_pid_path):
             try:
                 with open(src_pid_path, 'r') as f: pid = int(f.read().strip())
@@ -478,9 +465,8 @@ def main():
                 print(f"{YELLOW}*{RESET} INFO: Please stop the VM with 'stop' before cloning.")
                 sys.exit(1)
             except (OSError, ValueError, TypeError):
-                pass # PID obsoleto, seguro para continuar
+                pass 
 
-        # 4. [CHECK] Verificar arquivos
         if not src_disk_path or not os.path.exists(src_disk_path):
             print(f"{RED}*{RESET} ERROR: Source disk not found at: {CYAN}{src_disk_path}{RESET}", file=sys.stderr)
             sys.exit(1)
@@ -488,7 +474,6 @@ def main():
              print(f"{RED}*{RESET} ERROR: Destination disk file already exists: {CYAN}{dest_disk_path}{RESET}", file=sys.stderr)
              sys.exit(1)
 
-        # 5. Executar a Cópia e Criação
         try:
             print(f"{GREEN}*{RESET} INFO: Copying disk...")
             print(f"{CYAN}*{RESET} EXECUTING: copy {src_disk_path} to {dest_disk_path}")
@@ -498,7 +483,6 @@ def main():
             if not create_nvram_file(args.dest_name, dest_nvram_path):
                 raise Exception("Failed to create new NVRAM file.")
             
-            # 6. Criar novo arquivo de config
             print(f"{GREEN}*{RESET} INFO: Creating new configuration file...")
             new_config_data = source_config.copy()
             new_config_data['disk'] = dest_disk_path
@@ -525,14 +509,13 @@ def main():
                 except OSError as e2: print(f"{RED}*{RESET} ERROR: Cleanup of partial config failed: {e2}", file=sys.stderr)
             sys.exit(1)
         
-        sys.exit(0) # Fim do 'copy'
+        sys.exit(0) 
 
     
     # =====================================================================
     # --- Lógica 'new' e 'run' ---
     # =====================================================================
     
-    # Variáveis finais que serão usadas para construir o comando QEMU
     final_disk = None
     final_nvram = None
     final_smp = None
@@ -543,17 +526,15 @@ def main():
     is_install_boot = False
 
 
-    # --- Lógica para 'new' (REESCRITO) ---
+    # --- Lógica para 'new' ---
     if args.command == 'new':
         print(f"{GREEN}*{RESET} INFO: 'New VM' mode enabled for {GREEN}{args.guest_name}{RESET}")
         
-        # 1. [CHECK] Verificar se a VM já está definida
         if os.path.exists(os.path.join(DEFAULT_CONF_DIR, f"{args.guest_name}.conf")):
             print(f"{RED}*{RESET} ERROR: VM '{args.guest_name}' is already defined.", file=sys.stderr)
             print(f"{YELLOW}*{RESET} INFO: Use 'remove' to delete it or 'run' to start it.")
             sys.exit(1)
         
-        # 2. Definir caminhos
         if args.disk:
             disk_path = args.disk
         else:
@@ -563,7 +544,6 @@ def main():
 
         nvram_path = os.path.join(DEFAULT_NVRAM_DIR, f"{args.guest_name}_VARS.fd")
         
-        # 3. [CHECK] Verificar arquivos físicos (disco/nvram)
         if os.path.exists(disk_path) or os.path.exists(nvram_path):
             print(f"{YELLOW}*{RESET} ATTENTION: Existing files found. These will be {RED}OVERWRITTEN{YELLOW}:{RESET}")
             if os.path.exists(disk_path): print(f"    - Disk:   {CYAN}{disk_path}{RESET}")
@@ -580,25 +560,21 @@ def main():
             except OSError as e: 
                 print(f"{RED}*{RESET} ERROR: Failed to delete existing files: {e}", file=sys.stderr); sys.exit(1)
         
-        # 4. Validar ISO
         if not os.path.exists(args.iso):
             print(f"{RED}*{RESET} ERROR: ISO file not found at: {YELLOW}{args.iso}{RESET}", file=sys.stderr)
             sys.exit(1)
 
-        # 5. Criar Disco
         print(f"{GREEN}*{RESET} INFO: Creating new disk {GREEN}{disk_path}{RESET} with size {GREEN}{args.size}{RESET}...")
         create_cmd = [QEMU_IMG_BINARY, 'create', '-f', 'qcow2', disk_path, args.size]
         if run_command(create_cmd) != 0:
              print(f"{RED}*{RESET} ERROR: qemu-img create failed.", file=sys.stderr)
              sys.exit(1)
 
-        # 6. Criar NVRAM
         if not create_nvram_file(args.guest_name, nvram_path):
             print(f"{RED}*{RESET} ERROR: Failed to create NVRAM file.", file=sys.stderr)
-            os.remove(disk_path) # Limpar disco
+            os.remove(disk_path) 
             sys.exit(1)
             
-        # 7. [NOVO] Criar arquivo de configuração
         print(f"{GREEN}*{RESET} INFO: Registering new VM definition...")
         config_data = {
             'disk': disk_path,
@@ -606,7 +582,7 @@ def main():
             'mem': args.mem,
             'smp': args.smp,
             'bridge': args.bridge,
-            'headless': 'false' # Instalação nunca é headless
+            'headless': 'false' 
         }
         if args.mac:
             config_data['mac'] = args.mac
@@ -617,31 +593,28 @@ def main():
             os.remove(nvram_path)
             sys.exit(1)
             
-        # 8. Definir variáveis finais para a execução
         final_disk = disk_path
         final_nvram = nvram_path
         final_smp = args.smp
         final_mem = args.mem
         final_bridge = args.bridge
         final_mac = args.mac
-        final_headless = False # Instalação é sempre gráfica
+        final_headless = False 
         is_install_boot = True
         
         print(f"{YELLOW}*{RESET} ATTENTION: A VM será iniciada em FOREGROUND para instalação.")
 
             
-    # --- Lógica para 'run' (REESCRITO) ---
+    # --- Lógica para 'run' ---
     elif args.command == 'run':
         print(f"{GREEN}*{RESET} INFO: 'Run VM' mode enabled for {GREEN}{args.guest_name}{RESET}")
 
-        # 1. Carregar config
         config = load_vm_config(args.guest_name)
         if not config:
             print(f"{RED}*{RESET} ERROR: VM '{args.guest_name}' is not defined.", file=sys.stderr)
             print(f"{YELLOW}*{RESET} INFO: Use 'new' to create it or 'list' to see defined VMs.")
             sys.exit(1)
 
-        # 2. [CHECK] Gerenciamento de Estado (PID)
         os.makedirs(DEFAULT_STATE_DIR, 0o755, exist_ok=True)
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
 
@@ -658,21 +631,20 @@ def main():
                 try: os.remove(pid_file_path)
                 except OSError as e: print(f"{RED}*{RESET} ERROR: Failed to remove stale PID file: {e}", file=sys.stderr)
 
-        # 3. [NOVO] Lógica de Prioridade
         final_disk = args.disk or config.get('disk')
-        final_nvram = config.get('nvram') # NVRAM não pode ser substituído
+        final_nvram = config.get('nvram') 
         final_smp = args.smp or config.get('smp') or DEFAULT_SMP
         final_mem = args.mem or config.get('mem') or DEFAULT_MEM
         final_bridge = args.bridge or config.get('bridge') or DEFAULT_BRIDGE
         final_mac = args.mac or config.get('mac')
         
-        # Lógica de prioridade para boolean 'headless'
+        # <<< [CORREÇÃO APLICADA AQUI] >>>
         if args.headless: # Prioridade 1: Flag da CLI
             final_headless = True
         else: # Prioridade 2: Arquivo de Config
-            final_headless = config.getboolean('headless', False)
+            config_value = config.get('headless', 'false')
+            final_headless = str(config_value).lower() == 'true'
 
-        # 4. [CHECK] Validar caminhos
         if not final_disk or not os.path.exists(final_disk):
             print(f"{RED}*{RESET} ERROR: Disk file not found at: {YELLOW}{final_disk}{RESET}", file=sys.stderr)
             sys.exit(1)
@@ -680,7 +652,6 @@ def main():
             print(f"{RED}*{RESET} ERROR: NVRAM file not found at: {YELLOW}{final_nvram}{RESET}", file=sys.stderr)
             sys.exit(1)
             
-        # 5. Lógica da ISO (boot override)
         if args.iso:
             if not os.path.exists(args.iso):
                 print(f"{RED}*{RESET} ERROR: ISO file not found at: {YELLOW}{args.iso}{RESET}", file=sys.stderr)
@@ -695,7 +666,6 @@ def main():
 
     # --- [LÓGICA COMUM] Construção e Execução do Comando QEMU ---
 
-    # Validar OVMF_CODE principal
     if not os.path.exists(OVMF_CODE_PATH):
         print(f"{RED}*{RESET} ERROR: Base OVMF CODE file not found: {YELLOW}{OVMF_CODE_PATH}{RESET}", file=sys.stderr)
         sys.exit(1)
@@ -712,7 +682,6 @@ def main():
         '-drive', f'if=pflash,format=raw,file={final_nvram}',
     ]
 
-    # --- Lógica de Rede (Dispositivo com MAC) ---
     net_device_str = 'virtio-net-pci,netdev=net0'
     if final_mac:
         if not re.match(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$', final_mac):
@@ -722,7 +691,6 @@ def main():
         net_device_str += f',mac={final_mac}'
     qemu_command.extend(['-device', net_device_str])
 
-    # --- Lógica de Gráficos (Headless ou VGA) ---
     if final_headless:
         print(f"{GREEN}*{RESET} INFO: Headless mode enabled. Adding {CYAN}-vga none -display none{RESET}.")
         qemu_command.extend(['-vga', 'none', '-display', 'none'])
@@ -730,7 +698,6 @@ def main():
         qemu_command.append('-device')
         qemu_command.append('virtio-vga')
 
-    # --- Adiciona flags de daemonização APENAS para 'run' ---
     if args.command == 'run':
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
         qemu_command.extend([
@@ -738,7 +705,6 @@ def main():
             '-pidfile', pid_file_path
         ])
 
-    # --- Lógica de Boot (ISO) ---
     if args.iso:
         qemu_command.extend([
             '-drive', f'file={args.iso},media=cdrom'
@@ -752,7 +718,6 @@ def main():
     else:
         print(f"{GREEN}*{RESET} INFO: Booting from disk (default order).")
 
-    # --- Execução ---
     print(f"\n{GREEN}*{RESET} INFO: Final command to be executed:")
     print(' '.join(qemu_command))
     print("-" * 70)
