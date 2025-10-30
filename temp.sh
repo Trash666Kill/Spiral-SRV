@@ -1,10 +1,6 @@
 #!/bin/bash
 
 script() {
-    # Remove existing SSH configuration
-    rm -v /etc/ssh/sshd_config
-
-    # Add new SSH configuration file with custom parameters
     cat << 'EOF' > /usr/local/bin/prebuild.sh
 #!/bin/bash
     # Script to configure static network interface and enable root login via ssh
@@ -30,10 +26,8 @@ EOF
 }
 
 ssh_config() {
-    # Remove existing SSH configuration
     rm -v /etc/ssh/sshd_config
 
-    # Add new SSH configuration file with custom parameters
     cat << 'EOF' > /etc/ssh/sshd_config
 Include /etc/ssh/sshd_config.d/*.conf
 
@@ -58,6 +52,23 @@ AcceptEnv LANG LC_*
 
 Subsystem       sftp    /usr/lib/openssh/sftp-server
 EOF
+}
+
+service() {
+    cat << 'EOF' > /etc/systemd/system/prebuild.service
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 10
+ExecStart=/usr/local/bin/prebuild.sh
+RemainAfterExit=true
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
     systemctl daemon-reload
     systemctl enable prebuild
 }
@@ -65,6 +76,7 @@ EOF
 main() {
     script
     ssh_config
+    service
     passwd -d root
     printf "\e[33m*\e[0m ATTENTION: SHUTTING DOWN SYSTEM IN 5 SECONDS...\n"
     sleep 5
