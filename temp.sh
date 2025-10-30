@@ -1,87 +1,22 @@
-#!/bin/bash
+hostname() {
+    # Install the required packages
+    apt-get -y install uuid uuid-runtime > /dev/null 2>&1
 
-script() {
-    cat << 'EOF' > /usr/local/bin/prebuild.sh
-#!/bin/bash
-    # Script to configure static network interface and enable root login via ssh
+    # Generates a new hostname based on the chassis type and a random value
+    HOSTNAME="srv$(shuf -i 10000-99999 -n 1)"
 
-network() {
-    dhcpcd --release ens2 > /dev/null 2>&1
-    systemctl disable networking --quiet 2>/dev/null || true
-    rm -f /etc/network/interfaces
-    ip link set ens2 up
-    ip addr add 10.0.12.249/24 dev ens2
-    ip route add default via 10.0.12.254 dev ens2
-    sed -i '1,$ c nameserver 10.0.6.62' /etc/resolv.conf
+    printf "\e[32m*\e[0m GENERATED HOSTNAME: \033[32m%s\033[0m\n" "$HOSTNAME"
+
+    # Remove the /etc/hostname file and write the new hostname
+    rm /etc/hostname
+    printf "$HOSTNAME" > /etc/hostname
+
+    # Remove the /etc/hosts file and writes the new hosts entries
+    rm /etc/hosts
+    printf "127.0.0.1       localhost
+127.0.1.1       "$HOSTNAME"
+
+::1     localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters" > /etc/hosts
 }
-
-main() {
-    network
-    passwd -d root
-}
-
-main
-EOF
-    chmod -v 700 /usr/local/bin/prebuild.sh
-}
-
-ssh_config() {
-    rm -v /etc/ssh/sshd_config
-
-    cat << 'EOF' > /etc/ssh/sshd_config
-Include /etc/ssh/sshd_config.d/*.conf
-
-#ListenAddress 10.0.10.0
-Port 22
-AllowTcpForwarding no
-GatewayPorts no
-
-PubkeyAuthentication yes
-PermitRootLogin yes
-PermitEmptyPasswords yes
-
-ChallengeResponseAuthentication no
-
-UsePAM yes
-
-X11Forwarding no
-PrintMotd no
-PrintLastLog no
-
-AcceptEnv LANG LC_*
-
-Subsystem       sftp    /usr/lib/openssh/sftp-server
-EOF
-}
-
-service() {
-    cat << 'EOF' > /etc/systemd/system/prebuild.service
-[Service]
-Type=oneshot
-ExecStartPre=/bin/sleep 10
-ExecStart=/usr/local/bin/prebuild.sh
-RemainAfterExit=true
-Restart=on-failure
-RestartSec=5s
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable prebuild
-}
-
-main() {
-    script
-    ssh_config
-    service
-    passwd -d root
-    printf "\e[33m*\e[0m ATTENTION: SHUTTING DOWN SYSTEM IN 5 SECONDS...\n"
-    sleep 5
-    rm -f -- "$0"
-    systemctl poweroff
-}
-
-main

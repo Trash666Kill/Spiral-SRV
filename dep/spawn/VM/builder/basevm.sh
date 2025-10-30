@@ -159,6 +159,12 @@ interface() {
     fi
 }
 
+hostname() {
+    # Change hostname
+    sed -i -E 's/(127\.0\.1\.1[[:space:]]+).*/\1spiralvm/' /etc/hosts
+    printf "spiralvm" > /etc/hostname
+}
+
 target_user() {
     # Install the sudo package
     apt-get -y install sudo > /dev/null 2>&1
@@ -489,6 +495,7 @@ main() {
     update
     cloud_kernel
     interface
+    hostname
     target_user
     packages
     directories
