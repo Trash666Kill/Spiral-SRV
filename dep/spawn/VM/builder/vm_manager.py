@@ -5,7 +5,7 @@ import argparse
 import sys
 import os
 import shutil
-import re
+import re  # Usado para guest_name e MAC
 
 # --- ANSI Color Codes ---
 GREEN = '\033[32m'
@@ -26,7 +26,7 @@ QEMU_BRIDGE_HELPER = '/usr/lib/qemu/qemu-bridge-helper'
 # --- Caminhos de Diretório Padrão ---
 DEFAULT_IMG_DIR = "/var/lib/libvirt/images"
 DEFAULT_NVRAM_DIR = "/var/lib/libvirt/qemu/nvram"
-DEFAULT_STATE_DIR = "/var/run/qemu_vm_manager"
+DEFAULT_STATE_DIR = "/var/run/qemu_vm_manager" 
 
 # --- Padrões de OVMF (UEFI) ---
 OVMF_CODE_PATH = '/usr/share/OVMF/OVMF_CODE_4M.fd'
@@ -68,7 +68,8 @@ def print_custom_help():
     print(f"  {GREEN}To run an existing VM:{RESET}")
     print(f"    Use the {CYAN}run{RESET} command (runs in background):")
     print(f"    {YELLOW}Example:{RESET} ./vm_manager.py run MyVM")
-    print(f"    {YELLOW}Example (Headless):{RESET} ./vm_manager.py run MyVM --headless\n")
+    print(f"    {YELLOW}Example (Headless):{RESET} ./vm_manager.py run MyVM --headless")
+    print(f"    {YELLOW}Example (Custom MAC):{RESET} ./vm_manager.py run MyVM --mac 52:54:00:12:34:56\n")
 
     print(f"  {GREEN}To clone an existing VM:{RESET}")
     print(f"    Use the {CYAN}copy{RESET} command:")
@@ -161,6 +162,8 @@ def main():
     new_res_args.add_argument('--smp', metavar='<cores>', type=str, default=DEFAULT_SMP, help=f"Number of CPU cores. Default: {DEFAULT_SMP}")
     new_res_args.add_argument('--mem', metavar='<size>', type=str, default=DEFAULT_MEM, help=f"Amount of memory. Default: {DEFAULT_MEM}")
     new_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default=DEFAULT_BRIDGE, help=f"Network bridge interface. Default: {DEFAULT_BRIDGE}")
+    # <<< [MODIFICAÇÃO 1] Argumento --mac adicionado ao 'new' >>>
+    new_res_args.add_argument('--mac', metavar='<addr>', type=str, default=None, help="Specify a custom MAC address (e.g., 52:54:00:12:34:56).")
 
 
     # --- Sub-comando 'run' ---
@@ -179,6 +182,8 @@ def main():
     run_res_args.add_argument('--smp', metavar='<cores>', type=str, default=DEFAULT_SMP, help=f"Number of CPU cores. Default: {DEFAULT_SMP}")
     run_res_args.add_argument('--mem', metavar='<size>', type=str, default=DEFAULT_MEM, help=f"Amount of memory. Default: {DEFAULT_MEM}")
     run_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default=DEFAULT_BRIDGE, help=f"Network bridge interface. Default: {DEFAULT_BRIDGE}")
+    # <<< [MODIFICAÇÃO 2] Argumento --mac adicionado ao 'run' >>>
+    run_res_args.add_argument('--mac', metavar='<addr>', type=str, default=None, help="Specify a custom MAC address (e.g., 52:54:00:12:34:56).")
 
 
     # --- Sub-comando 'remove' ---
@@ -233,13 +238,11 @@ def main():
     
     # Valida o guest_name para todos os comandos que o utilizam
     if args.command in ('new', 'run', 'remove', 'stop'):
-        # Regex: Começa com letra/número, seguido por letras/números/hífen/underscore
         if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$', args.guest_name):
             print(f"{RED}*{RESET} ERROR: 'guest_name' inválido ({YELLOW}{args.guest_name}{RESET}).", file=sys.stderr)
             print(f"{YELLOW}*{RESET} INFO: Use apenas letras, números, hífen (-) e underscore (_).")
             sys.exit(1)
     elif args.command == 'copy':
-        # Validar AMBOS os nomes para 'copy'
         if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$', args.source_name):
             print(f"{RED}*{RESET} ERROR: 'source_name' inválido ({YELLOW}{args.source_name}{RESET}).", file=sys.stderr)
             sys.exit(1)
@@ -399,7 +402,7 @@ def main():
         sys.exit(0) # Fim do 'stop'
         
     
-    # <<< [LÓGICA 'COPY' CORRIGIDA] >>>
+    # --- Lógica 'copy' ---
     if args.command == 'copy':
         print(f"{GREEN}*{RESET} INFO: Attempting to clone VM {CYAN}{args.source_name}{RESET} to {CYAN}{args.dest_name}{RESET}...")
 
@@ -449,16 +452,12 @@ def main():
             shutil.copyfile(src_disk_path, dest_disk_path)
             
             print(f"{GREEN}*{RESET} INFO: Creating new NVRAM for destination...")
-            # << [CORREÇÃO] Chamar create_nvram_file para o destino
             if not create_nvram_file(args.dest_name, dest_nvram_path):
-                # Se create_nvram_file falhar, ele já imprime o erro.
-                # Lançamos uma exceção para acionar a limpeza do disco.
                 raise Exception("Failed to create new NVRAM file.")
             
             print(f"\n{GREEN}*{RESET} SUCCESS: VM '{args.source_name}' successfully cloned to '{args.dest_name}'.")
         except Exception as e:
             print(f"\n{RED}*{RESET} ERROR: Failed during clone operation: {e}", file=sys.stderr)
-            # Tentar limpar se algo deu errado (ex: copiou disco mas falhou no nvram)
             if os.path.exists(dest_disk_path):
                 print(f"{YELLOW}*{RESET} ATTENTION: Cleaning up partial disk file...")
                 try: os.remove(dest_disk_path)
@@ -470,7 +469,6 @@ def main():
             sys.exit(1)
         
         sys.exit(0) # Fim do 'copy'
-    # <<< Fim da Lógica 'copy' >>>
 
 
     
@@ -479,7 +477,6 @@ def main():
     is_install_boot = False
     
     # Definir caminhos NVRAM (comuns a 'new' e 'run')
-    # Validar diretório NVRAM
     if not os.path.isdir(DEFAULT_NVRAM_DIR):
          print(f"{YELLOW}*{RESET} ATTENTION: NVRAM directory not found. Creating {CYAN}{DEFAULT_NVRAM_DIR}{RESET}")
          try:
@@ -626,11 +623,34 @@ def main():
         '-smp', args.smp,
         '-m', args.mem,
         '-drive', f'file={disk_path},if=virtio,format=qcow2', 
-        '-device', 'virtio-net-pci,netdev=net0',
+        # '-device', 'virtio-net-pci,netdev=net0', # <-- [MODIFICAÇÃO 3] Removido da lista estática
         '-netdev', f'tap,id=net0,br={args.bridge},helper={QEMU_BRIDGE_HELPER}',
         '-drive', f'if=pflash,format=raw,readonly=on,file={ovmf_code_path}',
         '-drive', f'if=pflash,format=raw,file={nvram_path}',
     ]
+
+    # <<< [MODIFICAÇÃO 4] Lógica dinâmica do dispositivo de rede >>>
+    
+    # --- Lógica de Rede (Dispositivo) ---
+    net_device_str = 'virtio-net-pci,netdev=net0'
+    
+    # getattr() é usado pois 'mac' não existe no args do 'copy', 'list', etc.
+    mac_addr = getattr(args, 'mac', None) 
+    
+    if mac_addr:
+        # Validação do formato MAC
+        if not re.match(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$', mac_addr):
+            print(f"{RED}*{RESET} ERROR: Invalid MAC address format ({mac_addr}).", file=sys.stderr)
+            print(f"{YELLOW}*{RESET} INFO: Use format XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX.")
+            sys.exit(1)
+            
+        print(f"{GREEN}*{RESET} INFO: Using custom MAC address: {CYAN}{mac_addr}{RESET}")
+        net_device_str += f',mac={mac_addr}'
+    
+    qemu_command.extend(['-device', net_device_str])
+    
+    # <<< Fim da Modificação 4 >>>
+
 
     # --- Lógica de Gráficos (Headless ou VGA) ---
     is_headless = getattr(args, 'headless', False) 
