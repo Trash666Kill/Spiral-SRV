@@ -56,7 +56,7 @@ waitobj() {
             else
                 ((fail_count++))
                 count=0
-                echo -e "\e[33m*\e[0m FAILED ATTEMPTS ($fail_count/$max_attempts)"
+                echo -e "\e[33m*\e[0m AWAITING RESPONS ($fail_count/$max_attempts)"
             fi
 
             sleep 1
