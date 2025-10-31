@@ -140,3 +140,4 @@ basevm() {
 }
 
 #
+MAC=$(grep 'mac =' ~/.services/virtual-machine/vms/SpiralVM.conf | awk -F '= ' '{print $2}' | tr -d ' ')
