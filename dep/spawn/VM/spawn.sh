@@ -186,7 +186,7 @@ newvm() {
 }
 
 main() {
-    basect
+    basevm
 }
 
 # Execute main function
