@@ -34,9 +34,14 @@ newvm() {
     # Inicia o novo virtual machine
     printf "\033[32m*\033[0m STARTING...\n"
     eval "$VM_MANAGER" run "$NEW_VM_NAME"
+    # Aguardando a Máquina Virtual iniciar
+    waitobj 10.0.12.249 60 4 "$NEW_VM_NAME"
+    # Vigorando o novo hostname
+    ssh -p 22 root@10.0.12.249 "sed -i -E \"s/(127\\.0\\.1\\.1\\s+).*/\\1$HOSTNAME/\" /etc/hosts"
+    ssh -p 22 root@10.0.12.249 "rm /etc/hostname && printf "$HOSTNAME" > /etc/hostname"
     # Copia, torna o script later.sh executável e o executa na virtual machine
-    lxc-attach --name "${NEW_CT}" -- chmod +x /root/later.sh
-    lxc-attach --name "${NEW_CT}" -- /root/later.sh
+    scp -P 22 /etc/spawn/VM/builder/later.sh  root@10.0.12.249:/root
+    ssh -p 22 root@10.0.12.249 "chmod +x /root/later.sh && /root/later.sh"
 else
     printf "\e[31m*\e[0m ERROR CREATING VIRTUAL MACHINE \033[32m%s\033[0m.\n" "$NEW_CT"
     exit 1

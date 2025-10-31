@@ -5,14 +5,6 @@ unset HISTFILE
 
 NIC0=ens2
 
-network() {
-    # Restart the systemd-resolved service to ensure DNS resolution is active
-    systemctl restart systemd-resolved
-
-    # Stores the assigned IP address
-    IP_ADDRESS=$(ip -4 addr show "$NIC0" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-}
-
 passwords() {
     # Stores the username 'sysop' in the variable TARGET_USER
     TARGET_USER=$(grep 1001 /etc/passwd | cut -f 1 -d ":")
@@ -72,7 +64,6 @@ finish() {
 }
 
 main() {
-    network
     passwords
     baseboard
     finish
