@@ -124,7 +124,8 @@ basevm() {
 newvm() {
     # Inicia a criação da nova máquina vitual a partir da base
     printf "\e[32m*\e[0m CREATING VIRTUAL MACHINE FROM BASE, WAIT...\n"
-    
+    eval "$VM_MANAGER" stop "$BASE_VM_NAME"
+
     if ! eval "$VM_MANAGER" copy "$BASE_VM_NAME" "$NEW_VM_NAME"; then
         printf "\e[31m*\e[0m ERROR COPYING VIRTUAL MACHINE \033[32m%s\033[m.\n" "$NEW_VM_NAME"
         exit 1
