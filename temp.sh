@@ -44,6 +44,7 @@ newvm() {
     ssh -p 22 root@10.0.12.249 "chmod +x /root/later.sh && /root/later.sh"
     # Aguardar a nova máquina virtual receber parâmetros de rede via DHCP
     sed -i "s/TARGET_HOSTNAME=\"[^\"]*\"/TARGET_HOSTNAME=\"$NEW_VM_NAME\"/" /etc/spawn/VM/builder/lease-monitor.sh
+    bash "/etc/spawn/VM/builder/lease-monitor.sh"
 else
     printf "\e[31m*\e[0m ERROR CREATING VIRTUAL MACHINE \033[32m%s\033[0m.\n" "$NEW_VM_NAME"
     exit 1
