@@ -26,6 +26,7 @@ NEW_VM_FILES=(
 )
 VM_MANAGER="python3 ${NEW_VM_FILES[2]}"
 
+VM_CONF="/root/.services/virtual-machine/vms"
 BASE_VM_NAME="SpiralVM"
 NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
 
@@ -140,4 +141,5 @@ basevm() {
 }
 
 #
-MAC=$(grep 'mac =' ~/.services/virtual-machine/vms/SpiralVM.conf | awk -F '= ' '{print $2}' | tr -d ' ')
+
+MAC_ADDRESS=$(sed -n 's/^mac = *//p' "$VM_CONF/$NEW_VM_NAME.conf")
