@@ -1,3 +1,4 @@
+newvm() {
 # Inicia a criação da nova máquina vitual a partir da base
     printf "\e[32m*\e[0m CREATING VIRTUAL MACHINE FROM BASE, WAIT...\n"
     eval "$VM_MANAGER" copy "$BASE_VM_NAME" "$NEW_VM_NAME"
@@ -32,13 +33,12 @@
 
     # Inicia o novo virtual machine
     printf "\033[32m*\033[0m STARTING...\n"
-    cp later.sh /var/lib/lxc/"${NEW_CT}"/rootfs/root/
-    lxc-start --name "${NEW_CT}"
-
-    # Torna o script later.sh executável e o executa dentro do virtual machine
+    eval "$VM_MANAGER" run "$NEW_VM_NAME"
+    # Copia, torna o script later.sh executável e o executa na virtual machine
     lxc-attach --name "${NEW_CT}" -- chmod +x /root/later.sh
     lxc-attach --name "${NEW_CT}" -- /root/later.sh
 else
     printf "\e[31m*\e[0m ERROR CREATING VIRTUAL MACHINE \033[32m%s\033[0m.\n" "$NEW_CT"
     exit 1
 fi
+}
