@@ -142,7 +142,6 @@ newvm() {
         local IP_ADDRESS=$(/etc/spawn/grepip.sh)
 
         # Monta a string de reserva de DNS
-        # A variável MAC_ADDRESS agora está disponível
         RESULT="$MAC_ADDRESS,$IP_ADDRESS,$NEW_VM_NAME"
         printf "\033[32m*\033[m IP ADDRESS FIXED.\n"
 
@@ -168,12 +167,11 @@ newvm() {
     # Inicia o novo virtual machine
     printf "\033[32m*\033[m STARTING...\n"
     
-    # 5. INICIE A VM E VERIFIQUE SE DEU CERTO
     if ! eval "$VM_MANAGER" run "$NEW_VM_NAME"; then
         printf "\e[31m*\e[0m ERROR STARTING VIRTUAL MACHINE \033[32m%s\033[m.\n" "$NEW_VM_NAME"
         exit 1
     fi
-    
+
     # Aguardando a Máquina Virtual iniciar
     waitobj 10.0.12.249 60 4 "$NEW_VM_NAME"
     # Vigorando o novo hostname
@@ -187,5 +185,9 @@ newvm() {
     bash "/etc/spawn/VM/builder/lease-monitor.sh"
 }
 
-#
-basevm
+main() {
+    basect
+}
+
+# Execute main function
+main
