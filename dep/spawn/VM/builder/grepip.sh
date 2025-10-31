@@ -5,7 +5,7 @@ unset HISTFILE
 
 LEASES_FILE="/var/lib/misc/dnsmasq.leases"
 RESERVATIONS_FILE="/etc/dnsmasq.d/config/reservations"
-IP_RANGE="10.0.10"
+IP_RANGE="10.0.12"
 
 # Função para verificar se o IP está em uso em qualquer um dos arquivos
 is_ip_in_use() {
@@ -14,7 +14,7 @@ grep -q "$IP" "$LEASES_FILE" || grep -q "$IP" "$RESERVATIONS_FILE"
 }
 
 # Loop para encontrar o IP disponível mais próximo do '1'
-for i in {2..254}; do
+for i in {2..248}; do
     CANDIDATE_IP="$IP_RANGE.$i"
     if ! is_ip_in_use "$CANDIDATE_IP"; then
         echo "$CANDIDATE_IP"
