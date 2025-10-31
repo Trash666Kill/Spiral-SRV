@@ -7,6 +7,7 @@ import os
 import shutil
 import re
 import configparser
+import random         # <<< [NOVO] Para gerar MACs
 
 # --- ANSI Color Codes ---
 GREEN = '\033[32m'
@@ -59,6 +60,17 @@ def run_command(cmd_list):
         print(f"\n{RED}*{RESET} ERROR: Failed to run command: {e}", file=sys.stderr)
         sys.exit(1)
 
+# <<< [NOVO] Função para gerar MAC aleatório com prefixo QEMU >>>
+def generate_random_mac():
+    """Generates a random MAC address with QEMU prefix 52:54:00."""
+    # Prefixo padrão do QEMU/KVM
+    mac = [0x52, 0x54, 0x00,
+           random.randint(0x00, 0xFF),
+           random.randint(0x00, 0xFF),
+           random.randint(0x00, 0xFF)]
+    # Formata como string "02x" (hex com 2 dígitos, preenchido com zero)
+    return ':'.join(f"{b:02x}" for b in mac)
+
 def find_nvram_template():
     """Finds the first available *default* OVMF VARS template."""
     for path in NVRAM_TEMPLATES:
@@ -81,9 +93,8 @@ def create_nvram_file(guest_name, nvram_dest_path):
          return False
 
     try:
-        # Garante que o diretório de destino exista
         nvram_dir = os.path.dirname(nvram_dest_path)
-        os.makedirs(nvram_dir, 0o755, exist_ok=True) # Adicionado exist_ok
+        os.makedirs(nvram_dir, 0o755, exist_ok=True) 
 
         print(f"{CYAN}*{RESET} EXECUTING: copy {nvram_template_src} to {nvram_dest_path}")
         shutil.copyfile(nvram_template_src, nvram_dest_path)
@@ -180,7 +191,7 @@ def main():
     
     subparsers = parser.add_subparsers(dest='command', help='Operation mode', metavar='COMMAND')
 
-    # --- Sub-comando 'new' (Define os padrões iniciais) ---
+    # --- Sub-comando 'new' ---
     new_parser = subparsers.add_parser(
         'new', 
         help='Create and define a new VM (runs in foreground)',
@@ -196,10 +207,10 @@ def main():
     new_res_args.add_argument('--smp', metavar='<cores>', type=str, default=DEFAULT_SMP, help=f"Number of CPU cores. Default: {DEFAULT_SMP}")
     new_res_args.add_argument('--mem', metavar='<size>', type=str, default=DEFAULT_MEM, help=f"Amount of memory. Default: {DEFAULT_MEM}")
     new_res_args.add_argument('--bridge', metavar='<bridge_if>', type=str, default=DEFAULT_BRIDGE, help=f"Network bridge interface. Default: {DEFAULT_BRIDGE}")
-    new_res_args.add_argument('--mac', metavar='<addr>', type=str, default=None, help="Specify a custom MAC address (e.g., 52:54:00:12:34:56).")
+    new_res_args.add_argument('--mac', metavar='<addr>', type=str, default=None, help="Specify a custom MAC (default: auto-generate).")
 
 
-    # --- Sub-comando 'run' (Lê os padrões do .conf) ---
+    # --- Sub-comando 'run' ---
     run_parser = subparsers.add_parser(
         'run', 
         help='Run a defined VM (runs in background)',
@@ -211,7 +222,7 @@ def main():
     run_opt_args = run_parser.add_argument_group('Optional Overrides')
     run_opt_args.add_argument('--disk', metavar='<path>', type=str, default=None, help=f"Override path to the .qcow2 disk.")
     run_opt_args.add_argument('--iso', metavar='<path>', type=str, default=None, help="Path to an ISO image for live boot or repair.")
-    run_opt_args.add_argument('--headless', action='store_true', default=False, help="Override: Run in headless mode (no graphical display).") # Default False
+    run_opt_args.add_argument('--headless', action='store_true', default=False, help="Override: Run in headless mode (no graphical display).")
     run_res_args = run_parser.add_argument_group('Resource Overrides')
     run_res_args.add_argument('--smp', metavar='<cores>', type=str, default=None, help=f"Override number of CPU cores.")
     run_res_args.add_argument('--mem', metavar='<size>', type=str, default=None, help=f"Override amount of memory.")
@@ -487,9 +498,11 @@ def main():
             new_config_data = source_config.copy()
             new_config_data['disk'] = dest_disk_path
             new_config_data['nvram'] = dest_nvram_path
-            if 'mac' in new_config_data:
-                print(f"{YELLOW}*{RESET} ATTENTION: Removing MAC address from cloned VM config.")
-                del new_config_data['mac']
+            
+            # <<< [MODIFICAÇÃO] Gerar um NOVO mac para o clone >>>
+            new_mac = generate_random_mac()
+            print(f"{GREEN}*{RESET} INFO: Generating new MAC for clone: {CYAN}{new_mac}{RESET}")
+            new_config_data['mac'] = new_mac
                 
             if not write_vm_config(args.dest_name, new_config_data):
                 raise Exception("Failed to write new VM config file.")
@@ -575,6 +588,14 @@ def main():
             os.remove(disk_path) 
             sys.exit(1)
             
+        # <<< [MODIFICAÇÃO] Lógica de geração de MAC >>>
+        if args.mac:
+            print(f"{GREEN}*{RESET} INFO: Using provided MAC address: {CYAN}{args.mac}{RESET}")
+            final_mac_for_config = args.mac
+        else:
+            final_mac_for_config = generate_random_mac()
+            print(f"{GREEN}*{RESET} INFO: No MAC provided. Generated new MAC: {CYAN}{final_mac_for_config}{RESET}")
+        
         print(f"{GREEN}*{RESET} INFO: Registering new VM definition...")
         config_data = {
             'disk': disk_path,
@@ -582,10 +603,9 @@ def main():
             'mem': args.mem,
             'smp': args.smp,
             'bridge': args.bridge,
-            'headless': 'false' 
+            'headless': 'false',
+            'mac': final_mac_for_config  # Salva o MAC (fornecido ou gerado)
         }
-        if args.mac:
-            config_data['mac'] = args.mac
             
         if not write_vm_config(args.guest_name, config_data):
             print(f"{RED}*{RESET} ERROR: Failed to write config file.", file=sys.stderr)
@@ -598,7 +618,7 @@ def main():
         final_smp = args.smp
         final_mem = args.mem
         final_bridge = args.bridge
-        final_mac = args.mac
+        final_mac = final_mac_for_config # Usa o MAC (fornecido ou gerado)
         final_headless = False 
         is_install_boot = True
         
@@ -638,10 +658,9 @@ def main():
         final_bridge = args.bridge or config.get('bridge') or DEFAULT_BRIDGE
         final_mac = args.mac or config.get('mac')
         
-        # <<< [CORREÇÃO APLICADA AQUI] >>>
-        if args.headless: # Prioridade 1: Flag da CLI
+        if args.headless: 
             final_headless = True
-        else: # Prioridade 2: Arquivo de Config
+        else: 
             config_value = config.get('headless', 'false')
             final_headless = str(config_value).lower() == 'true'
 
