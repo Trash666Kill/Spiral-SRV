@@ -180,7 +180,7 @@ newvm() {
     # Copia, torna o script later.sh executável e o executa na virtual machine
     scp -P 22 /etc/spawn/VM/builder/later.sh  root@10.0.12.249:/root
     ssh -p 22 root@10.0.12.249 "chmod +x /root/later.sh && /root/later.sh"
-    # Aguardar a nova máquina virtual receber parâmetros de rede via DHCP
+    # Aguarda a nova máquina virtual receber parâmetros de rede via DHCP
     sed -i "s/TARGET_HOSTNAME=\"[^\"]*\"/TARGET_HOSTNAME=\"$NEW_VM_NAME\"/" /etc/spawn/VM/builder/lease-monitor.sh
     bash "/etc/spawn/VM/builder/lease-monitor.sh"
 }
