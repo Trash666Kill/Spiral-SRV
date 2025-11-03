@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Encerra o script imediatamente se um comando falhar
+set -e
+
 # Disable bash history
 unset HISTFILE
 
@@ -9,7 +12,7 @@ cd /etc/spawn/VM/
 PRE_BASE_VM="SpiralVM-Pre"
 PRE_BASE_VM_DIR="/var/lib/libvirt/images"
 
-# --- VARIÁVEL DE DOWNLOAD RENOMEADA ---
+# --- VARIÁVEIS DE DOWNLOAD ---
 GET_SERVER_URL="https://10.0.12.3/spawn/VM/Images"
 DOWNLOAD_TOKEN="15d5d0956bc57ab33186c10a3fd78c840d3cbbac6dc68853ce1c6726253ce6d5"
 # ------------------------------------
@@ -117,7 +120,6 @@ basevm() {
             mkdir -p "$PRE_BASE_VM_DIR"
             mkdir -p "$VM_CONF"
             
-            # --- MODIFICAÇÃO: Uso da variável renomeada GET_SERVER_URL ---
             # Tenta baixar ambos os arquivos. O 'if' só será verdadeiro se AMBOS os 'wget' tiverem sucesso.
             if wget --no-check-certificate -O "$PRE_BASE_VM_DIR/$PRE_BASE_VM.qcow2" \
                  "$GET_SERVER_URL/$PRE_BASE_VM.qcow2?token=$DOWNLOAD_TOKEN" && \
@@ -139,11 +141,14 @@ basevm() {
             eval "$VM_MANAGER" run "$BASE_VM_NAME"
             # Aguardando a Máquina Virtual iniciar
             waitobj $NEW_VM_IP 60 4 "$BASE_VM_NAME"
+            
+            # --- COMANDOS COM SSH KEY CHECKING IGNORADO ---
             # Contruindo a base
-            ssh -p 22 -q root@$NEW_VM_IP "mkdir /root/builder"
-            scp -P 22 -q /etc/spawn/VM/builder/basevm.sh root@$NEW_VM_IP:/root/builder
-            scp -P 22 -q -r /etc/spawn/VM/systemd root@$NEW_VM_IP:/root/builder
-            ssh -p 22 -q root@$NEW_VM_IP "cd /root/builder && chmod +x basevm.sh && ./basevm.sh"
+            ssh -p 22 -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$NEW_VM_IP "mkdir /root/builder"
+            scp -P 22 -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /etc/spawn/VM/builder/basevm.sh root@$NEW_VM_IP:/root/builder
+            scp -P 22 -q -r -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /etc/spawn/VM/systemd root@$NEW_VM_IP:/root/builder
+            ssh -p 22 -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$NEW_VM_IP "cd /root/builder && chmod +x basevm.sh && ./basevm.sh"
+            
             # Chamada para a função responsável pela criação no novo convidado baseado na base
             newvm
         fi
@@ -159,7 +164,9 @@ newvm() {
     # Inicia a criação da nova máquina vitual a partir da base
     printf "\e[32m*\e[0m CREATING VIRTUAL MACHINE FROM BASE, WAIT...\n"
     sleep 5
-    eval "$VM_MANAGER" stop "$BASE_VM_NAME"
+    
+    # --- MODIFICAÇÃO: Adicionado || true para ignorar o erro "already stopped" ---
+    eval "$VM_MANAGER" stop "$BASE_VM_NAME" || true
 
     if ! eval "$VM_MANAGER" copy "$BASE_VM_NAME" "$NEW_VM_NAME"; then
         printf "\e[31m*\e[0m ERROR COPYING VIRTUAL MACHINE \033[32m%s\033[m.\n" "$NEW_VM_NAME"
@@ -196,7 +203,7 @@ newvm() {
             printf "\033[33m*\033[m ATTENTION: A DYNAMIC IP ADDRESS WILL BE ASSIGNED TO THE VIRTUAL machine\n"
             ;;
         *)
-            printf "\033[31m*\033[m ERROR: INVALID CHOICE, TYPE \033[32m'y'\033[m IF YOU WANT TO FIX AN IP ADDRESS IN THE VIRTUAL machine AND \033[32m'n'\033[m IF YOU PREFER TO LEAVE IT DYNAMIC\n"
+            printf "\033[31m*\e[0m ERROR: INVALID CHOICE, TYPE \033[32m'y'\033[m IF YOU WANT TO FIX AN IP ADDRESS IN THE VIRTUAL machine AND \033[32m'n'\033[m IF YOU PREFER TO LEAVE IT DYNAMIC\n"
             ;;
         esac
 
@@ -210,12 +217,15 @@ newvm() {
 
     # Aguardando a Máquina Virtual iniciar
     waitobj $NEW_VM_IP 60 4 "$NEW_VM_NAME"
+    
+    # --- COMANDOS COM SSH KEY CHECKING IGNORADO ---
     # Vigorando o novo hostname
-    ssh -p 22 root@$NEW_VM_IP "sed -i -E \"s/(127\\.0\\.1\\.1\\s+).*/\\1$NEW_VM_NAME/\" /etc/hosts"
-    ssh -p 22 root@$NEW_VM_IP "rm /etc/hostname && printf "$NEW_VM_NAME" > /etc/hostname"
+    ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$NEW_VM_IP "sed -i -E \"s/(127\\.0\\.1\\.1\\s+).*/\\1$NEW_VM_NAME/\" /etc/hosts"
+    ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$NEW_VM_IP "rm /etc/hostname && printf "$NEW_VM_NAME" > /etc/hostname"
     # Copia, torna o script later.sh executável e o executa na virtual machine
-    scp -P 22 /etc/spawn/VM/builder/later.sh  root@$NEW_VM_IP:/root
-    ssh -p 22 root@$NEW_VM_IP "chmod +x /root/later.sh && /root/later.sh"
+    scp -P 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /etc/spawn/VM/builder/later.sh  root@$NEW_VM_IP:/root
+    ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$NEW_VM_IP "chmod +x /root/later.sh && /root/later.sh"
+    
     # Aguarda a nova máquina virtual receber parâmetros de rede via DHCP
     sed -i "s/TARGET_HOSTNAME=\"[^\"]*\"/TARGET_HOSTNAME=\"$NEW_VM_NAME\"/" /etc/spawn/VM/builder/lease-monitor.sh
     bash "/etc/spawn/VM/builder/lease-monitor.sh"
