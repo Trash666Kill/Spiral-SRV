@@ -51,7 +51,6 @@ finish() {
 
     # Removing the Pre-Build file Service
     rm /etc/systemd/system/prebuild.service
-    rm /root/prebuild.sh
     # Disabling and Removing the Pre-Build Service
     systemctl disable prebuild --quiet
 
