@@ -66,6 +66,9 @@ RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 
+StandardOutput=truncate:/var/log/trigger.log
+StandardError=truncate:/var/log/trigger.log
+
 [Install]
 WantedBy=multi-user.target
 EOF
