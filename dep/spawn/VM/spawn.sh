@@ -9,6 +9,11 @@ cd /etc/spawn/VM/
 PRE_BASE_VM="SpiralVM-Pre"
 PRE_BASE_VM_DIR="/var/lib/libvirt/images"
 
+# --- VARIÁVEL DE DOWNLOAD RENOMEADA ---
+GET_SERVER_URL="https://10.0.12.3/spawn/VM/Images"
+DOWNLOAD_TOKEN="15d5d0956bc57ab33186c10a3fd78c840d3cbbac6dc68853ce1c6726253ce6d5"
+# ------------------------------------
+
 BASE_VM_FILES=(
     "builder/basevm.sh"
     "systemd/scripts/main.sh"
@@ -103,7 +108,6 @@ basevm() {
         printf "\e[33m*\e[0m ATTENTION: THE BASE VIRTUAL MACHINE \033[32m%s\033[0m DOES NOT EXIST, WAIT...\n" "$BASE_VM_NAME"
 
         # Create SpiralVM-Base
-        # --- INÍCIO DA MODIFICAÇÃO ---
         if ! eval "$VM_MANAGER" copy "$PRE_BASE_VM" "$BASE_VM_NAME"; then
             # Se a cópia falhar, tenta baixar a imagem e o .conf
             printf "\e[31m*\e[0m ERROR: Failed to copy '$PRE_BASE_VM'. This image may be missing.\n"
@@ -113,11 +117,12 @@ basevm() {
             mkdir -p "$PRE_BASE_VM_DIR"
             mkdir -p "$VM_CONF"
             
+            # --- MODIFICAÇÃO: Uso da variável renomeada GET_SERVER_URL ---
             # Tenta baixar ambos os arquivos. O 'if' só será verdadeiro se AMBOS os 'wget' tiverem sucesso.
             if wget --no-check-certificate -O "$PRE_BASE_VM_DIR/$PRE_BASE_VM.qcow2" \
-                 "https://10.0.12.3/spawn/VM/Images/SpiralVM-Pre.qcow2?token=15d5d0956bc57ab33186c10a3fd78c840d3cbbac6dc68853ce1c6726253ce6d5" && \
+                 "$GET_SERVER_URL/$PRE_BASE_VM.qcow2?token=$DOWNLOAD_TOKEN" && \
                wget --no-check-certificate -O "$VM_CONF/$PRE_BASE_VM.conf" \
-                 "https://10.0.12.3/spawn/VM/Images/SpiralVM-Pre.conf?token=15d5d0956bc57ab33186c10a3fd78c840d3cbbac6dc68853ce1c6726253ce6d5"; then
+                 "$GET_SERVER_URL/$PRE_BASE_VM.conf?token=$DOWNLOAD_TOKEN"; then
                 
                 printf "\e[32m*\e[0m SUCCESS: Base image and configuration file downloaded.\n"
                 printf "\e[33m*\e[0m Please run the script again to provision the VM.\n"
@@ -142,7 +147,6 @@ basevm() {
             # Chamada para a função responsável pela criação no novo convidado baseado na base
             newvm
         fi
-        # --- FIM DA MODIFICAÇÃO ---
 
     else
         printf "\e[32m*\e[0m INFO: A VM base \033[32m%s\033[0m já existe. Pulando criação.\n" "$BASE_VM_NAME"
