@@ -29,6 +29,7 @@ VM_MANAGER="python3 ${NEW_VM_FILES[2]}"
 VM_CONF="/root/.services/virtual-machine/vms"
 BASE_VM_NAME="SpiralVM"
 NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
+NEW_VM_IP=10.0.12.249
 
 waitobj() {
     local TARGET_IP="$1"
