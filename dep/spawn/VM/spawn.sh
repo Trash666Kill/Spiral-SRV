@@ -7,6 +7,7 @@ unset HISTFILE
 cd /etc/spawn/VM/
 
 PRE_BASE_VM="SpiralVM-Pre"
+PRE_BASE_VM_DIR="/var/lib/libvirt/images"
 
 BASE_VM_FILES=(
     "builder/basevm.sh"
