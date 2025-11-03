@@ -29,7 +29,7 @@ VM_MANAGER="python3 ${NEW_VM_FILES[2]}"
 VM_CONF="/root/.services/virtual-machine/vms"
 BASE_VM_NAME="SpiralVM"
 NEW_VM_NAME="vm$(shuf -i 100000-999999 -n 1)"
-NEW_VM_IP=10.0.12.249
+NEW_VM_IP=$NEW_VM_IP
 
 waitobj() {
     local TARGET_IP="$1"
@@ -106,12 +106,12 @@ basevm() {
         sleep 5
         eval "$VM_MANAGER" run "$BASE_VM_NAME"
         # Aguardando a Máquina Virtual iniciar
-        waitobj 10.0.12.249 60 4 "$BASE_VM_NAME"
+        waitobj $NEW_VM_IP 60 4 "$BASE_VM_NAME"
         # Contruindo a base
-        ssh -p 22 -q root@10.0.12.249 "mkdir /root/builder"
-        scp -P 22 -q /etc/spawn/VM/builder/basevm.sh root@10.0.12.249:/root/builder
-        scp -P 22 -q -r /etc/spawn/VM/systemd root@10.0.12.249:/root/builder
-        ssh -p 22 -q root@10.0.12.249 "cd /root/builder && chmod +x basevm.sh && ./basevm.sh"
+        ssh -p 22 -q root@$NEW_VM_IP "mkdir /root/builder"
+        scp -P 22 -q /etc/spawn/VM/builder/basevm.sh root@$NEW_VM_IP:/root/builder
+        scp -P 22 -q -r /etc/spawn/VM/systemd root@$NEW_VM_IP:/root/builder
+        ssh -p 22 -q root@$NEW_VM_IP "cd /root/builder && chmod +x basevm.sh && ./basevm.sh"
         # Chamada para a função responsável pela criação no novo convidado baseado na base
         newvm
 
@@ -176,13 +176,13 @@ newvm() {
     fi
 
     # Aguardando a Máquina Virtual iniciar
-    waitobj 10.0.12.249 60 4 "$NEW_VM_NAME"
+    waitobj $NEW_VM_IP 60 4 "$NEW_VM_NAME"
     # Vigorando o novo hostname
-    ssh -p 22 root@10.0.12.249 "sed -i -E \"s/(127\\.0\\.1\\.1\\s+).*/\\1$NEW_VM_NAME/\" /etc/hosts"
-    ssh -p 22 root@10.0.12.249 "rm /etc/hostname && printf "$NEW_VM_NAME" > /etc/hostname"
+    ssh -p 22 root@$NEW_VM_IP "sed -i -E \"s/(127\\.0\\.1\\.1\\s+).*/\\1$NEW_VM_NAME/\" /etc/hosts"
+    ssh -p 22 root@$NEW_VM_IP "rm /etc/hostname && printf "$NEW_VM_NAME" > /etc/hostname"
     # Copia, torna o script later.sh executável e o executa na virtual machine
-    scp -P 22 /etc/spawn/VM/builder/later.sh  root@10.0.12.249:/root
-    ssh -p 22 root@10.0.12.249 "chmod +x /root/later.sh && /root/later.sh"
+    scp -P 22 /etc/spawn/VM/builder/later.sh  root@$NEW_VM_IP:/root
+    ssh -p 22 root@$NEW_VM_IP "chmod +x /root/later.sh && /root/later.sh"
     # Aguarda a nova máquina virtual receber parâmetros de rede via DHCP
     sed -i "s/TARGET_HOSTNAME=\"[^\"]*\"/TARGET_HOSTNAME=\"$NEW_VM_NAME\"/" /etc/spawn/VM/builder/lease-monitor.sh
     bash "/etc/spawn/VM/builder/lease-monitor.sh"
