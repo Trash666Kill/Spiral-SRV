@@ -7,7 +7,7 @@ import os
 import shutil
 import re
 import configparser
-import random         # <<< [NOVO] Para gerar MACs
+import random
 
 # --- ANSI Color Codes ---
 GREEN = '\033[32m'
@@ -60,15 +60,12 @@ def run_command(cmd_list):
         print(f"\n{RED}*{RESET} ERROR: Failed to run command: {e}", file=sys.stderr)
         sys.exit(1)
 
-# <<< [NOVO] Função para gerar MAC aleatório com prefixo QEMU >>>
 def generate_random_mac():
     """Generates a random MAC address with QEMU prefix 52:54:00."""
-    # Prefixo padrão do QEMU/KVM
     mac = [0x52, 0x54, 0x00,
            random.randint(0x00, 0xFF),
            random.randint(0x00, 0xFF),
            random.randint(0x00, 0xFF)]
-    # Formata como string "02x" (hex com 2 dígitos, preenchido com zero)
     return ':'.join(f"{b:02x}" for b in mac)
 
 def find_nvram_template():
@@ -353,6 +350,7 @@ def main():
         nvram_path = config.get('nvram')
         conf_path = os.path.join(DEFAULT_CONF_DIR, f"{args.guest_name}.conf")
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
+        monitor_socket_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.monitor"
         
         if os.path.exists(pid_file_path):
              try:
@@ -369,6 +367,7 @@ def main():
         if nvram_path and os.path.exists(nvram_path): files_to_delete.append(nvram_path)
         if os.path.exists(conf_path): files_to_delete.append(conf_path)
         if os.path.exists(pid_file_path): files_to_delete.append(pid_file_path)
+        if os.path.exists(monitor_socket_path): files_to_delete.append(monitor_socket_path)
             
         if not files_to_delete:
             print(f"{YELLOW}*{RESET} ATTENTION: No files found for guest '{args.guest_name}'. Nothing to do.", file=sys.stderr)
@@ -408,6 +407,8 @@ def main():
     # --- Lógica do 'stop' ---
     if args.command == 'stop':
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
+        monitor_socket_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.monitor"
+        
         print(f"{GREEN}*{RESET} INFO: Attempting to stop VM: {YELLOW}{args.guest_name}{RESET}")
 
         if not os.path.exists(pid_file_path):
@@ -433,14 +434,25 @@ def main():
         try:
             os.kill(pid, 15) 
             print(f"{GREEN}*{RESET} INFO: Shutdown signal sent. A VM deve desligar em breve.")
-            try: os.remove(pid_file_path)
-            except OSError as e: print(f"{YELLOW}*{RESET} ATTENTION: Could not remove PID file: {e}", file=sys.stderr)
+            
+            try: 
+                os.remove(pid_file_path)
+            except OSError as e: 
+                print(f"{YELLOW}*{RESET} ATTENTION: Could not remove PID file: {e}", file=sys.stderr)
+            try: 
+                if os.path.exists(monitor_socket_path): os.remove(monitor_socket_path)
+            except OSError as e: 
+                print(f"{YELLOW}*{RESET} ATTENTION: Could not remove monitor socket: {e}", file=sys.stderr)
+            
         except OSError as e:
             print(f"{RED}*{RESET} ERROR: Failed to send signal: {e}", file=sys.stderr)
             if e.errno == 3: 
-                print(f"{YELLOW}*{RESET} ATTENTION: Process {pid} not found. Removing stale PID file.", file=sys.stderr)
+                print(f"{YELLOW}*{RESET} ATTENTION: Process {pid} not found. Removing stale files.", file=sys.stderr)
                 try: os.remove(pid_file_path)
                 except OSError as e2: print(f"{RED}*{RESET} ERROR: Failed to remove stale PID file: {e2}", file=sys.stderr)
+                try: 
+                    if os.path.exists(monitor_socket_path): os.remove(monitor_socket_path)
+                except OSError as e2: print(f"{RED}*{RESET} ERROR: Failed to remove stale monitor socket: {e2}", file=sys.stderr)
             sys.exit(1)
         
         sys.exit(0)
@@ -499,7 +511,6 @@ def main():
             new_config_data['disk'] = dest_disk_path
             new_config_data['nvram'] = dest_nvram_path
             
-            # <<< [MODIFICAÇÃO] Gerar um NOVO mac para o clone >>>
             new_mac = generate_random_mac()
             print(f"{GREEN}*{RESET} INFO: Generating new MAC for clone: {CYAN}{new_mac}{RESET}")
             new_config_data['mac'] = new_mac
@@ -562,7 +573,7 @@ def main():
             if os.path.exists(disk_path): print(f"    - Disk:   {CYAN}{disk_path}{RESET}")
             if os.path.exists(nvram_path): print(f"    - NVRAM:  {CYAN}{nvram_path}{RESET}")
             try:
-                response = input(f"    {YELLOW}Do you want to delete them and continue? [y/N]: {RESET}").strip().lower()
+                response = input(f"    {YELLOW}Are you sure you want to continue? [y/N]: {RESET}").strip().lower()
             except EOFError: response = 'n'
             if response not in ('y', 'yes'):
                 print(f"{RED}*{RESET} ERROR: Aborting operation.", file=sys.stderr)
@@ -588,7 +599,6 @@ def main():
             os.remove(disk_path) 
             sys.exit(1)
             
-        # <<< [MODIFICAÇÃO] Lógica de geração de MAC >>>
         if args.mac:
             print(f"{GREEN}*{RESET} INFO: Using provided MAC address: {CYAN}{args.mac}{RESET}")
             final_mac_for_config = args.mac
@@ -604,7 +614,7 @@ def main():
             'smp': args.smp,
             'bridge': args.bridge,
             'headless': 'false',
-            'mac': final_mac_for_config  # Salva o MAC (fornecido ou gerado)
+            'mac': final_mac_for_config
         }
             
         if not write_vm_config(args.guest_name, config_data):
@@ -618,7 +628,7 @@ def main():
         final_smp = args.smp
         final_mem = args.mem
         final_bridge = args.bridge
-        final_mac = final_mac_for_config # Usa o MAC (fornecido ou gerado)
+        final_mac = final_mac_for_config
         final_headless = False 
         is_install_boot = True
         
@@ -637,6 +647,7 @@ def main():
 
         os.makedirs(DEFAULT_STATE_DIR, 0o755, exist_ok=True)
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
+        monitor_socket_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.monitor"
 
         if os.path.exists(pid_file_path):
             try:
@@ -650,6 +661,10 @@ def main():
                 print(f"{YELLOW}*{RESET} ATTENTION: Removing stale PID file {CYAN}{pid_file_path}{RESET}")
                 try: os.remove(pid_file_path)
                 except OSError as e: print(f"{RED}*{RESET} ERROR: Failed to remove stale PID file: {e}", file=sys.stderr)
+                if os.path.exists(monitor_socket_path):
+                    print(f"{YELLOW}*{RESET} ATTENTION: Removing stale monitor socket {CYAN}{monitor_socket_path}{RESET}")
+                    try: os.remove(monitor_socket_path)
+                    except OSError as e: print(f"{RED}*{RESET} ERROR: Failed to remove stale monitor socket: {e}", file=sys.stderr)
 
         final_disk = args.disk or config.get('disk')
         final_nvram = config.get('nvram') 
@@ -695,7 +710,8 @@ def main():
         '-cpu', 'host',
         '-smp', final_smp,
         '-m', final_mem,
-        '-drive', f'file={final_disk},if=virtio,format=qcow2', 
+        # <<< [MODIFICAÇÃO] Adicionado id=disk0 >>>
+        '-drive', f'file={final_disk},if=virtio,format=qcow2,id=disk0', 
         '-netdev', f'tap,id=net0,br={final_bridge},helper={QEMU_BRIDGE_HELPER}',
         '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF_CODE_PATH}',
         '-drive', f'if=pflash,format=raw,file={final_nvram}',
@@ -719,10 +735,15 @@ def main():
 
     if args.command == 'run':
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
+        monitor_socket_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.monitor"
+        monitor_str = f'unix:{monitor_socket_path},server,nowait'
+        
         qemu_command.extend([
             '-daemonize',
-            '-pidfile', pid_file_path
+            '-pidfile', pid_file_path,
+            '-monitor', monitor_str
         ])
+        print(f"{GREEN}*{RESET} INFO: QEMU monitor will be available at: {CYAN}{monitor_socket_path}{RESET}")
 
     if args.iso:
         qemu_command.extend([
