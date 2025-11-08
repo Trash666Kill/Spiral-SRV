@@ -8,6 +8,7 @@ import shutil
 import re
 import configparser
 import random
+import shlex
 
 # --- ANSI Color Codes ---
 GREEN = '\033[32m'
@@ -540,6 +541,8 @@ def main():
     # --- Lógica 'new' e 'run' ---
     # =====================================================================
     
+    config = {} 
+    
     final_disk = None
     final_nvram = None
     final_smp = None
@@ -614,7 +617,9 @@ def main():
             'smp': args.smp,
             'bridge': args.bridge,
             'headless': 'false',
-            'mac': final_mac_for_config
+            'mac': final_mac_for_config,
+            'vga': 'virtio-vga',      
+            'custom_args': ''         
         }
             
         if not write_vm_config(args.guest_name, config_data):
@@ -710,7 +715,6 @@ def main():
         '-cpu', 'host',
         '-smp', final_smp,
         '-m', final_mem,
-        # <<< [MODIFICAÇÃO] Adicionado id=disk0 >>>
         '-drive', f'file={final_disk},if=virtio,format=qcow2,id=disk0', 
         '-netdev', f'tap,id=net0,br={final_bridge},helper={QEMU_BRIDGE_HELPER}',
         '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF_CODE_PATH}',
@@ -726,12 +730,23 @@ def main():
         net_device_str += f',mac={final_mac}'
     qemu_command.extend(['-device', net_device_str])
 
+    # <<< [CORREÇÃO APLICADA AQUI] Lógica de VGA flexível >>>
     if final_headless:
         print(f"{GREEN}*{RESET} INFO: Headless mode enabled. Adding {CYAN}-vga none -display none{RESET}.")
         qemu_command.extend(['-vga', 'none', '-display', 'none'])
     else:
-        qemu_command.append('-device')
-        qemu_command.append('virtio-vga')
+        # Padrão 'virtio-vga' para 'new', ou lê do config para 'run'
+        final_vga = 'virtio-vga' 
+        if args.command == 'run':
+            final_vga = config.get('vga', 'virtio-vga') # Lê do config
+        
+        print(f"{GREEN}*{RESET} INFO: Using VGA type: {CYAN}{final_vga}{RESET}")
+        
+        # 'virtio-vga' é um -device, outros (como std, qxl, cirrus) são -vga
+        if final_vga == 'virtio-vga':
+            qemu_command.extend(['-device', 'virtio-vga'])
+        else:
+            qemu_command.extend(['-vga', final_vga])
 
     if args.command == 'run':
         pid_file_path = f"{DEFAULT_STATE_DIR}/{args.guest_name}.pid"
@@ -757,6 +772,19 @@ def main():
         ])
     else:
         print(f"{GREEN}*{RESET} INFO: Booting from disk (default order).")
+
+    if args.command == 'run':
+        custom_args_str = config.get('custom_args', '')
+        if custom_args_str:
+            try:
+                print(f"{GREEN}*{RESET} INFO: Adding custom arguments: {CYAN}{custom_args_str}{RESET}")
+                extra_args_list = shlex.split(custom_args_str)
+                qemu_command.extend(extra_args_list)
+            except ValueError as e:
+                print(f"{RED}*{RESET} ERROR: Failed to parse custom_args in config file: {e}", file=sys.stderr)
+                print(f"{YELLOW}*{RESET} INFO: Verifique se há aspas não fechadas.")
+                sys.exit(1)
+
 
     print(f"\n{GREEN}*{RESET} INFO: Final command to be executed:")
     print(' '.join(qemu_command))
