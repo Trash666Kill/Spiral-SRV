@@ -209,9 +209,25 @@ def main():
 
 
     # --- Sub-comando 'run' ---
+    # <<< [MODIFICAÇÃO] Adicionada descrição detalhada para 'custom_args' >>>
     run_parser = subparsers.add_parser(
         'run', 
         help='Run a defined VM (runs in background)',
+        description=(
+            "Runs a defined VM. Settings are loaded from the VM's .conf file.\n"
+            "Any arguments provided here (like --mem, --smp) will OVERRIDE the .conf file for this run.\n\n"
+            "--------------------------------------------------------------------------------\n"
+            "How to use 'custom_args' in your .conf file:\n"
+            "--------------------------------------------------------------------------------\n"
+            "1. Add extra QEMU flags to the 'custom_args' key.\n"
+            "2. For multi-line arguments, you MUST indent each new line with a space or tab.\n"
+            "3. Use 0x prefix for hex values (e.g., vendorid=0x138a, productid=0x00a6).\n\n"
+            "Example in .conf:\n\n"
+            "custom_args = \n"
+            "    -device qemu-xhci,id=xhci\n"
+            "    -device usb-host,vendorid=0x138a,productid=0x00a6,bus=xhci.0\n"
+            "    -device vfio-pci,host=01:00.0\n"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     run_key_args = run_parser.add_argument_group('Required Arguments')
@@ -730,7 +746,7 @@ def main():
         net_device_str += f',mac={final_mac}'
     qemu_command.extend(['-device', net_device_str])
 
-    # <<< [CORREÇÃO APLICADA AQUI] Lógica de VGA flexível >>>
+    # <<< [CORREÇÃO] Lógica de VGA flexível >>>
     if final_headless:
         print(f"{GREEN}*{RESET} INFO: Headless mode enabled. Adding {CYAN}-vga none -display none{RESET}.")
         qemu_command.extend(['-vga', 'none', '-display', 'none'])
@@ -738,6 +754,7 @@ def main():
         # Padrão 'virtio-vga' para 'new', ou lê do config para 'run'
         final_vga = 'virtio-vga' 
         if args.command == 'run':
+            config = config # Garante que 'config' está no escopo (já carregado pelo 'run')
             final_vga = config.get('vga', 'virtio-vga') # Lê do config
         
         print(f"{GREEN}*{RESET} INFO: Using VGA type: {CYAN}{final_vga}{RESET}")
@@ -774,6 +791,7 @@ def main():
         print(f"{GREEN}*{RESET} INFO: Booting from disk (default order).")
 
     if args.command == 'run':
+        config = config # Garante que 'config' está no escopo
         custom_args_str = config.get('custom_args', '')
         if custom_args_str:
             try:
