@@ -14,12 +14,11 @@ import importlib.metadata
 DISK_FORMAT = 'qcow2'
 CONNECT_URI = 'qemu:///system'
 SAFETY_MARGIN_PERCENT = 0.10
-BACKUP_RETENTION_DAYS = 7
-BACKUP_RETENTION_COUNT = 7
+# Constantes de retenção removidas daqui (agora são argumentos)
 
 # Constantes de índice para o modo legado (Fallback)
 JOB_INFO_TYPE_INDEX = 0
-JOB_INFO_PROCESSED_INDEX = 2 # Não mais usado para progresso, mas mantido
+JOB_INFO_PROCESSED_INDEX = 2
 JOB_INFO_TOTAL_INDEX = 4
 
 
@@ -69,18 +68,21 @@ def get_disk_details_from_xml(dom, target_devs_list):
 
     return details
 
-def manage_retention(backup_dir):
+def manage_retention(backup_dir, retention_days, retention_count):
     """
-    Limpa backups antigos no diretório com base nas constantes
-    BACKUP_RETENTION_DAYS e BACKUP_RETENTION_COUNT.
+    Limpa backups antigos no diretório com base nas regras de retenção
+    e lista os backups que serão mantidos.
     """
     print("\nVerificando política de retenção...")
+    print(f"  -> Regra: Manter no máximo {retention_count} backups.")
+    print(f"  -> Regra: Reter backups por no máximo {retention_days} dias.")
+
     if not os.path.isdir(backup_dir):
         print("  -> Diretório de backup ainda não existe. Pulando retenção.")
         return
 
     now = datetime.now()
-    cutoff_date = now - timedelta(days=BACKUP_RETENTION_DAYS)
+    cutoff_date = now - timedelta(days=retention_days)
     
     try:
         files = [os.path.join(backup_dir, f) for f in os.listdir(backup_dir) 
@@ -100,27 +102,48 @@ def manage_retention(backup_dir):
         backups.sort()
 
         for_removal = set()
+        kept_backups = []
 
-        num_to_remove_by_count = max(0, len(backups) - (BACKUP_RETENTION_COUNT - 1))
-        if num_to_remove_by_count > 0:
-            for mtime, f in backups[:num_to_remove_by_count]:
-                print(f"  -> Retenção (Contagem): Marcado para remoção (muito antigo): {os.path.basename(f)}")
-                for_removal.add(f)
+        # (retention_count - 1) porque estamos prestes a criar um novo
+        num_to_remove_by_count = max(0, len(backups) - (retention_count - 1))
         
-        for mtime, f in backups:
+        # Divide os backups entre os que serão removidos e os que serão verificados
+        backups_to_remove_by_count = backups[:num_to_remove_by_count]
+        backups_to_check_by_age = backups[num_to_remove_by_count:]
+
+        # Aplica retenção por CONTAGEM
+        for mtime, f in backups_to_remove_by_count:
+            print(f"  -> Retenção (Contagem): Marcado para remoção (excesso): {os.path.basename(f)}")
+            for_removal.add(f)
+        
+        # Aplica retenção por IDADE (apenas nos que não foram marcados por contagem)
+        for mtime, f in backups_to_check_by_age:
             if datetime.fromtimestamp(mtime) < cutoff_date:
                 print(f"  -> Retenção (Idade): Marcado para remoção (expirado): {os.path.basename(f)}")
                 for_removal.add(f)
+            else:
+                # Este será mantido
+                kept_backups.append(f)
 
-        if not for_removal:
+        # Executa a remoção
+        if for_removal:
+            print("  -> Removendo backups antigos...")
+            for f in for_removal:
+                try:
+                    os.remove(f)
+                    print(f"    -> Removido: {os.path.basename(f)}")
+                except OSError as e:
+                    print(f"AVISO: Falha ao remover {f}: {e}")
+        else:
             print("  -> Nenhum backup para remover.")
-            
-        for f in for_removal:
-            try:
-                os.remove(f)
-                print(f"    -> Removido: {os.path.basename(f)}")
-            except OSError as e:
-                print(f"AVISO: Falha ao remover {f}: {e}")
+
+        # Lista os mantidos
+        print("\n  -> Backups mantidos (existentes):")
+        if not kept_backups:
+            print("    -> Nenhum backup existente foi mantido.")
+        else:
+            for f in kept_backups:
+                print(f"    -> {os.path.basename(f)}")
 
     except Exception as e:
         print(f"AVISO: Falha ao processar retenção: {e}")
@@ -166,7 +189,7 @@ def check_available_space(backup_dir, disk_details):
 
 # --- FUNÇÃO PRINCIPAL ---
 
-def run_backup(domain_name, backup_base_dir, disk_targets):
+def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, retention_count):
     
     conn = None
     dom = None
@@ -206,7 +229,8 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
         os.makedirs(backup_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        manage_retention(backup_dir)
+        # Passa os argumentos de retenção para a função
+        manage_retention(backup_dir, retention_days, retention_count)
 
         disk_details = get_disk_details_from_xml(dom, disk_targets)
         if disk_details is None:
@@ -254,7 +278,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
             elapsed_time = time.time() - start_time
             
             try:
-                # Tenta a forma moderna (assume que job_info é um objeto)
+                # Tenta a forma moderna
                 job_type = job_info.type
                 data_total = job_info.dataTotal
                 
@@ -263,7 +287,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
                     job_mode_reported = True
                     
             except AttributeError:
-                # Falhou? Então é a forma antiga (lista/tupla)
+                # Falhou? Então é a forma antiga
                 if not job_mode_reported:
                     print("\n  -> Modo de job detectado: Legado (Lista/Tupla)")
                     job_mode_reported = True
@@ -283,8 +307,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
                 end_time = time.time()
                 time_elapsed_min = (end_time - start_time) / 60
                 
-                # Limpa a linha do spinner antes de imprimir o final
-                print(" " * 80, end='\r') 
+                print(" " * 80, end='\r') # Limpa a linha do spinner
                 
                 print("\n==================================================")
                 print("Backup concluído com sucesso!")
@@ -336,6 +359,18 @@ if __name__ == "__main__":
                         nargs='+',
                         help="Um ou mais alvos de disco para o backup (ex: vda vdb vdc).")
     
+    # --- NOVOS ARGUMENTOS DE RETENÇÃO ---
+    parser.add_argument('--retention-days',
+                        type=int,
+                        default=7,
+                        help="Reter backups por no máximo X dias (Padrão: 7).")
+                        
+    parser.add_argument('--retention-count',
+                        type=int,
+                        default=7,
+                        help="Manter no máximo X backups (Padrão: 7).")
+    
     args = parser.parse_args()
     
-    run_backup(args.domain, args.backup_dir, args.disk)
+    # Passa os novos argumentos para a função principal
+    run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.retention_count)
