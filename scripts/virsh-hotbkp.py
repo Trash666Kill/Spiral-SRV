@@ -10,11 +10,17 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import importlib.metadata
 
+# --- ANSI Color Codes ---
+GREEN = '\033[32m'
+RED = '\033[31m'
+YELLOW = '\033[33m'
+RESET = '\033[0m'
+CYAN = '\033[36m'
+
 # --- CONSTANTES ---
 DISK_FORMAT = 'qcow2'
 CONNECT_URI = 'qemu:///system'
 SAFETY_MARGIN_PERCENT = 0.10
-# Constantes de retenção removidas daqui (agora são argumentos)
 
 # Constantes de índice para o modo legado (Fallback)
 JOB_INFO_TYPE_INDEX = 0
@@ -29,7 +35,7 @@ def get_disk_details_from_xml(dom, target_devs_list):
     Analisa o XML da VM e extrai o caminho de origem (source file)
     para cada disco de destino (target dev) solicitado.
     """
-    print(f"Analisando XML para os discos: {', '.join(target_devs_list)}")
+    print(f"{GREEN}*{RESET} INFO: Analisando XML para os discos: {CYAN}{', '.join(target_devs_list)}{RESET}")
     details = {}
     try:
         raw_xml = dom.XMLDesc(0)
@@ -47,7 +53,7 @@ def get_disk_details_from_xml(dom, target_devs_list):
             if target_name in target_set:
                 source = device.find('source')
                 if source is None or source.get('file') is None:
-                    print(f"AVISO: Disco {target_name} encontrado, mas não possui 'source file'. Ignorando.")
+                    print(f"{YELLOW}*{RESET} ATTENTION: Disco {CYAN}{target_name}{RESET} encontrado, mas não possui 'source file'. Ignorando.")
                     continue
                     
                 driver = device.find('driver')
@@ -55,15 +61,15 @@ def get_disk_details_from_xml(dom, target_devs_list):
                     'path': source.get('file'),
                     'driver_type': driver.get('type') if driver is not None else 'desconhecido'
                 }
-                print(f"  -> Encontrado '{target_name}': {details[target_name]['path']}")
+                print(f"  -> Encontrado '{CYAN}{target_name}{RESET}': {details[target_name]['path']}")
                 target_set.remove(target_name) # Otimização
     
     except Exception as e:
-        print(f"ERRO ao analisar o XML da VM: {e}")
+        print(f"{RED}*{RESET} ERROR: Falha ao analisar o XML da VM: {e}", file=sys.stderr)
         return None
 
     if len(target_set) > 0:
-        print(f"ERRO: Não foi possível encontrar os seguintes discos no XML da VM: {', '.join(target_set)}")
+        print(f"{RED}*{RESET} ERROR: Não foi possível encontrar os seguintes discos no XML da VM: {CYAN}{', '.join(target_set)}{RESET}", file=sys.stderr)
         return None
 
     return details
@@ -73,12 +79,12 @@ def manage_retention(backup_dir, retention_days, retention_count):
     Limpa backups antigos no diretório com base nas regras de retenção
     e lista os backups que serão mantidos.
     """
-    print("\nVerificando política de retenção...")
-    print(f"  -> Regra: Manter no máximo {retention_count} backups.")
-    print(f"  -> Regra: Reter backups por no máximo {retention_days} dias.")
+    print(f"\n{GREEN}*{RESET} INFO: Verificando política de retenção...")
+    print(f"  -> Regra: Manter no máximo {CYAN}{retention_count}{RESET} backups.")
+    print(f"  -> Regra: Reter backups por no máximo {CYAN}{retention_days}{RESET} dias.")
 
     if not os.path.isdir(backup_dir):
-        print("  -> Diretório de backup ainda não existe. Pulando retenção.")
+        print(f"{YELLOW}*{RESET} INFO: Diretório de backup ainda não existe. Pulando retenção.")
         return
 
     now = datetime.now()
@@ -89,7 +95,7 @@ def manage_retention(backup_dir, retention_days, retention_count):
                  if os.path.isfile(os.path.join(backup_dir, f)) and f.endswith('.bak')]
         
         if not files:
-            print("  -> Nenhum backup antigo (.bak) encontrado.")
+            print(f"{GREEN}*{RESET} INFO: Nenhum backup antigo (.bak) encontrado.")
             return
 
         backups = []
@@ -104,41 +110,34 @@ def manage_retention(backup_dir, retention_days, retention_count):
         for_removal = set()
         kept_backups = []
 
-        # (retention_count - 1) porque estamos prestes a criar um novo
         num_to_remove_by_count = max(0, len(backups) - (retention_count - 1))
         
-        # Divide os backups entre os que serão removidos e os que serão verificados
         backups_to_remove_by_count = backups[:num_to_remove_by_count]
         backups_to_check_by_age = backups[num_to_remove_by_count:]
 
-        # Aplica retenção por CONTAGEM
         for mtime, f in backups_to_remove_by_count:
-            print(f"  -> Retenção (Contagem): Marcado para remoção (excesso): {os.path.basename(f)}")
+            print(f"  -> {YELLOW}Retenção (Contagem):{RESET} Marcado para remoção (excesso): {CYAN}{os.path.basename(f)}{RESET}")
             for_removal.add(f)
         
-        # Aplica retenção por IDADE (apenas nos que não foram marcados por contagem)
         for mtime, f in backups_to_check_by_age:
             if datetime.fromtimestamp(mtime) < cutoff_date:
-                print(f"  -> Retenção (Idade): Marcado para remoção (expirado): {os.path.basename(f)}")
+                print(f"  -> {YELLOW}Retenção (Idade):{RESET} Marcado para remoção (expirado): {CYAN}{os.path.basename(f)}{RESET}")
                 for_removal.add(f)
             else:
-                # Este será mantido
                 kept_backups.append(f)
 
-        # Executa a remoção
         if for_removal:
-            print("  -> Removendo backups antigos...")
+            print(f"{YELLOW}*{RESET} ATTENTION: Removendo backups antigos...")
             for f in for_removal:
                 try:
                     os.remove(f)
-                    print(f"    -> Removido: {os.path.basename(f)}")
+                    print(f"    -> {RED}Removido:{RESET} {os.path.basename(f)}")
                 except OSError as e:
-                    print(f"AVISO: Falha ao remover {f}: {e}")
+                    print(f"{RED}*{RESET} ERROR: Falha ao remover {CYAN}{f}{RESET}: {e}", file=sys.stderr)
         else:
-            print("  -> Nenhum backup para remover.")
+            print(f"{GREEN}*{RESET} INFO: Nenhum backup para remover.")
 
-        # Lista os mantidos
-        print("\n  -> Backups mantidos (existentes):")
+        print(f"\n{GREEN}*{RESET} INFO: Backups mantidos (existentes):")
         if not kept_backups:
             print("    -> Nenhum backup existente foi mantido.")
         else:
@@ -146,7 +145,7 @@ def manage_retention(backup_dir, retention_days, retention_count):
                 print(f"    -> {os.path.basename(f)}")
 
     except Exception as e:
-        print(f"AVISO: Falha ao processar retenção: {e}")
+        print(f"{RED}*{RESET} ERROR: Falha ao processar retenção: {e}", file=sys.stderr)
 
 
 def check_available_space(backup_dir, disk_details):
@@ -154,7 +153,7 @@ def check_available_space(backup_dir, disk_details):
     Verifica se há espaço suficiente no destino para o backup,
     incluindo uma margem de segurança.
     """
-    print("\nVerificando espaço em disco...")
+    print(f"\n{GREEN}*{RESET} INFO: Verificando espaço em disco...")
     
     try:
         total_size_needed = 0
@@ -162,7 +161,7 @@ def check_available_space(backup_dir, disk_details):
             try:
                 disk_size = os.path.getsize(info['path'])
                 total_size_needed += disk_size
-                print(f"  -> Disco '{dev}' ({info['path']}) requer {disk_size / (1024**3):.2f} GB")
+                print(f"  -> Disco '{CYAN}{dev}{RESET}' ({info['path']}) requer {disk_size / (1024**3):.2f} GB")
             except OSError as e:
                 raise Exception(f"Falha ao obter tamanho do disco {dev} em {info['path']}: {e}")
 
@@ -180,56 +179,86 @@ def check_available_space(backup_dir, disk_details):
         if final_size_needed > available_space:
             raise Exception("Espaço insuficiente no dispositivo de backup.")
             
-        print("  -> Espaço suficiente verificado.")
+        print(f"  -> {GREEN}Espaço suficiente verificado.{RESET}")
         return True
 
     except Exception as e:
-        print(f"ERRO na verificação de espaço: {e}")
+        print(f"{RED}*{RESET} ERROR: Na verificação de espaço: {e}", file=sys.stderr)
         return False
 
 # --- FUNÇÃO PRINCIPAL ---
 
-def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, retention_count):
+def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, retention_count, limit_mb):
     
     conn = None
     dom = None
     backup_started = False
     
     try:
-        print(f"Conectando ao hypervisor em: {CONNECT_URI}")
+        print(f"{GREEN}*{RESET} INFO: Conectando ao hypervisor em: {CYAN}{CONNECT_URI}{RESET}")
         conn = libvirt.open(CONNECT_URI)
         if conn is None:
             raise Exception(f"Falha ao abrir conexão com o hypervisor em {CONNECT_URI}")
 
-        print("\n--- Diagnóstico de Versão ---")
+        print(f"\n{CYAN}--- Diagnóstico de Versão ---{RESET}")
         try:
             py_ver = importlib.metadata.version('libvirt-python')
-            print(f"Versão libvirt-python (pip): {py_ver}")
+            print(f"  -> {CYAN}Versão libvirt-python:{RESET} {py_ver}")
         except importlib.metadata.PackageNotFoundError:
-            print("Versão libvirt-python (pip): Não encontrada via metadata.")
+            print(f"  -> {YELLOW}Versão libvirt-python:{RESET} Não encontrada via metadata.")
 
         try:
             daemon_ver_int = conn.getVersion()
             major = daemon_ver_int // 1000000
             minor = (daemon_ver_int % 1000000) // 1000
             release = daemon_ver_int % 1000
-            print(f"Versão libvirt-daemon (serviço): {major}.{minor}.{release}")
+            print(f"  -> {CYAN}Versão libvirt-daemon (serviço):{RESET} {major}.{minor}.{release}")
         except Exception as e:
-            print(f"Versão libvirt-daemon (serviço): Falha ao obter ({e})")
-        print("-------------------------------")
+            print(f"  -> {YELLOW}Versão libvirt-daemon (serviço):{RESET} Falha ao obter ({e})")
+        print(f"{CYAN}-------------------------------{RESET}")
 
         try:
             dom = conn.lookupByName(domain_name)
-            print(f"Domínio '{domain_name}' encontrado.")
+            print(f"{GREEN}*{RESET} INFO: Domínio '{CYAN}{domain_name}{RESET}' encontrado.")
         except libvirt.libvirtError:
-            print(f"ERRO: Domínio '{domain_name}' não encontrado.")
+            print(f"{RED}*{RESET} ERROR: Domínio '{CYAN}{domain_name}{RESET}' não encontrado.", file=sys.stderr)
             sys.exit(1)
+
+        # --- APLICAR LIMITE DE I/O (blkiotune) ---
+        if limit_mb > 0:
+            limit_bytes = limit_mb * 1024 * 1024
+            params = {'read_bytes_sec': limit_bytes} 
+            print(f"\n{GREEN}*{RESET} INFO: Aplicando I/O read limit de {CYAN}{limit_mb} MB/s{RESET} aos discos: {CYAN}{', '.join(disk_targets)}{RESET}...")
+            
+            # --- Início EAFP para APLICAR limite ---
+            try:
+                # Tenta a chamada moderna (com 'flags=0')
+                for disk in disk_targets:
+                    dom.blockIoTune(disk, params, 0)
+                print(f"  -> {GREEN}Limite aplicado (Modo Moderno).{RESET}")
+            except TypeError:
+                # Se falhar, é uma biblioteca antiga. Tenta a chamada legada.
+                print(f"  -> {YELLOW}Detectado blkiotune legado. Aplicando (Modo Legado).{RESET}")
+                try:
+                    for disk in disk_targets:
+                        dom.blockIoTune(disk, params)
+                    print(f"  -> {GREEN}Limite aplicado (Modo Legado).{RESET}")
+                except libvirt.libvirtError as e_legacy:
+                    print(f"{RED}*{RESET} ERROR: Falha ao aplicar limite de I/O (Modo Legado). O backup continuará sem limite. Erro: {e_legacy}", file=sys.stderr)
+            except libvirt.libvirtError as e:
+                print(f"{RED}*{RESET} ERROR: Falha ao aplicar limite de I/O (Modo Moderno). O backup continuará sem limite. Erro: {e}", file=sys.stderr)
+            # --- Fim EAFP para APLICAR limite ---
+                
+        else:
+            print(f"\n{YELLOW}*{RESET} ATTENTION: Nenhum limite de I/O foi definido ({CYAN}--limit-mb 0{RESET}).")
+            print("  -> O backup será executado na velocidade máxima permitida pelo hardware.")
+            print("  -> Isso pode causar alto I/O no host e degradar a performance de outras VMs.")
+
 
         backup_dir = os.path.join(backup_base_dir, domain_name)
         os.makedirs(backup_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Passa os argumentos de retenção para a função
         manage_retention(backup_dir, retention_days, retention_count)
 
         disk_details = get_disk_details_from_xml(dom, disk_targets)
@@ -239,7 +268,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
         if not check_available_space(backup_dir, disk_details):
             sys.exit(1)
 
-        print("\nGerando XML de backup...")
+        print(f"\n{GREEN}*{RESET} INFO: Gerando XML de backup...")
         backup_xml_parts = []
         backup_files_map = {}
         
@@ -258,12 +287,12 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
 </disk>
 """
             backup_xml_parts.append(xml_disk_entry)
-            print(f"  -> Incluindo disco '{target_dev}' para -> {backup_file_path}")
+            print(f"  -> Incluindo disco '{CYAN}{target_dev}{RESET}' para -> {CYAN}{backup_file_path}{RESET}")
 
         backup_xml_parts.append("</disks></domainbackup>")
         backup_xml = "".join(backup_xml_parts)
         
-        print("\nIniciando Backup Live...")
+        print(f"\n{GREEN}*{RESET} INFO: Iniciando Backup Live...")
         start_time = time.time()
 
         dom.backupBegin(backup_xml, None, 0)
@@ -278,68 +307,87 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
             elapsed_time = time.time() - start_time
             
             try:
-                # Tenta a forma moderna
                 job_type = job_info.type
                 data_total = job_info.dataTotal
                 
                 if not job_mode_reported:
-                    print("\n  -> Modo de job detectado: Moderno (Objeto)")
+                    print(f"\n  -> {GREEN}Modo de job detectado:{RESET} Moderno (Objeto)")
                     job_mode_reported = True
                     
             except AttributeError:
-                # Falhou? Então é a forma antiga
                 if not job_mode_reported:
-                    print("\n  -> Modo de job detectado: Legado (Lista/Tupla)")
+                    print(f"\n  -> {YELLOW}Modo de job detectado:{RESET} Legado (Lista/Tupla)")
                     job_mode_reported = True
                 
                 job_type = job_info[JOB_INFO_TYPE_INDEX]
                 data_total = job_info[JOB_INFO_TOTAL_INDEX]
                 
-            # --- Lógica de Progresso Unificada (Spinner) ---
             spinner_char = spinner_chars[spinner_index % len(spinner_chars)]
             spinner_index += 1
             total_mb = data_total / 1048576
-            print(f"Progresso: [{spinner_char}] (Aguardando {total_mb:.0f} MB... {elapsed_time:.1f}s)", end='\r')
+            print(f"{CYAN}Progresso:{RESET} [{GREEN}{spinner_char}{RESET}] (Aguardando {CYAN}{total_mb:.0f} MB{RESET}... {elapsed_time:.1f}s)", end='\r')
 
-
-            # Verifica se o job terminou
             if job_type == libvirt.VIR_DOMAIN_JOB_NONE:
                 end_time = time.time()
                 time_elapsed_min = (end_time - start_time) / 60
                 
-                print(" " * 80, end='\r') # Limpa a linha do spinner
+                print(" " * 80, end='\r') 
                 
-                print("\n==================================================")
-                print("Backup concluído com sucesso!")
+                print(f"\n{GREEN}=================================================={RESET}")
+                print(f"{GREEN}Backup concluído com sucesso!{RESET}")
                 print(f"Tempo total: {time_elapsed_min:.2f} minutos")
                 print("Arquivos Gerados:")
                 for dev, path in backup_files_map.items():
-                    print(f"  -> Disco {dev}: {path}")
-                print("==================================================")
+                    print(f"  -> Disco {CYAN}{dev}{RESET}: {path}")
+                print(f"{GREEN}=================================================={RESET}")
                 break
             
-            time.sleep(1) # Sleep de 1 segundo para o spinner
+            time.sleep(1)
 
     except libvirt.libvirtError as e:
-        print(f"\nERRO na Libvirt: {e}")
+        print(f"\n{RED}*{RESET} ERROR: Erro na Libvirt: {e}", file=sys.stderr)
         if backup_started:
-            print("Tentando abortar o job preso via CLI para a próxima execução...")
+            print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job preso via CLI para a próxima execução...")
             try:
                 subprocess.run(['virsh', 'domjobabort', domain_name, '--async'], 
                                check=True, 
                                capture_output=True, 
                                text=True)
-                print("  -> Comando 'virsh domjobabort' enviado.")
+                print(f"  -> {GREEN}Comando 'virsh domjobabort' enviado.{RESET}")
             except Exception as e_abort:
-                 print(f"AVISO: Falha ao tentar domjobabort: {e_abort.stderr or e_abort}")
+                 print(f"{RED}*{RESET} ERROR: Falha ao tentar domjobabort: {e_abort.stderr or e_abort}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"\nERRO inesperado: {e}")
+        print(f"\n{RED}*{RESET} ERROR: Erro inesperado: {e}", file=sys.stderr)
         sys.exit(1)
     finally:
+        # --- REMOVER LIMITE DE I/O (SEMPRE) ---
+        if dom is not None and limit_mb > 0:
+            print(f"\n{GREEN}*{RESET} INFO: Removendo limite de I/O...")
+            params_unlimited = {'read_bytes_sec': 0}
+            
+            # --- Início EAFP para REMOVER limite ---
+            try:
+                # Tenta a chamada moderna
+                for disk in disk_targets:
+                    dom.blockIoTune(disk, params_unlimited, 0)
+                print(f"  -> {GREEN}Limite removido (Modo Moderno).{RESET}")
+            except TypeError:
+                # Se falhar, tenta a chamada legada
+                print(f"  -> {YELLOW}Detectado blkiotune legado. Removendo (Modo Legado).{RESET}")
+                try:
+                    for disk in disk_targets:
+                        dom.blockIoTune(disk, params_unlimited)
+                    print(f"  -> {GREEN}Limite removido (Modo Legado).{RESET}")
+                except Exception as e_legacy:
+                    print(f"{RED}*{RESET} ERROR: Falha ao remover limite de I/O (Modo Legado): {e_legacy}", file=sys.stderr)
+            except Exception as e:
+                print(f"{RED}*{RESET} ERROR: Falha ao remover limite de I/O (Modo Moderno): {e}", file=sys.stderr)
+            # --- Fim EAFP para REMOVER limite ---
+
         if conn:
             conn.close()
-            print("\nConexão com o hypervisor fechada.")
+            print(f"\n{GREEN}*{RESET} INFO: Conexão com o hypervisor fechada.")
 
 # --- EXECUÇÃO ---
 
@@ -359,7 +407,6 @@ if __name__ == "__main__":
                         nargs='+',
                         help="Um ou mais alvos de disco para o backup (ex: vda vdb vdc).")
     
-    # --- NOVOS ARGUMENTOS DE RETENÇÃO ---
     parser.add_argument('--retention-days',
                         type=int,
                         default=7,
@@ -369,8 +416,12 @@ if __name__ == "__main__":
                         type=int,
                         default=7,
                         help="Manter no máximo X backups (Padrão: 7).")
+                        
+    parser.add_argument('--limit-mb',
+                        type=int,
+                        default=0,
+                        help="Limitar a velocidade de leitura do backup em MB/s (Padrão: 0 = ilimitado).")
     
     args = parser.parse_args()
     
-    # Passa os novos argumentos para a função principal
-    run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.retention_count)
+    run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.retention_count, args.limit_mb)
