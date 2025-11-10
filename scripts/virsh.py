@@ -8,6 +8,7 @@ import argparse
 import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+import importlib.metadata  # <--- ADICIONADO
 
 # --- CONSTANTES ---
 DISK_FORMAT = 'qcow2'
@@ -172,11 +173,33 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
     backup_started = False
     
     try:
+        # 1. Conexão com Libvirt
         print(f"Conectando ao hypervisor em: {CONNECT_URI}")
         conn = libvirt.open(CONNECT_URI)
         if conn is None:
             raise Exception(f"Falha ao abrir conexão com o hypervisor em {CONNECT_URI}")
 
+        # --- INÍCIO: Bloco de Diagnóstico ---
+        print("\n--- Diagnóstico de Versão ---")
+        try:
+            py_ver = importlib.metadata.version('libvirt-python')
+            print(f"Versão libvirt-python (pip): {py_ver}")
+        except importlib.metadata.PackageNotFoundError:
+            print("Versão libvirt-python (pip): Não encontrada via metadata.")
+
+        try:
+            daemon_ver_int = conn.getVersion() # Retorna um int (ex: 8000000)
+            major = daemon_ver_int // 1000000
+            minor = (daemon_ver_int % 1000000) // 1000
+            release = daemon_ver_int % 1000
+            print(f"Versão libvirt-daemon (serviço): {major}.{minor}.{release}")
+        except Exception as e:
+            print(f"Versão libvirt-daemon (serviço): Falha ao obter ({e})")
+        print("-------------------------------")
+        # --- FIM: Bloco de Diagnóstico ---
+
+
+        # 2. Localiza o Domínio
         try:
             dom = conn.lookupByName(domain_name)
             print(f"Domínio '{domain_name}' encontrado.")
@@ -227,7 +250,8 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
         dom.backupBegin(backup_xml, None, 0)
         backup_started = True 
         
-        # *** Lógica EAFP (Tentar moderno, se falhar, usar antigo) ***
+        job_mode_reported = False # Flag para imprimir o modo de job apenas uma vez
+        
         while True:
             job_info = dom.jobInfo()
             
@@ -236,8 +260,17 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
                 job_type = job_info.type
                 data_processed = job_info.dataProcessed
                 data_total = job_info.dataTotal
+                
+                if not job_mode_reported:
+                    print("\n  -> Modo de job detectado: Moderno (Objeto)")
+                    job_mode_reported = True
+                    
             except AttributeError:
                 # Falhou? Então é a forma antiga (lista/tupla)
+                if not job_mode_reported:
+                    print("\n  -> Modo de job detectado: Legado (Lista/Tupla)")
+                    job_mode_reported = True
+                
                 job_type = job_info[JOB_INFO_TYPE_INDEX]
                 data_processed = job_info[JOB_INFO_PROCESSED_INDEX]
                 data_total = job_info[JOB_INFO_TOTAL_INDEX]
