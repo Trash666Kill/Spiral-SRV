@@ -8,7 +8,7 @@ import argparse
 import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
-import importlib.metadata  # <--- ADICIONADO
+import importlib.metadata
 
 # --- CONSTANTES ---
 DISK_FORMAT = 'qcow2'
@@ -19,7 +19,7 @@ BACKUP_RETENTION_COUNT = 7
 
 # Constantes de índice para o modo legado (Fallback)
 JOB_INFO_TYPE_INDEX = 0
-JOB_INFO_PROCESSED_INDEX = 2
+JOB_INFO_PROCESSED_INDEX = 2 # Não mais usado para progresso, mas mantido
 JOB_INFO_TOTAL_INDEX = 4
 
 
@@ -173,13 +173,11 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
     backup_started = False
     
     try:
-        # 1. Conexão com Libvirt
         print(f"Conectando ao hypervisor em: {CONNECT_URI}")
         conn = libvirt.open(CONNECT_URI)
         if conn is None:
             raise Exception(f"Falha ao abrir conexão com o hypervisor em {CONNECT_URI}")
 
-        # --- INÍCIO: Bloco de Diagnóstico ---
         print("\n--- Diagnóstico de Versão ---")
         try:
             py_ver = importlib.metadata.version('libvirt-python')
@@ -188,7 +186,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
             print("Versão libvirt-python (pip): Não encontrada via metadata.")
 
         try:
-            daemon_ver_int = conn.getVersion() # Retorna um int (ex: 8000000)
+            daemon_ver_int = conn.getVersion()
             major = daemon_ver_int // 1000000
             minor = (daemon_ver_int % 1000000) // 1000
             release = daemon_ver_int % 1000
@@ -196,10 +194,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
         except Exception as e:
             print(f"Versão libvirt-daemon (serviço): Falha ao obter ({e})")
         print("-------------------------------")
-        # --- FIM: Bloco de Diagnóstico ---
 
-
-        # 2. Localiza o Domínio
         try:
             dom = conn.lookupByName(domain_name)
             print(f"Domínio '{domain_name}' encontrado.")
@@ -250,15 +245,17 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
         dom.backupBegin(backup_xml, None, 0)
         backup_started = True 
         
-        job_mode_reported = False # Flag para imprimir o modo de job apenas uma vez
+        job_mode_reported = False
+        spinner_chars = ['|', '/', '-', '\\']
+        spinner_index = 0
         
         while True:
             job_info = dom.jobInfo()
+            elapsed_time = time.time() - start_time
             
             try:
                 # Tenta a forma moderna (assume que job_info é um objeto)
                 job_type = job_info.type
-                data_processed = job_info.dataProcessed
                 data_total = job_info.dataTotal
                 
                 if not job_mode_reported:
@@ -272,15 +269,24 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
                     job_mode_reported = True
                 
                 job_type = job_info[JOB_INFO_TYPE_INDEX]
-                data_processed = job_info[JOB_INFO_PROCESSED_INDEX]
                 data_total = job_info[JOB_INFO_TOTAL_INDEX]
+                
+            # --- Lógica de Progresso Unificada (Spinner) ---
+            spinner_char = spinner_chars[spinner_index % len(spinner_chars)]
+            spinner_index += 1
+            total_mb = data_total / 1048576
+            print(f"Progresso: [{spinner_char}] (Aguardando {total_mb:.0f} MB... {elapsed_time:.1f}s)", end='\r')
 
-            # Verifica se o job terminou (constante da libvirt é 0)
+
+            # Verifica se o job terminou
             if job_type == libvirt.VIR_DOMAIN_JOB_NONE:
                 end_time = time.time()
                 time_elapsed_min = (end_time - start_time) / 60
                 
-                print("\n\n==================================================")
+                # Limpa a linha do spinner antes de imprimir o final
+                print(" " * 80, end='\r') 
+                
+                print("\n==================================================")
                 print("Backup concluído com sucesso!")
                 print(f"Tempo total: {time_elapsed_min:.2f} minutos")
                 print("Arquivos Gerados:")
@@ -289,14 +295,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
                 print("==================================================")
                 break
             
-            if data_total > 0:
-                progress_percent = (data_processed / data_total) * 100
-                elapsed = time.time() - start_time
-                speed_mbps = (data_processed / 1048576) / elapsed if elapsed > 0 else 0
-                
-                print(f"Progresso: {progress_percent:.2f}% ({data_processed/1048576:.0f} MB / {data_total/1048576:.0f} MB) @ {speed_mbps:.1f} MB/s", end='\r')
-            
-            time.sleep(5)
+            time.sleep(1) # Sleep de 1 segundo para o spinner
 
     except libvirt.libvirtError as e:
         print(f"\nERRO na Libvirt: {e}")
