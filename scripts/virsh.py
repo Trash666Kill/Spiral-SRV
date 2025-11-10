@@ -10,11 +10,17 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 # --- CONSTANTES ---
-DISK_FORMAT = 'qcow2'      # Formato do *arquivo de backup* (qcow2 é bom para compressão/sparse)
+DISK_FORMAT = 'qcow2'
 CONNECT_URI = 'qemu:///system'
-SAFETY_MARGIN_PERCENT = 0.10    # 10% de margem de segurança ao verificar o espaço
-BACKUP_RETENTION_DAYS = 7     # Reter backups por no máximo 7 dias
-BACKUP_RETENTION_COUNT = 7    # Manter no máximo 7 backups (o mais novo não conta)
+SAFETY_MARGIN_PERCENT = 0.10
+BACKUP_RETENTION_DAYS = 7
+BACKUP_RETENTION_COUNT = 7
+
+# Constantes de índice para o modo legado (Fallback)
+JOB_INFO_TYPE_INDEX = 0
+JOB_INFO_PROCESSED_INDEX = 2
+JOB_INFO_TOTAL_INDEX = 4
+
 
 # --- UTILS ---
 
@@ -56,7 +62,6 @@ def get_disk_details_from_xml(dom, target_devs_list):
         print(f"ERRO ao analisar o XML da VM: {e}")
         return None
 
-    # Verifica se todos os discos solicitados foram encontrados
     if len(target_set) > 0:
         print(f"ERRO: Não foi possível encontrar os seguintes discos no XML da VM: {', '.join(target_set)}")
         return None
@@ -77,7 +82,6 @@ def manage_retention(backup_dir):
     cutoff_date = now - timedelta(days=BACKUP_RETENTION_DAYS)
     
     try:
-        # 1. Lista e mapeia todos os arquivos .bak
         files = [os.path.join(backup_dir, f) for f in os.listdir(backup_dir) 
                  if os.path.isfile(os.path.join(backup_dir, f)) and f.endswith('.bak')]
         
@@ -85,34 +89,28 @@ def manage_retention(backup_dir):
             print("  -> Nenhum backup antigo (.bak) encontrado.")
             return
 
-        # 2. Cria uma lista de tuplas (mtime, path) e ordena
         backups = []
         for f in files:
             try:
                 backups.append((os.path.getmtime(f), f))
             except OSError:
-                continue # Ignora arquivos que podem ter sido removidos
+                continue 
                 
         backups.sort()
 
-        # 3. Conjunto de arquivos a remover
         for_removal = set()
 
-        # 4. Aplica retenção por CONTAGEM
-        # (BACKUP_RETENTION_COUNT - 1) porque estamos prestes a criar um novo
         num_to_remove_by_count = max(0, len(backups) - (BACKUP_RETENTION_COUNT - 1))
         if num_to_remove_by_count > 0:
             for mtime, f in backups[:num_to_remove_by_count]:
                 print(f"  -> Retenção (Contagem): Marcado para remoção (muito antigo): {os.path.basename(f)}")
                 for_removal.add(f)
         
-        # 5. Aplica retenção por IDADE
         for mtime, f in backups:
             if datetime.fromtimestamp(mtime) < cutoff_date:
                 print(f"  -> Retenção (Idade): Marcado para remoção (expirado): {os.path.basename(f)}")
                 for_removal.add(f)
 
-        # 6. Executa a remoção
         if not for_removal:
             print("  -> Nenhum backup para remover.")
             
@@ -146,7 +144,6 @@ def check_available_space(backup_dir, disk_details):
 
         final_size_needed = total_size_needed * (1 + SAFETY_MARGIN_PERCENT)
         
-        # Garante que o diretório de destino exista para shutil.disk_usage
         os.makedirs(os.path.dirname(backup_dir), exist_ok=True)
         
         usage = shutil.disk_usage(backup_dir)
@@ -175,13 +172,11 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
     backup_started = False
     
     try:
-        # 1. Conexão com Libvirt
         print(f"Conectando ao hypervisor em: {CONNECT_URI}")
         conn = libvirt.open(CONNECT_URI)
         if conn is None:
             raise Exception(f"Falha ao abrir conexão com o hypervisor em {CONNECT_URI}")
 
-        # 2. Localiza o Domínio
         try:
             dom = conn.lookupByName(domain_name)
             print(f"Domínio '{domain_name}' encontrado.")
@@ -189,14 +184,12 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
             print(f"ERRO: Domínio '{domain_name}' não encontrado.")
             sys.exit(1)
 
-        # 3. Define caminhos e executa retenção
         backup_dir = os.path.join(backup_base_dir, domain_name)
         os.makedirs(backup_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         manage_retention(backup_dir)
 
-        # 4. Obtém detalhes dos discos e verifica espaço
         disk_details = get_disk_details_from_xml(dom, disk_targets)
         if disk_details is None:
             raise Exception("Falha ao obter detalhes dos discos. Verifique os logs acima.")
@@ -204,10 +197,9 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
         if not check_available_space(backup_dir, disk_details):
             sys.exit(1)
 
-        # 5. Montar o XML de Backup dinamicamente
         print("\nGerando XML de backup...")
         backup_xml_parts = []
-        backup_files_map = {} # Para o relatório final
+        backup_files_map = {}
         
         backup_xml_parts.append("<domainbackup><disks>")
         
@@ -229,23 +221,28 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
         backup_xml_parts.append("</disks></domainbackup>")
         backup_xml = "".join(backup_xml_parts)
         
-        # 6. Iniciar Backup com libvirt.virDomainBackupBegin()
         print("\nIniciando Backup Live...")
         start_time = time.time()
 
         dom.backupBegin(backup_xml, None, 0)
         backup_started = True 
         
-        # 7. Monitoramento do Job de Backup (Lógica Moderna)
+        # *** Lógica EAFP (Tentar moderno, se falhar, usar antigo) ***
         while True:
             job_info = dom.jobInfo()
             
-            # Acesso direto aos atributos (sem fallback)
-            job_type = job_info.type
-            data_processed = job_info.dataProcessed
-            data_total = job_info.dataTotal
+            try:
+                # Tenta a forma moderna (assume que job_info é um objeto)
+                job_type = job_info.type
+                data_processed = job_info.dataProcessed
+                data_total = job_info.dataTotal
+            except AttributeError:
+                # Falhou? Então é a forma antiga (lista/tupla)
+                job_type = job_info[JOB_INFO_TYPE_INDEX]
+                data_processed = job_info[JOB_INFO_PROCESSED_INDEX]
+                data_total = job_info[JOB_INFO_TOTAL_INDEX]
 
-            # Verifica se o job terminou (usando a constante da libvirt)
+            # Verifica se o job terminou (constante da libvirt é 0)
             if job_type == libvirt.VIR_DOMAIN_JOB_NONE:
                 end_time = time.time()
                 time_elapsed_min = (end_time - start_time) / 60
@@ -259,21 +256,18 @@ def run_backup(domain_name, backup_base_dir, disk_targets):
                 print("==================================================")
                 break
             
-            # Exibe o progresso
             if data_total > 0:
                 progress_percent = (data_processed / data_total) * 100
-                # MB/s (só calcula após o primeiro sleep)
                 elapsed = time.time() - start_time
                 speed_mbps = (data_processed / 1048576) / elapsed if elapsed > 0 else 0
                 
                 print(f"Progresso: {progress_percent:.2f}% ({data_processed/1048576:.0f} MB / {data_total/1048576:.0f} MB) @ {speed_mbps:.1f} MB/s", end='\r')
             
-            time.sleep(5) # Reduzido para atualizações mais rápidas
+            time.sleep(5)
 
     except libvirt.libvirtError as e:
         print(f"\nERRO na Libvirt: {e}")
         if backup_started:
-            # Tenta abortar o job usando a CLI para limpar o lock
             print("Tentando abortar o job preso via CLI para a próxima execução...")
             try:
                 subprocess.run(['virsh', 'domjobabort', domain_name, '--async'], 
@@ -307,7 +301,7 @@ if __name__ == "__main__":
                         
     parser.add_argument('--disk', 
                         required=True, 
-                        nargs='+',  # Aceita um ou mais valores
+                        nargs='+',
                         help="Um ou mais alvos de disco para o backup (ex: vda vdb vdc).")
     
     args = parser.parse_args()
