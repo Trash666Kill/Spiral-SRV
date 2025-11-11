@@ -1,0 +1,84 @@
+É um prazer! O plano final de implementação é um sistema robusto de backups incrementais com **consolidação e validação de integridade por Hash**.
+
+Ele usa um arquivo de **Manifesto** como "banco de dados" para rastrear o ciclo ativo e garante que os backups completos consolidados (`Full-Merged`) sejam intocáveis.
+
+---
+
+## 1. Argumento de Controle Requerido ⚙️
+
+O único parâmetro de controle para a lógica do ciclo de vida é:
+
+| Argumento | Função | Padrão |
+| :--- | :--- | :--- |
+| **`--max-incrementals`** | Define o número de backups incrementais que o script criará antes de forçar uma Consolidação (Merge). | **7** |
+
+---
+
+## 2. O "Banco de Dados" (Manifesto) e Validação por Hash 🔐
+
+Em vez de um banco de dados SQL, o script usa um arquivo `manifest.json` no diretório de backup da VM para rastrear o **ciclo ativo** e garantir a integridade da "família" (cadeia):
+
+* **Validação da Família:** O Manifesto armazenará o **Hash SHA-256** do arquivo **Base (Full)**. A cada execução incremental, o script recalcula o hash do arquivo Base físico e o compara com o valor armazenado no Manifesto. Se os hashes não coincidirem, o ciclo é abortado por comprometimento de integridade.
+* **Conteúdo do Manifesto:**
+    * `status: "active"`
+    * `base_full_file`: Caminho do arquivo Base.
+    * **`base_full_hash_sha256`**: **O Hash da Família.**
+    * `last_checkpoint_name`: Nome do último checkpoint `libvirt` criado.
+    * `incremental_files`: Lista dos arquivos incrementais gerados até agora.
+
+---
+
+## 3. Fluxo de Execução (Lógica Automática)
+
+O script decide automaticamente entre Full (Base), Incremental ou Consolidação a cada execução.
+
+### Etapa Zero: Verificação Inicial
+
+1.  O script procura por um `manifest.json` com `status: "active"`.
+
+### Cenário A: Início de um Novo Ciclo (Full Base)
+
+* **Gatilho:** Nenhum `manifest.json` ativo encontrado.
+* **Ação:**
+    1.  Executar um **Backup Completo (Base)** com `dom.backupBegin()`.
+    2.  Calcular o **Hash SHA-256** do novo arquivo Base.
+    3.  Criar um novo **checkpoint `libvirt`** para marcar o ponto de partida do ciclo.
+    4.  Criar o `manifest.json` e registrar o Base e o **Hash da Família**.
+
+---
+
+### Cenário B: Execução Incremental
+
+* **Gatilho:** Manifesto ativo encontrado e `Contagem de Incrementais < --max-incrementals`.
+* **Ação:**
+    1.  **Validação por Hash (Check de Integridade):** Recalcular o hash do arquivo Base físico e compará-lo com o `base_full_hash_sha256` do Manifesto.
+        * Se **diferente**, abortar com erro (integridade comprometida).
+        * Se **igual**, prosseguir.
+    2.  Executar um **Backup Incremental** usando o `last_checkpoint_name` do Manifesto.
+    3.  **Pós-Sucesso:**
+        * Criar um **novo checkpoint `libvirt`**.
+        * Atualizar o Manifesto com o novo arquivo e o novo checkpoint.
+        * **Excluir o checkpoint `libvirt` anterior**, mantendo apenas o mais recente como referência de partida para o próximo backup.
+
+---
+
+### Cenário C: Fim do Ciclo (Consolidação)
+
+* **Gatilho:** Manifesto ativo encontrado e `Contagem de Incrementais >= --max-incrementals`.
+* **Ação:**
+    1.  **Consolidação (Merge):**
+        * Gerar um nome de arquivo **único** para o backup consolidado (ex: `VM-Full-Merged-YYYYMMDD_HHMMSS.qcow2`).
+        * Executar o comando externo (ex: `qemu-img convert`) para mesclar a cadeia completa de arquivos (Base + todos os Incrementais) no novo arquivo `Full-Merged...`.
+    2.  **Limpeza do Ciclo (Garantia de Substituição Zero):**
+        * **Remover a Cadeia Ativa Temporária:** Excluir o `manifest.json`.
+        * **Remover Arquivos Temporários:** Excluir o arquivo Base e todos os arquivos Incrementais.
+        * **Remover Checkpoint:** Excluir o *último* checkpoint `libvirt` que estava ativo.
+
+---
+
+### Resultado da Retenção
+
+O script **nunca irá remover** nenhum arquivo com o prefixo `Full-Merged`. Eles serão tratados como produtos finais permanentes. O diretório de backup passará a conter:
+
+1.  Os arquivos **`Full-Merged-*.qcow2`** (acumulando-se ao longo do tempo).
+2.  Ou a cadeia temporária (`Base + Incrementais` + `manifest.json`) se um ciclo estiver ativo.
