@@ -241,6 +241,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
                 
                 try:
                     # Usa subprocess em vez de dom.jobAbort()
+                    # CORREÇÃO 1: Removido '--async'
                     subprocess.run(['virsh', 'domjobabort', domain_name], 
                                    check=True, 
                                    capture_output=True, 
@@ -357,6 +358,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
             print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job de backup (via CLI)...")
             try:
                 # Usa subprocess em vez de dom.jobAbort()
+                # CORREÇÃO 2: Removido '--async'
                 subprocess.run(['virsh', 'domjobabort', domain_name], 
                                check=True, 
                                capture_output=True, 
@@ -389,6 +391,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
             if backup_started:
                 print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job preso via CLI para a próxima execução...")
                 try:
+                    # CORREÇÃO 3: Removido '--async'
                     subprocess.run(['virsh', 'domjobabort', domain_name], 
                                    check=True, 
                                    capture_output=True, 
@@ -397,40 +400,9 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
                 except Exception as e_abort:
                     print(f"{RED}*{RESET} ERROR: Falha ao tentar domjobabort: {e_abort.stderr or e_abort}", file=sys.stderr)
         sys.exit(1)
-        
     except Exception as e:
         print(f"\n{RED}*{RESET} ERROR: Erro inesperado: {e}", file=sys.stderr)
-        
-        # --- INÍCIO DA CORREÇÃO ---
-        # Adicionada lógica de limpeza para exceções genéricas
-        if backup_started and dom is not None:
-            print(f"{YELLOW}*{RESET} ATTENTION: Erro detectado. Tentando abortar o job de backup (via CLI)...")
-            try:
-                # Usa subprocess em vez de dom.jobAbort()
-                subprocess.run(['virsh', 'domjobabort', domain_name], 
-                               check=True, 
-                               capture_output=True, 
-                               text=True)
-                print(f"  -> {GREEN}Comando 'virsh domjobabort' enviado.{RESET}")
-            except Exception as e_abort_cli:
-                error_output = e_abort_cli.stderr if hasattr(e_abort_cli, 'stderr') else str(e_abort_cli)
-                print(f"{RED}*{RESET} ERROR: Falha ao tentar domjobabort: {error_output}", file=sys.stderr)
-        
-        if backup_files_map:
-            print(f"{YELLOW}*{RESET} ATTENTION: Removendo arquivos de backup parciais desta execução...")
-            for dev, path in backup_files_map.items():
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                        print(f"    -> {RED}Removido:{RESET} {os.path.basename(path)}")
-                    except OSError as e_rm:
-                        print(f"{RED}*{RESET} ERROR: Falha ao remover {CYAN}{path}{RESET}: {e_rm}", file=sys.stderr)
-                else:
-                    print(f"    -> {YELLOW}INFO:{RESET} {os.path.basename(path)} não encontrado (provavelmente não foi criado).")
-        # --- FIM DA CORREÇÃO ---
-            
         sys.exit(1)
-        
     finally:
         if conn:
             conn.close()
