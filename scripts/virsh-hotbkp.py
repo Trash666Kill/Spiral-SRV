@@ -174,7 +174,7 @@ def check_available_space(backup_dir, disk_details):
 
         print(f"  -> Tamanho total (origem): {total_size_needed / (1024**3):.2f} GB")
         print(f"  -> Necessário (com margem): {final_size_needed / (1024**3):.2f} GB")
-        print(f"  -> Disponível (destino):   {available_space / (1024**3):.2f} GB")
+        print(f"  -> Disponível (destino):    {available_space / (1024**3):.2f} GB")
 
         if final_size_needed > available_space:
             raise Exception("Espaço insuficiente no dispositivo de backup.")
@@ -188,11 +188,12 @@ def check_available_space(backup_dir, disk_details):
 
 # --- FUNÇÃO PRINCIPAL ---
 
-def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, retention_count, limit_mb):
+def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, retention_count):
     
     conn = None
     dom = None
     backup_started = False
+    backup_files_map = {} 
     
     try:
         print(f"{GREEN}*{RESET} INFO: Conectando ao hypervisor em: {CYAN}{CONNECT_URI}{RESET}")
@@ -224,36 +225,43 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
             print(f"{RED}*{RESET} ERROR: Domínio '{CYAN}{domain_name}{RESET}' não encontrado.", file=sys.stderr)
             sys.exit(1)
 
-        # --- APLICAR LIMITE DE I/O (blkiotune) ---
-        if limit_mb > 0:
-            limit_bytes = limit_mb * 1024 * 1024
-            params = {'read_bytes_sec': limit_bytes} 
-            print(f"\n{GREEN}*{RESET} INFO: Aplicando I/O read limit de {CYAN}{limit_mb} MB/s{RESET} aos discos: {CYAN}{', '.join(disk_targets)}{RESET}...")
+        # --- VERIFICAÇÃO DE JOB PRESO ---
+        print(f"\n{GREEN}*{RESET} INFO: Verificando se há jobs de backup presos...")
+        try:
+            job_info = dom.jobInfo()
             
-            # --- Início EAFP para APLICAR limite ---
             try:
-                # Tenta a chamada moderna (com 'flags=0')
-                for disk in disk_targets:
-                    dom.blockIoTune(disk, params, 0)
-                print(f"  -> {GREEN}Limite aplicado (Modo Moderno).{RESET}")
-            except TypeError:
-                # Se falhar, é uma biblioteca antiga. Tenta a chamada legada.
-                print(f"  -> {YELLOW}Detectado blkiotune legado. Aplicando (Modo Legado).{RESET}")
-                try:
-                    for disk in disk_targets:
-                        dom.blockIoTune(disk, params)
-                    print(f"  -> {GREEN}Limite aplicado (Modo Legado).{RESET}")
-                except libvirt.libvirtError as e_legacy:
-                    print(f"{RED}*{RESET} ERROR: Falha ao aplicar limite de I/O (Modo Legado). O backup continuará sem limite. Erro: {e_legacy}", file=sys.stderr)
-            except libvirt.libvirtError as e:
-                print(f"{RED}*{RESET} ERROR: Falha ao aplicar limite de I/O (Modo Moderno). O backup continuará sem limite. Erro: {e}", file=sys.stderr)
-            # --- Fim EAFP para APLICAR limite ---
-                
-        else:
-            print(f"\n{YELLOW}*{RESET} ATTENTION: Nenhum limite de I/O foi definido ({CYAN}--limit-mb 0{RESET}).")
-            print("  -> O backup será executado na velocidade máxima permitida pelo hardware.")
-            print("  -> Isso pode causar alto I/O no host e degradar a performance de outras VMs.")
+                job_type = job_info.type
+            except AttributeError:
+                job_type = job_info[JOB_INFO_TYPE_INDEX]
 
+            if job_type != libvirt.VIR_DOMAIN_JOB_NONE:
+                print(f"{YELLOW}*{RESET} ATTENTION: Um job (tipo {job_type}) já está em execução para este domínio.")
+                print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job anterior (via CLI) para iniciar o novo backup...")
+                
+                try:
+                    # Usa subprocess em vez de dom.jobAbort()
+                    # CORREÇÃO 1: Removido '--async'
+                    subprocess.run(['virsh', 'domjobabort', domain_name], 
+                                   check=True, 
+                                   capture_output=True, 
+                                   text=True)
+                    print(f"  -> {GREEN}Comando 'virsh domjobabort' enviado.{RESET}")
+                    print(f"  -> {CYAN}Aguardando 3s para o job ser limpo...{RESET}")
+                    time.sleep(3) 
+                except Exception as e_abort_cli:
+                    error_output = e_abort_cli.stderr if hasattr(e_abort_cli, 'stderr') else str(e_abort_cli)
+                    print(f"{RED}*{RESET} ERROR: Falha ao tentar 'virsh domjobabort': {error_output}", file=sys.stderr)
+                    print(f"{RED}*{RESET} ERROR: O backup não pode continuar.")
+                    sys.exit(1)
+                    
+            else:
+                print(f"  -> {GREEN}Nenhum job ativo encontrado. O backup pode prosseguir.{RESET}")
+
+        except libvirt.libvirtError as e_jobinfo:
+            print(f"{RED}*{RESET} ERROR: Falha ao verificar informações do job: {e_jobinfo}", file=sys.stderr)
+            sys.exit(1)
+        # --- [FIM] VERIFICAÇÃO DE JOB PRESO ---
 
         backup_dir = os.path.join(backup_base_dir, domain_name)
         os.makedirs(backup_dir, exist_ok=True)
@@ -270,7 +278,6 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
 
         print(f"\n{GREEN}*{RESET} INFO: Gerando XML de backup...")
         backup_xml_parts = []
-        backup_files_map = {}
         
         backup_xml_parts.append("<domainbackup><disks>")
         
@@ -344,47 +351,59 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, reten
             
             time.sleep(1)
 
-    except libvirt.libvirtError as e:
-        print(f"\n{RED}*{RESET} ERROR: Erro na Libvirt: {e}", file=sys.stderr)
-        if backup_started:
-            print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job preso via CLI para a próxima execução...")
+    except KeyboardInterrupt:
+        print(f"\n{RED}*{RESET} INTERRUPÇÃO: Script interrompido pelo usuário (Ctrl+C).")
+        
+        if backup_started and dom is not None:
+            print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job de backup (via CLI)...")
             try:
-                subprocess.run(['virsh', 'domjobabort', domain_name, '--async'], 
+                # Usa subprocess em vez de dom.jobAbort()
+                # CORREÇÃO 2: Removido '--async'
+                subprocess.run(['virsh', 'domjobabort', domain_name], 
                                check=True, 
                                capture_output=True, 
                                text=True)
                 print(f"  -> {GREEN}Comando 'virsh domjobabort' enviado.{RESET}")
-            except Exception as e_abort:
-                 print(f"{RED}*{RESET} ERROR: Falha ao tentar domjobabort: {e_abort.stderr or e_abort}", file=sys.stderr)
+            except Exception as e_abort_cli:
+                error_output = e_abort_cli.stderr if hasattr(e_abort_cli, 'stderr') else str(e_abort_cli)
+                print(f"{RED}*{RESET} ERROR: Falha ao tentar domjobabort: {error_output}", file=sys.stderr)
+        
+        if backup_files_map:
+            print(f"{YELLOW}*{RESET} ATTENTION: Removendo arquivos de backup parciais desta execução...")
+            for dev, path in backup_files_map.items():
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                        print(f"    -> {RED}Removido:{RESET} {os.path.basename(path)}")
+                    except OSError as e_rm:
+                        print(f"{RED}*{RESET} ERROR: Falha ao remover {CYAN}{path}{RESET}: {e_rm}", file=sys.stderr)
+                else:
+                    print(f"    -> {YELLOW}INFO:{RESET} {os.path.basename(path)} não encontrado (provavelmente não foi criado).")
+        else:
+            print(f"{GREEN}*{RESET} INFO: Nenhum arquivo de backup para remover (mapa de arquivos vazio).")
+        
+        print(f"{RED}*{RESET} Script encerrado.")
+        sys.exit(130) 
+
+    except libvirt.libvirtError as e:
+        print(f"\n{RED}*{RESET} ERROR: Erro na Libvirt: {e}", file=sys.stderr)
+        if "cannot acquire state change lock" not in str(e):
+            if backup_started:
+                print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job preso via CLI para a próxima execução...")
+                try:
+                    # CORREÇÃO 3: Removido '--async'
+                    subprocess.run(['virsh', 'domjobabort', domain_name], 
+                                   check=True, 
+                                   capture_output=True, 
+                                   text=True)
+                    print(f"  -> {GREEN}Comando 'virsh domjobabort' enviado.{RESET}")
+                except Exception as e_abort:
+                    print(f"{RED}*{RESET} ERROR: Falha ao tentar domjobabort: {e_abort.stderr or e_abort}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         print(f"\n{RED}*{RESET} ERROR: Erro inesperado: {e}", file=sys.stderr)
         sys.exit(1)
     finally:
-        # --- REMOVER LIMITE DE I/O (SEMPRE) ---
-        if dom is not None and limit_mb > 0:
-            print(f"\n{GREEN}*{RESET} INFO: Removendo limite de I/O...")
-            params_unlimited = {'read_bytes_sec': 0}
-            
-            # --- Início EAFP para REMOVER limite ---
-            try:
-                # Tenta a chamada moderna
-                for disk in disk_targets:
-                    dom.blockIoTune(disk, params_unlimited, 0)
-                print(f"  -> {GREEN}Limite removido (Modo Moderno).{RESET}")
-            except TypeError:
-                # Se falhar, tenta a chamada legada
-                print(f"  -> {YELLOW}Detectado blkiotune legado. Removendo (Modo Legado).{RESET}")
-                try:
-                    for disk in disk_targets:
-                        dom.blockIoTune(disk, params_unlimited)
-                    print(f"  -> {GREEN}Limite removido (Modo Legado).{RESET}")
-                except Exception as e_legacy:
-                    print(f"{RED}*{RESET} ERROR: Falha ao remover limite de I/O (Modo Legado): {e_legacy}", file=sys.stderr)
-            except Exception as e:
-                print(f"{RED}*{RESET} ERROR: Falha ao remover limite de I/O (Modo Moderno): {e}", file=sys.stderr)
-            # --- Fim EAFP para REMOVER limite ---
-
         if conn:
             conn.close()
             print(f"\n{GREEN}*{RESET} INFO: Conexão com o hypervisor fechada.")
@@ -416,12 +435,7 @@ if __name__ == "__main__":
                         type=int,
                         default=7,
                         help="Manter no máximo X backups (Padrão: 7).")
-                        
-    parser.add_argument('--limit-mb',
-                        type=int,
-                        default=0,
-                        help="Limitar a velocidade de leitura do backup em MB/s (Padrão: 0 = ilimitado).")
     
     args = parser.parse_args()
     
-    run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.retention_count, args.limit_mb)
+    run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.retention_count)
