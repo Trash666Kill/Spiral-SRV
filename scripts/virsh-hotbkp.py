@@ -327,7 +327,7 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp, retention_d
 
 # --- LÓGICA DE BACKUP (MODO SNAPSHOT + RSYNC) ---
 
-def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
+def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_mb):
     """
     Executa o backup usando a abordagem Snapshot + Rsync + Blockcommit.
     A RETENÇÃO NÃO É APLICADA AQUI.
@@ -335,8 +335,8 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
     print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] Iniciando backup via Snapshot + Rsync...")
     
     domain_name = dom.name()
-    # O nome lógico do snapshot agora usa o formato Dominio_snapshot_timestamp
-    snapshot_name = f"{domain_name}_snapshot_{timestamp}"
+    # Este é o NOME LÓGICO do snapshot (o "grupo" da operação)
+    logical_snapshot_name = f"{domain_name}_snapshot_{timestamp}"
     
     # Mapa para rastrear todos os arquivos envolvidos
     # (disco_alvo) -> {'base': path, 'snap': path, 'bak': path}
@@ -351,7 +351,7 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
         cmd_snapshot = [
             'virsh', 'snapshot-create-as', 
             '--domain', domain_name, 
-            '--name', snapshot_name,
+            '--name', logical_snapshot_name,  # Usa o nome lógico/grupo
             '--disk-only', '--atomic', '--quiesce'
         ]
         
@@ -363,9 +363,10 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
         for target_dev, info in disk_details.items():
             base_path = info['path']
             
-            # Constrói o caminho do snapshot para ficar no mesmo diretório do disco base
+            # [CORREÇÃO] Gera um NOME DE ARQUIVO de snapshot ÚNICO para CADA disco
             base_dir = os.path.dirname(base_path)
-            snap_path = os.path.join(base_dir, f"{snapshot_name}.qcow2")
+            snap_filename = f"{domain_name}_{target_dev}_snapshot_{timestamp}.qcow2"
+            snap_path = os.path.join(base_dir, snap_filename)
             
             # Define o nome do arquivo de backup final (ex: /backup/vm/vm-vda-20251112.qcow2.bak)
             bak_filename = f"{domain_name}-{target_dev}-{timestamp}.{DISK_FORMAT}.bak"
@@ -379,9 +380,19 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
             cmd_snapshot.extend(['--diskspec', f"{target_dev},file={snap_path},driver=qcow2"])
             
             # Prepara o comando rsync (base congelada -> destino de backup)
+            rsync_cmd_base = ['rsync', '-avh', '--progress', '--inplace']
+            
+            # Converte MB (usuário) para KB (rsync)
+            if bwlimit_mb > 0:
+                bwlimit_kb = bwlimit_mb * 1024
+                rsync_cmd_base.append(f"--bwlimit={bwlimit_kb}")
+                print(f"     {YELLOW}INFO:{RESET} Limite de banda do rsync definido para {bwlimit_mb} MB/s ({bwlimit_kb} KB/s)")
+
+            rsync_cmd_base.extend([base_path, bak_path])
+            
             cmds_rsync.append({
                 'dev': target_dev, 
-                'cmd': ['rsync', '-avh', '--progress', '--inplace', base_path, bak_path]
+                'cmd': rsync_cmd_base
             })
             
             # Prepara o comando blockcommit (mescla o snapshot de volta na base)
@@ -392,7 +403,7 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
             
             print(f"  -> Disco {CYAN}{target_dev}{RESET}:")
             print(f"     Base (Origem): {base_path}")
-            print(f"     Snap (Temp):   {snap_path}")
+            print(f"     Snap (Temp):   {snap_path}") # Agora será único
             print(f"     Backup (Dest): {bak_path}")
 
         # --- Executar Comandos ---
@@ -400,7 +411,7 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
         start_time = time.time()
 
         # PASSO 1: Criar o snapshot
-        print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 1: Criando snapshot '{CYAN}{snapshot_name}{RESET}'...")
+        print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 1: Criando snapshot '{CYAN}{logical_snapshot_name}{RESET}'...")
         run_subprocess(cmd_snapshot)
         snapshot_created = True
         print(f"  -> {GREEN}Snapshot criado.{RESET} Os discos base estão congelados.")
@@ -421,7 +432,7 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
             
         # PASSO 4: Limpar metadados do snapshot
         print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 4: Removendo metadados do snapshot...")
-        cmd_snap_delete = ['virsh', 'snapshot-delete', domain_name, snapshot_name, '--metadata']
+        cmd_snap_delete = ['virsh', 'snapshot-delete', domain_name, logical_snapshot_name, '--metadata']
         run_subprocess(cmd_snap_delete)
         
         end_time = time.time()
@@ -447,7 +458,7 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
             print(f"{RED}* ATTENTION: FALHA CRÍTICA APÓS CRIAÇÃO DO SNAPSHOT *")
             print(f"{RED}******************************************************")
             print(f"{YELLOW}  A VM PODE ESTAR EM ESTADO INCONSISTENTE.")
-            print(f"{YELLOW}  O snapshot '{CYAN}{snapshot_name}{RESET}' PODE AINDA ESTAR ATIVO.")
+            print(f"{YELLOW}  O snapshot '{CYAN}{logical_snapshot_name}{RESET}' PODE AINDA ESTAR ATIVO.")
             print(f"{YELLOW}  Os discos podem estar apontando para:{RESET}")
             for dev, paths in snapshot_files_map.items():
                  print(f"{YELLOW}    -> {dev}: {paths['snap']}{RESET}")
@@ -471,7 +482,7 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
 
 # --- FUNÇÃO PRINCIPAL ---
 
-def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backup_mode):
+def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backup_mode, bwlimit_mb):
     
     conn = None
     dom = None
@@ -546,11 +557,37 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backu
         os.makedirs(backup_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # A retenção foi movida para dentro do 'run_backup_libvirt_api'
-
         disk_details = get_disk_details_from_xml(dom, disk_targets)
         if disk_details is None:
             raise Exception("Falha ao obter detalhes dos discos. Verifique os logs acima.")
+
+        # --- [NOVO] VERIFICAÇÃO DE PRÉ-EXECUÇÃO (Snapshot em Snapshot) ---
+        print(f"\n{GREEN}*{RESET} INFO: Verificando se os discos de origem já são snapshots...")
+        disks_on_snapshot = []
+        
+        for target_dev, info in disk_details.items():
+            disk_filename = os.path.basename(info['path'])
+            
+            # Heurística: se o nome do arquivo contém "_snapshot_", é um snapshot.
+            if "_snapshot_" in disk_filename:
+                disks_on_snapshot.append(target_dev)
+                print(f"  -> {RED}PERIGO:{RESET} Disco '{CYAN}{target_dev}{RESET}' já está rodando em um snapshot:")
+                print(f"     {RED}{disk_filename}{RESET}")
+
+        if disks_on_snapshot:
+            print(f"\n{RED}******************************************************")
+            print(f"{RED}* {YELLOW}ABORTANDO: BACKUP EM DISCO JÁ SNAPSHOTADO{RED} *")
+            print(f"{RED}******************************************************")
+            print(f"{YELLOW}Os seguintes discos já estão em um estado de snapshot:")
+            for dev in disks_on_snapshot:
+                print(f"  - {CYAN}{dev}{RESET}")
+            print(f"{YELLOW}Executar um novo backup (especialmente o modo snapshot) é perigoso.")
+            print(f"Por favor, consolide (commit) os snapshots pendentes antes de continuar.")
+            print(f"{YELLOW}Use 'virsh domblklist {domain_name}' e 'virsh blockcommit' para corrigir.{RESET}")
+            sys.exit(1) # Abortar
+        else:
+            print(f"  -> {GREEN}Verificação OK.{RESET} Nenhum disco de origem está em estado de snapshot.")
+        # --- [FIM] VERIFICAÇÃO DE PRÉ-EXECUÇÃO ---
             
         if not check_available_space(backup_dir, disk_details):
             sys.exit(1)
@@ -561,7 +598,8 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backu
             run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp, retention_days)
         
         elif backup_mode == 'snapshot':
-            run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp)
+            # Passa o bwlimit (em MB) para a função
+            run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_mb)
         
         else:
             # Isso não deve acontecer devido ao 'choices' do argparse
@@ -619,7 +657,6 @@ if __name__ == "__main__":
                         nargs='+',
                         help="Um ou mais alvos de disco para o backup (ex: vda vdb vdc).")
     
-    # [CORREÇÃO] Alterado de 'addf_argument' para 'add_argument'
     parser.add_argument('--retention-days',
                         type=int,
                         default=7,
@@ -630,9 +667,15 @@ if __name__ == "__main__":
                         default='libvirt',
                         help="Modo de backup: 'libvirt' (API nativa dom.backupBegin) ou 'snapshot' (Snapshot + Rsync + Blockcommit). Padrão: libvirt.")
     
+    parser.add_argument('--bwlimit',
+                        type=int,
+                        default=0,
+                        help="Limita a largura de banda do rsync (em MB/s). (Padrão: 0 = ilimitado). Aplicável apenas ao modo 'snapshot'.")
+
+    
     args = parser.parse_args()
     
-    # --- [NOVO] Confirmação de Modo Snapshot ---
+    # --- Confirmação de Modo Snapshot ---
     if args.mode == 'snapshot':
         print(f"\n{RED}******************************************************")
         print(f"{RED}* {YELLOW}AVISO DE MODO PERIGOSO: MODO SNAPSHOT SELECIONADO{RED} *")
@@ -669,4 +712,5 @@ if __name__ == "__main__":
             sys.exit(130)
     # --- [FIM] Confirmação de Modo Snapshot ---
     
-    run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.mode)
+    # Passa args.bwlimit (MB) para a função principal
+    run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.mode, args.bwlimit)
