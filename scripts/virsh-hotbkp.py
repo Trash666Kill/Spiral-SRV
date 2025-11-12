@@ -9,24 +9,58 @@ import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import importlib.metadata
-
-# --- ANSI Color Codes ---
-GREEN = '\033[32m'
-RED = '\033[31m'
-YELLOW = '\033[33m'
-RESET = '\033[0m'
-CYAN = '\033[36m'
+import logging
+import logging.handlers
 
 # --- CONSTANTES ---
 DISK_FORMAT = 'qcow2'
 CONNECT_URI = 'qemu:///system'
 SAFETY_MARGIN_PERCENT = 0.10
+LOG_DIR = "/var/log/virsh"
+# O nome do arquivo de log agora é dinâmico
 
 # Constantes de índice para o modo legado (Fallback)
 JOB_INFO_TYPE_INDEX = 0
 JOB_INFO_PROCESSED_INDEX = 2
 JOB_INFO_TOTAL_INDEX = 4
 
+# --- Configuração do Logger ---
+logger = logging.getLogger('virsh_hotbkp')
+logger.setLevel(logging.DEBUG) # Nível mais baixo para capturar tudo
+
+def setup_logging(domain_name, timestamp):
+    """Configura os handlers de logging para console e arquivo dinâmico."""
+    try:
+        # Tenta criar o diretório de log
+        os.makedirs(LOG_DIR, exist_ok=True)
+
+        # [MUDANÇA] Cria um nome de arquivo de log único para esta execução
+        log_filename = f"{domain_name}-{timestamp}.log"
+        log_path = os.path.join(LOG_DIR, log_filename)
+        
+        # Handler para o ARQUIVO (simples, não rotativo)
+        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG) # Grava tudo no arquivo
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+
+        # Handler para o CONSOLE
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO) # Mostra apenas INFO e acima no console
+        console_formatter = logging.Formatter('%(levelname)s: %(message)s')
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
+        logger.info(f"Log de arquivo para esta execução: {log_path}")
+
+    except PermissionError:
+        print(f"ERRO DE PERMISSÃO: Não é possível escrever em {LOG_DIR}.", file=sys.stderr)
+        print("Execute o script como root ou ajuste as permissões.", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERRO ao configurar o log de arquivo: {e}", file=sys.stderr)
+        sys.exit(1)
 
 # --- UTILS ---
 
@@ -35,32 +69,30 @@ def run_subprocess(command_list):
     Helper para executar comandos de subprocesso e parar em caso de erro.
     """
     try:
-        # Imprime o comando para fins de depuração (esconde informações sensíveis se houver)
-        print(f"  -> {CYAN}Executando:{RESET} {' '.join(command_list)}")
+        logger.info(f"Executando: {' '.join(command_list)}")
         
-        # NOTA: text=True é o mesmo que universal_newlines=True
         result = subprocess.run(command_list, 
                                 check=True, 
                                 capture_output=True, 
                                 text=True,
                                 encoding='utf-8')
         
+        # Loga STDOUT/STDERR como DEBUG (só aparece no arquivo, não no console)
         if result.stdout:
-            print(f"     {GREEN}STDOUT:{RESET} {result.stdout.strip()}")
+            logger.debug(f"STDOUT: {result.stdout.strip()}")
         if result.stderr:
-            print(f"     {YELLOW}STDERR:{RESET} {result.stderr.strip()}")
+            logger.debug(f"STDERR: {result.stderr.strip()}")
             
         return result
         
     except subprocess.CalledProcessError as e:
-        print(f"\n{RED}*{RESET} ERROR: Comando falhou (Código: {e.returncode})", file=sys.stderr)
-        print(f"{RED}  Comando:{RESET} {' '.join(e.cmd)}", file=sys.stderr)
-        print(f"{RED}  Stdout:{RESET} {e.stdout}", file=sys.stderr)
-        print(f"{RED}  Stderr:{RESET} {e.stderr}", file=sys.stderr)
-        # Re-levanta a exceção para parar o script
-        raise
+        logger.error(f"Comando falhou (Código: {e.returncode})")
+        logger.error(f"  Comando: {' '.join(e.cmd)}")
+        logger.error(f"  Stdout: {e.stdout}")
+        logger.error(f"  Stderr: {e.stderr}")
+        raise # Re-levanta a exceção para parar o script
     except Exception as e:
-        print(f"\n{RED}*{RESET} ERROR: Falha inesperada ao executar subprocesso: {e}", file=sys.stderr)
+        logger.error(f"Falha inesperada ao executar subprocesso: {e}")
         raise
 
 def get_disk_details_from_xml(dom, target_devs_list):
@@ -68,7 +100,7 @@ def get_disk_details_from_xml(dom, target_devs_list):
     Analisa o XML da VM e extrai o caminho de origem (source file)
     para cada disco de destino (target dev) solicitado.
     """
-    print(f"{GREEN}*{RESET} INFO: Analisando XML para os discos: {CYAN}{', '.join(target_devs_list)}{RESET}")
+    logger.info(f"Analisando XML para os discos: {', '.join(target_devs_list)}")
     details = {}
     try:
         raw_xml = dom.XMLDesc(0)
@@ -86,7 +118,7 @@ def get_disk_details_from_xml(dom, target_devs_list):
             if target_name in target_set:
                 source = device.find('source')
                 if source is None or source.get('file') is None:
-                    print(f"{YELLOW}*{RESET} ATTENTION: Disco {CYAN}{target_name}{RESET} encontrado, mas não possui 'source file'. Ignorando.")
+                    logger.warning(f"Disco {target_name} encontrado, mas não possui 'source file'. Ignorando.")
                     continue
                     
                 driver = device.find('driver')
@@ -94,15 +126,15 @@ def get_disk_details_from_xml(dom, target_devs_list):
                     'path': source.get('file'),
                     'driver_type': driver.get('type') if driver is not None else 'desconhecido'
                 }
-                print(f"  -> Encontrado '{CYAN}{target_name}{RESET}': {details[target_name]['path']}")
+                logger.info(f"  -> Encontrado '{target_name}': {details[target_name]['path']}")
                 target_set.remove(target_name) # Otimização
     
     except Exception as e:
-        print(f"{RED}*{RESET} ERROR: Falha ao analisar o XML da VM: {e}", file=sys.stderr)
+        logger.error(f"Falha ao analisar o XML da VM: {e}")
         return None
 
     if len(target_set) > 0:
-        print(f"{RED}*{RESET} ERROR: Não foi possível encontrar os seguintes discos no XML da VM: {CYAN}{', '.join(target_set)}{RESET}", file=sys.stderr)
+        logger.error(f"Não foi possível encontrar os seguintes discos no XML da VM: {', '.join(target_set)}")
         return None
 
     return details
@@ -111,11 +143,11 @@ def manage_retention(backup_dir, retention_days):
     """
     Limpa backups antigos no diretório com base na idade (dias).
     """
-    print(f"\n{GREEN}*{RESET} INFO: Verificando política de retenção...")
-    print(f"  -> Regra: Reter backups por no máximo {CYAN}{retention_days}{RESET} dias.")
+    logger.info("Verificando política de retenção...")
+    logger.info(f"  -> Regra: Reter backups por no máximo {retention_days} dias.")
 
     if not os.path.isdir(backup_dir):
-        print(f"{YELLOW}*{RESET} INFO: Diretório de backup ainda não existe. Pulando retenção.")
+        logger.warning("Diretório de backup ainda não existe. Pulando retenção.")
         return
 
     now = datetime.now()
@@ -126,7 +158,7 @@ def manage_retention(backup_dir, retention_days):
                  if os.path.isfile(os.path.join(backup_dir, f)) and f.endswith('.bak')]
         
         if not files:
-            print(f"{GREEN}*{RESET} INFO: Nenhum backup antigo (.bak) encontrado.")
+            logger.info("Nenhum backup antigo (.bak) encontrado.")
             return
 
         backups = []
@@ -144,31 +176,31 @@ def manage_retention(backup_dir, retention_days):
         # Loop simplificado: verifica *todos* os backups *apenas* pela idade
         for mtime, f in backups:
             if datetime.fromtimestamp(mtime) < cutoff_date:
-                print(f"  -> {YELLOW}Retenção (Idade):{RESET} Marcado para remoção (expirado): {CYAN}{os.path.basename(f)}{RESET}")
+                logger.warning(f"Retenção (Idade): Marcado para remoção (expirado): {os.path.basename(f)}")
                 for_removal.add(f)
             else:
                 kept_backups.append(f)
 
         if for_removal:
-            print(f"{YELLOW}*{RESET} ATTENTION: Removendo backups antigos...")
+            logger.warning("Removendo backups antigos...")
             for f in for_removal:
                 try:
                     os.remove(f)
-                    print(f"    -> {RED}Removido:{RESET} {os.path.basename(f)}")
+                    logger.info(f"    -> Removido: {os.path.basename(f)}")
                 except OSError as e:
-                    print(f"{RED}*{RESET} ERROR: Falha ao remover {CYAN}{f}{RESET}: {e}", file=sys.stderr)
+                    logger.error(f"Falha ao remover {f}: {e}")
         else:
-            print(f"{GREEN}*{RESET} INFO: Nenhum backup para remover.")
+            logger.info("Nenhum backup para remover.")
 
-        print(f"\n{GREEN}*{RESET} INFO: Backups mantidos (existentes):")
+        logger.info("Backups mantidos (existentes):")
         if not kept_backups:
-            print("    -> Nenhum backup existente foi mantido.")
+            logger.info("    -> Nenhum backup existente foi mantido.")
         else:
             for f in kept_backups:
-                print(f"    -> {os.path.basename(f)}")
+                logger.info(f"    -> {os.path.basename(f)}")
 
     except Exception as e:
-        print(f"{RED}*{RESET} ERROR: Falha ao processar retenção: {e}", file=sys.stderr)
+        logger.error(f"Falha ao processar retenção: {e}")
 
 
 def check_available_space(backup_dir, disk_details):
@@ -176,7 +208,7 @@ def check_available_space(backup_dir, disk_details):
     Verifica se há espaço suficiente no destino para o backup,
     incluindo uma margem de segurança.
     """
-    print(f"\n{GREEN}*{RESET} INFO: Verificando espaço em disco...")
+    logger.info("Verificando espaço em disco...")
     
     try:
         total_size_needed = 0
@@ -184,7 +216,7 @@ def check_available_space(backup_dir, disk_details):
             try:
                 disk_size = os.path.getsize(info['path'])
                 total_size_needed += disk_size
-                print(f"  -> Disco '{CYAN}{dev}{RESET}' ({info['path']}) requer {disk_size / (1024**3):.2f} GB")
+                logger.info(f"  -> Disco '{dev}' ({info['path']}) requer {disk_size / (1024**3):.2f} GB")
             except OSError as e:
                 raise Exception(f"Falha ao obter tamanho do disco {dev} em {info['path']}: {e}")
 
@@ -195,18 +227,18 @@ def check_available_space(backup_dir, disk_details):
         usage = shutil.disk_usage(backup_dir)
         available_space = usage.free
 
-        print(f"  -> Tamanho total (origem): {total_size_needed / (1024**3):.2f} GB")
-        print(f"  -> Necessário (com margem): {final_size_needed / (1024**3):.2f} GB")
-        print(f"  -> Disponível (destino):    {available_space / (1024**3):.2f} GB")
+        logger.info(f"  -> Tamanho total (origem): {total_size_needed / (1024**3):.2f} GB")
+        logger.info(f"  -> Necessário (com margem): {final_size_needed / (1024**3):.2f} GB")
+        logger.info(f"  -> Disponível (destino):    {available_space / (1024**3):.2f} GB")
 
         if final_size_needed > available_space:
             raise Exception("Espaço insuficiente no dispositivo de backup.")
             
-        print(f"  -> {GREEN}Espaço suficiente verificado.{RESET}")
+        logger.info("  -> Espaço suficiente verificado.")
         return True
 
     except Exception as e:
-        print(f"{RED}*{RESET} ERROR: Na verificação de espaço: {e}", file=sys.stderr)
+        logger.error(f"Na verificação de espaço: {e}")
         return False
 
 # --- LÓGICA DE BACKUP (MODO LIBVIRT API) ---
@@ -219,7 +251,7 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp, retention_d
     # Executa a retenção APENAS neste modo
     manage_retention(backup_dir, retention_days)
     
-    print(f"\n{GREEN}*{RESET} INFO: [Modo Libvirt] Gerando XML de backup...")
+    logger.info("[Modo Libvirt] Gerando XML de backup...")
     
     domain_name = dom.name()
     backup_files_map = {} 
@@ -242,20 +274,19 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp, retention_d
 </disk>
 """
             backup_xml_parts.append(xml_disk_entry)
-            print(f"  -> Incluindo disco '{CYAN}{target_dev}{RESET}' para -> {CYAN}{backup_file_path}{RESET}")
+            logger.info(f"  -> Incluindo disco '{target_dev}' para -> {backup_file_path}")
 
         backup_xml_parts.append("</disks></domainbackup>")
         backup_xml = "".join(backup_xml_parts)
         
-        print(f"\n{GREEN}*{RESET} INFO: [Modo Libvirt] Iniciando Backup Live...")
+        logger.info("[Modo Libvirt] Iniciando Backup Live...")
         start_time = time.time()
 
         dom.backupBegin(backup_xml, None, 0)
         backup_started = True 
         
         job_mode_reported = False
-        spinner_chars = ['|', '/', '-', '\\']
-        spinner_index = 0
+        last_log_time = time.time() # Para o log de progresso
         
         while True:
             job_info = dom.jobInfo()
@@ -264,66 +295,57 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp, retention_d
             try:
                 job_type = job_info.type
                 data_total = job_info.dataTotal
-                
                 if not job_mode_reported:
-                    print(f"\n  -> {GREEN}Modo de job detectado:{RESET} Moderno (Objeto)")
+                    logger.info("Modo de job detectado: Moderno (Objeto)")
                     job_mode_reported = True
-                    
             except AttributeError:
                 if not job_mode_reported:
-                    print(f"\n  -> {YELLOW}Modo de job detectado:{RESET} Legado (Lista/Tupla)")
+                    logger.warning("Modo de job detectado: Legado (Lista/Tupla)")
                     job_mode_reported = True
-                
                 job_type = job_info[JOB_INFO_TYPE_INDEX]
                 data_total = job_info[JOB_INFO_TOTAL_INDEX]
-                
-            spinner_char = spinner_chars[spinner_index % len(spinner_chars)]
-            spinner_index += 1
-            total_mb = data_total / 1024**2 # Corrigido para MB
-            print(f"{CYAN}Progresso:{RESET} [{GREEN}{spinner_char}{RESET}] (Aguardando {CYAN}{total_mb:.0f} MB{RESET}... {elapsed_time:.1f}s)", end='\r')
+            
+            total_mb = data_total / 1024**2
+            
+            # Loga o progresso a cada 10s
+            now = time.time()
+            if now - last_log_time > 10:
+                logger.info(f"Progresso: (Aguardando {total_mb:.0f} MB... {elapsed_time:.1f}s)")
+                last_log_time = now
 
             if job_type == libvirt.VIR_DOMAIN_JOB_NONE:
                 end_time = time.time()
                 time_elapsed_min = (end_time - start_time) / 60
                 
-                print(" " * 80, end='\r') 
-                
-                print(f"\n{GREEN}=================================================={RESET}")
-                print(f"{GREEN}Backup concluído com sucesso! (Modo Libvirt){RESET}")
-                print(f"Tempo total: {time_elapsed_min:.2f} minutos")
-                print("Arquivos Gerados:")
+                logger.info("==================================================")
+                logger.info("Backup concluído com sucesso! (Modo Libvirt)")
+                logger.info(f"Tempo total: {time_elapsed_min:.2f} minutos")
+                logger.info("Arquivos Gerados:")
                 for dev, path in backup_files_map.items():
-                    print(f"  -> Disco {CYAN}{dev}{RESET}: {path}")
-                print(f"{GREEN}=================================================={RESET}")
+                    logger.info(f"  -> Disco {dev}: {path}")
+                logger.info("==================================================")
                 break
             
-            time.sleep(1)
+            time.sleep(1) # Poll a cada 1 segundo
             
     except libvirt.libvirtError as e:
-        print(f"\n{RED}*{RESET} ERROR: Erro na Libvirt: {e}", file=sys.stderr)
+        logger.error(f"Erro na Libvirt: {e}")
         if "cannot acquire state change lock" not in str(e):
             if backup_started:
-                print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job preso via CLI para a próxima execução...")
+                logger.warning("Tentando abortar o job preso via CLI para a próxima execução...")
                 try:
                     subprocess.run(['virsh', 'domjobabort', domain_name], 
                                    check=True, 
                                    capture_output=True, 
                                    text=True)
-                    print(f"  -> {GREEN}Comando 'virsh domjobabort' enviado.{RESET}")
+                    logger.info("Comando 'virsh domjobabort' enviado.")
                 except Exception as e_abort:
-                    print(f"{RED}*{RESET} ERROR: Falha ao tentar domjobabort: {e_abort.stderr or e_abort}", file=sys.stderr)
-        # Propaga o erro para o handler principal
+                    logger.error(f"Falha ao tentar domjobabort: {e_abort.stderr or e_abort}")
         raise
     
     except Exception as e:
-        print(f"\n{RED}*{RESET} ERROR: Erro inesperado no [Modo Libvirt]: {e}", file=sys.stderr)
-        # Propaga o erro para o handler principal
+        logger.exception(f"Erro inesperado no [Modo Libvirt]: {e}")
         raise
-        
-    finally:
-        # A limpeza de arquivos parciais (em caso de Ctrl+C) é tratada no bloco principal
-        pass
-
 
 # --- LÓGICA DE BACKUP (MODO SNAPSHOT + RSYNC) ---
 
@@ -332,61 +354,51 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_
     Executa o backup usando a abordagem Snapshot + Rsync + Blockcommit.
     A RETENÇÃO NÃO É APLICADA AQUI.
     """
-    print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] Iniciando backup via Snapshot + Rsync...")
+    logger.info("[Modo Snapshot] Iniciando backup via Snapshot + Rsync...")
     
     domain_name = dom.name()
     # Este é o NOME LÓGICO do snapshot (o "grupo" da operação)
     logical_snapshot_name = f"{domain_name}_snapshot_{timestamp}"
     
-    # Mapa para rastrear todos os arquivos envolvidos
-    # (disco_alvo) -> {'base': path, 'snap': path, 'bak': path}
     snapshot_files_map = {}
-    
     snapshot_created = False
     
     try:
         # --- Preparar Comandos ---
         
-        # [MUDANÇA] Nomeia o comando com --quiesce explicitamente
         cmd_snapshot_quiesce = [
             'virsh', 'snapshot-create-as', 
             '--domain', domain_name, 
-            '--name', logical_snapshot_name,  # Usa o nome lógico/grupo
+            '--name', logical_snapshot_name,
             '--disk-only', '--atomic', '--quiesce'
         ]
         
-        cmds_rsync = []     # Lista de comandos rsync (PASSO 2)
-        cmds_commit = []    # Lista de comandos blockcommit (PASSO 3)
+        cmds_rsync = []
+        cmds_commit = []
         
-        print(f"{GREEN}*{RESET} INFO: [Modo Snapshot] Preparando especificações de disco...")
+        logger.info("[Modo Snapshot] Preparando especificações de disco...")
 
         for target_dev, info in disk_details.items():
             base_path = info['path']
             
-            # Gera um NOME DE ARQUIVO de snapshot ÚNICO para CADA disco
             base_dir = os.path.dirname(base_path)
             snap_filename = f"{domain_name}_{target_dev}_snapshot_{timestamp}.qcow2"
             snap_path = os.path.join(base_dir, snap_filename)
             
-            # Define o nome do arquivo de backup final (ex: /backup/vm/vm-vda-20251112.qcow2.bak)
             bak_filename = f"{domain_name}-{target_dev}-{timestamp}.{DISK_FORMAT}.bak"
             bak_path = os.path.join(backup_dir, bak_filename)
             
-            # Armazena para limpeza em caso de falha
             snapshot_files_map[target_dev] = {'base': base_path, 'snap': snap_path, 'bak': bak_path}
             
-            # Adiciona a especificação do disco ao comando de snapshot
             diskspec = f"{target_dev},file={snap_path},driver=qcow2"
             cmd_snapshot_quiesce.extend(['--diskspec', diskspec])
             
-            # Prepara o comando rsync (base congelada -> destino de backup)
-            rsync_cmd_base = ['rsync', '-avh', '--progress', '--inplace']
+            rsync_cmd_base = ['rsync', '-avh', '--inplace']
             
-            # Converte MB (usuário) para KB (rsync)
             if bwlimit_mb > 0:
                 bwlimit_kb = bwlimit_mb * 1024
                 rsync_cmd_base.append(f"--bwlimit={bwlimit_kb}")
-                print(f"     {YELLOW}INFO:{RESET} Limite de banda do rsync definido para {bwlimit_mb} MB/s ({bwlimit_kb} KB/s)")
+                logger.info(f"     Limite de banda do rsync definido para {bwlimit_mb} MB/s ({bwlimit_kb} KB/s)")
 
             rsync_cmd_base.extend([base_path, bak_path])
             
@@ -395,23 +407,21 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_
                 'cmd': rsync_cmd_base
             })
             
-            # Prepara o comando blockcommit (mescla o snapshot de volta na base)
             cmds_commit.append({
                 'dev': target_dev,
                 'cmd': ['virsh', 'blockcommit', domain_name, target_dev, '--active', '--pivot', '--verbose']
             })
             
-            print(f"  -> Disco {CYAN}{target_dev}{RESET}:")
-            print(f"     Base (Origem): {base_path}")
-            print(f"     Snap (Temp):   {snap_path}") # Agora será único
-            print(f"     Backup (Dest): {bak_path}")
+            logger.info(f"  -> Disco {target_dev}:")
+            logger.info(f"     Base (Origem): {base_path}")
+            logger.info(f"     Snap (Temp):   {snap_path}")
+            logger.info(f"     Backup (Dest): {bak_path}")
 
         # --- Executar Comandos ---
-
         start_time = time.time()
 
-        # [MUDANÇA] PASSO 1: Lógica de retry para --quiesce
-        print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 1: Criando snapshot '{CYAN}{logical_snapshot_name}{RESET}'...")
+        # PASSO 1: Lógica de retry para --quiesce
+        logger.info(f"[Modo Snapshot] PASSO 1: Criando snapshot '{logical_snapshot_name}'...")
         
         max_quiesce_attempts = 3
         retry_delay_seconds = 15
@@ -419,145 +429,139 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_
         quiesce_success = False
         for attempt in range(max_quiesce_attempts):
             try:
-                print(f"  -> {CYAN}Tentativa {attempt + 1} de {max_quiesce_attempts} com '--quiesce'...{RESET}")
+                logger.info(f"  -> Tentativa {attempt + 1} de {max_quiesce_attempts} com '--quiesce'...")
                 run_subprocess(cmd_snapshot_quiesce)
-                quiesce_success = True # Sucesso!
-                snapshot_created = True # Informa ao handler de exceção que o snapshot foi criado
-                print(f"  -> {GREEN}Snapshot com '--quiesce' criado com sucesso.{RESET}")
-                break # Sai do loop 'for'
+                quiesce_success = True
+                snapshot_created = True 
+                logger.info("  -> Snapshot com '--quiesce' criado com sucesso.")
+                break 
             except Exception as e:
-                error_details = e.stderr if hasattr(e, 'stderr') else str(e)
-                print(f"     {YELLOW}Falha na tentativa {attempt + 1} com '--quiesce': {error_details.strip()}{RESET}")
+                logger.warning(f"Falha na tentativa {attempt + 1} com '--quiesce'.")
                 
                 if attempt < max_quiesce_attempts - 1:
-                    print(f"     {CYAN}Aguardando {retry_delay_seconds}s antes de tentar novamente...{RESET}")
+                    logger.info(f"Aguardando {retry_delay_seconds}s antes de tentar novamente...")
                     time.sleep(retry_delay_seconds)
                 else:
-                    print(f"  -> {RED}Todas as {max_quiesce_attempts} tentativas com '--quiesce' falharam.{RESET}")
+                    logger.error(f"Todas as {max_quiesce_attempts} tentativas com '--quiesce' falharam.")
 
         # Fallback se as tentativas com --quiesce falharam
         if not quiesce_success:
-            print(f"  -> {YELLOW}AVISO:{RESET} Não foi possível criar snapshot com '--quiesce'.")
-            print(f"  -> {CYAN}Tentando uma última vez {RED}SEM '--quiesce'{RESET}. {YELLOW}O backup pode não ser 100% consistente.{RESET}")
+            logger.warning("Não foi possível criar snapshot com '--quiesce'.")
+            logger.warning("Tentando uma última vez SEM '--quiesce'. O backup pode não ser 100% consistente.")
             
-            # Cria o comando sem --quiesce
             cmd_snapshot_no_quiesce = [item for item in cmd_snapshot_quiesce if item != '--quiesce']
             
             try:
                 run_subprocess(cmd_snapshot_no_quiesce)
-                snapshot_created = True # Sucesso!
-                print(f"  -> {GREEN}Snapshot {RED}SEM '--quiesce'{GREEN} criado com sucesso.{RESET}")
+                snapshot_created = True
+                logger.info("  -> Snapshot SEM '--quiesce' criado com sucesso.")
             except Exception as e:
-                # Se até isso falhou, o script deve parar.
-                print(f"  -> {RED}Falha catastrófica:{RESET} A tentativa final sem '--quiesce' também falhou.")
-                raise e # Re-levanta a exceção para o handler principal
+                logger.error("Falha catastrófica: A tentativa final sem '--quiesce' também falhou.")
+                raise e 
         
-        print(f"  -> {GREEN}Discos base estão congelados.{RESET}")
-        # [FIM DA MUDANÇA]
+        logger.info("Discos base estão congelados.")
 
         # PASSO 2: Fazer backup (rsync)
-        print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 2: Executando rsync dos discos base...")
+        logger.info("[Modo Snapshot] PASSO 2: Executando rsync dos discos base...")
         for item in cmds_rsync:
-            print(f"  -> Sincronizando disco {CYAN}{item['dev']}{RESET}...")
+            logger.info(f"Sincronizando disco {item['dev']}...")
             run_subprocess(item['cmd'])
-            print(f"  -> {GREEN}Sincronização de {item['dev']} concluída.{RESET}")
+            logger.info(f"Sincronização de {item['dev']} concluída.")
         
         # PASSO 3: Blockcommit (Pivot)
-        print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 3: Executando blockcommit (pivot) para mesclar dados...")
+        logger.info("[Modo Snapshot] PASSO 3: Executando blockcommit (pivot) para mesclar dados...")
         for item in cmds_commit:
-            print(f"  -> Mesclando disco {CYAN}{item['dev']}{RESET}...")
+            logger.info(f"Mesclando disco {item['dev']}...")
             run_subprocess(item['cmd'])
-            print(f"  -> {GREEN}Mesclagem de {item['dev']} concluída.{RESET}")
+            logger.info(f"Mesclagem de {item['dev']} concluída.")
             
         # PASSO 4: Limpar metadados do snapshot
-        print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 4: Removendo metadados do snapshot...")
+        logger.info("[Modo Snapshot] PASSO 4: Removendo metadados do snapshot...")
         cmd_snap_delete = ['virsh', 'snapshot-delete', domain_name, logical_snapshot_name, '--metadata']
         run_subprocess(cmd_snap_delete)
         
         end_time = time.time()
         time_elapsed_min = (end_time - start_time) / 60
 
-        print(f"\n{GREEN}=================================================={RESET}")
-        print(f"{GREEN}Backup concluído com sucesso! (Modo Snapshot){RESET}")
-        print(f"Tempo total: {time_elapsed_min:.2f} minutos")
-        print(f"{GREEN}INFO:{RESET} Os arquivos de snapshot temporários (ex: *.qcow2.snap) são removidos automaticamente pelo libvirt após o blockcommit.")
-        print("Arquivos Gerados:")
+        logger.info("==================================================")
+        logger.info("Backup concluído com sucesso! (Modo Snapshot)")
+        logger.info(f"Tempo total: {time_elapsed_min:.2f} minutos")
+        logger.info("INFO: Os arquivos de snapshot temporários (ex: *.qcow2.snap) são removidos automaticamente pelo libvirt após o blockcommit.")
+        logger.info("Arquivos Gerados:")
         for dev, paths in snapshot_files_map.items():
-            print(f"  -> Disco {CYAN}{dev}{RESET}: {paths['bak']}")
-        print(f"{GREEN}=================================================={RESET}")
+            logger.info(f"  -> Disco {dev}: {paths['bak']}")
+        logger.info("==================================================")
 
     except Exception as e:
-        print(f"\n{RED}*{RESET} ERROR: Falha catastrófica durante o backup (Modo Snapshot).", file=sys.stderr)
+        logger.error("Falha catastrófica durante o backup (Modo Snapshot).")
         
         if not snapshot_created:
-            print(f"{YELLOW}*{RESET} ATTENTION: Falha ocorreu ANTES da criação do snapshot.")
-            print(f"{GREEN}*{RESET} INFO: O estado da VM deve estar normal. Nenhum snapshot foi criado.")
+            logger.warning("Falha ocorreu ANTES da criação do snapshot.")
+            logger.info("O estado da VM deve estar normal. Nenhum snapshot foi criado.")
         else:
-            print(f"{RED}******************************************************")
-            print(f"{RED}* ATTENTION: FALHA CRÍTICA APÓS CRIAÇÃO DO SNAPSHOT *")
-            print(f"{RED}******************************************************")
-            print(f"{YELLOW}  A VM PODE ESTAR EM ESTADO INCONSISTENTE.")
-            print(f"{YELLOW}  O snapshot '{CYAN}{logical_snapshot_name}{RESET}' PODE AINDA ESTAR ATIVO.")
-            print(f"{YELLOW}  Os discos podem estar apontando para:{RESET}")
+            logger.critical("******************************************************")
+            logger.critical("* ATTENTION: FALHA CRÍTICA APÓS CRIAÇÃO DO SNAPSHOT *")
+            logger.critical("******************************************************")
+            logger.warning("A VM PODE ESTAR EM ESTADO INCONSISTENTE.")
+            logger.warning(f"O snapshot '{logical_snapshot_name}' PODE AINDA ESTAR ATIVO.")
+            logger.warning("Os discos podem estar apontando para:")
             for dev, paths in snapshot_files_map.items():
-                 print(f"{YELLOW}    -> {dev}: {paths['snap']}{RESET}")
-            print(f"{RED}  AÇÃO MANUAL É PROVAVELMENTE NECESSÁRIA.")
-            print(f"{YELLOW}  Verifique com 'virsh domblklist {domain_name}' e 'virsh snapshot-list {domain_name}'.")
-            print(f"{YELLOW}  Pode ser necessário executar 'virsh blockcommit' e 'virsh snapshot-delete' manualmente.{RESET}")
+                 logger.warning(f"    -> {dev}: {paths['snap']}")
+            logger.critical("AÇÃO MANUAL É PROVAVELMENTE NECESSÁRIA.")
+            logger.warning(f"Verifique com 'virsh domblklist {domain_name}' e 'virsh snapshot-list {domain_name}'.")
+            logger.warning("Pode ser necessário executar 'virsh blockcommit' e 'virsh snapshot-delete' manualmente.")
 
-        # Limpa arquivos .bak parciais que podem ter sido criados
-        print(f"\n{YELLOW}*{RESET} ATTENTION: Removendo arquivos de backup (.bak) parciais desta execução...")
+        logger.warning("Removendo arquivos de backup (.bak) parciais desta execução...")
         for dev, paths in snapshot_files_map.items():
             if os.path.exists(paths['bak']):
                 try:
                     os.remove(paths['bak'])
-                    print(f"    -> {RED}Removido:{RESET} {os.path.basename(paths['bak'])}")
+                    logger.info(f"    -> Removido: {os.path.basename(paths['bak'])}")
                 except OSError as e_rm:
-                    print(f"{RED}*{RESET} ERROR: Falha ao remover {CYAN}{paths['bak']}{RESET}: {e_rm}", file=sys.stderr)
+                    logger.error(f"Falha ao remover {paths['bak']}: {e_rm}")
         
-        # Propaga o erro para o handler principal
-        raise
+        raise # Propaga o erro para o handler principal
 
 
 # --- FUNÇÃO PRINCIPAL ---
 
-def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backup_mode, bwlimit_mb):
+def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backup_mode, bwlimit_mb, timestamp):
     
     conn = None
     dom = None
     
     try:
-        print(f"{GREEN}*{RESET} INFO: Conectando ao hypervisor em: {CYAN}{CONNECT_URI}{RESET}")
+        logger.info(f"Conectando ao hypervisor em: {CONNECT_URI}")
         conn = libvirt.open(CONNECT_URI)
         if conn is None:
             raise Exception(f"Falha ao abrir conexão com o hypervisor em {CONNECT_URI}")
 
-        print(f"\n{CYAN}--- Diagnóstico de Versão ---{RESET}")
+        logger.info("--- Diagnóstico de Versão ---")
         try:
             py_ver = importlib.metadata.version('libvirt-python')
-            print(f"  -> {CYAN}Versão libvirt-python:{RESET} {py_ver}")
+            logger.info(f"  -> Versão libvirt-python: {py_ver}")
         except importlib.metadata.PackageNotFoundError:
-            print(f"  -> {YELLOW}Versão libvirt-python:{RESET} Não encontrada via metadata.")
+            logger.warning("  -> Versão libvirt-python: Não encontrada via metadata.")
 
         try:
             daemon_ver_int = conn.getVersion()
             major = daemon_ver_int // 1000000
             minor = (daemon_ver_int % 1000000) // 1000
             release = daemon_ver_int % 1000
-            print(f"  -> {CYAN}Versão libvirt-daemon (serviço):{RESET} {major}.{minor}.{release}")
+            logger.info(f"  -> Versão libvirt-daemon (serviço): {major}.{minor}.{release}")
         except Exception as e:
-            print(f"  -> {YELLOW}Versão libvirt-daemon (serviço):{RESET} Falha ao obter ({e})")
-        print(f"{CYAN}-------------------------------{RESET}")
+            logger.warning(f"  -> Versão libvirt-daemon (serviço): Falha ao obter ({e})")
+        logger.info("-------------------------------")
 
         try:
             dom = conn.lookupByName(domain_name)
-            print(f"{GREEN}*{RESET} INFO: Domínio '{CYAN}{domain_name}{RESET}' encontrado.")
+            logger.info(f"Domínio '{domain_name}' encontrado.")
         except libvirt.libvirtError:
-            print(f"{RED}*{RESET} ERROR: Domínio '{CYAN}{domain_name}{RESET}' não encontrado.", file=sys.stderr)
+            logger.error(f"Domínio '{domain_name}' não encontrado.")
             sys.exit(1)
 
         # --- VERIFICAÇÃO DE JOB PRESO ---
-        print(f"\n{GREEN}*{RESET} INFO: Verificando se há jobs de backup presos...")
+        logger.info("Verificando se há jobs de backup presos...")
         try:
             job_info = dom.jobInfo()
             
@@ -567,65 +571,64 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backu
                 job_type = job_info[JOB_INFO_TYPE_INDEX]
 
             if job_type != libvirt.VIR_DOMAIN_JOB_NONE:
-                print(f"{YELLOW}*{RESET} ATTENTION: Um job (tipo {job_type}) já está em execução para este domínio.")
-                print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job anterior (via CLI) para iniciar o novo backup...")
+                logger.warning(f"Um job (tipo {job_type}) já está em execução para este domínio.")
+                logger.warning("Tentando abortar o job anterior (via CLI) para iniciar o novo backup...")
                 
                 try:
                     subprocess.run(['virsh', 'domjobabort', domain_name], 
                                    check=True, 
                                    capture_output=True, 
                                    text=True)
-                    print(f"  -> {GREEN}Comando 'virsh domjobabort' enviado.{RESET}")
-                    print(f"  -> {CYAN}Aguardando 3s para o job ser limpo...{RESET}")
+                    logger.info("Comando 'virsh domjobabort' enviado.")
+                    logger.info("Aguardando 3s para o job ser limpo...")
                     time.sleep(3) 
                 except Exception as e_abort_cli:
                     error_output = e_abort_cli.stderr if hasattr(e_abort_cli, 'stderr') else str(e_abort_cli)
-                    print(f"{RED}*{RESET} ERROR: Falha ao tentar 'virsh domjobabort': {error_output}", file=sys.stderr)
-                    print(f"{RED}*{RESET} ERROR: O backup não pode continuar.")
+                    logger.error(f"Falha ao tentar 'virsh domjobabort': {error_output}")
+                    logger.error("O backup não pode continuar.")
                     sys.exit(1)
                     
             else:
-                print(f"  -> {GREEN}Nenhum job ativo encontrado. O backup pode prosseguir.{RESET}")
+                logger.info("Nenhum job ativo encontrado. O backup pode prosseguir.")
 
         except libvirt.libvirtError as e_jobinfo:
-            print(f"{RED}*{RESET} ERROR: Falha ao verificar informações do job: {e_jobinfo}", file=sys.stderr)
+            logger.error(f"Falha ao verificar informações do job: {e_jobinfo}")
             sys.exit(1)
         # --- [FIM] VERIFICAÇÃO DE JOB PRESO ---
 
         backup_dir = os.path.join(backup_base_dir, domain_name)
         os.makedirs(backup_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # [MUDANÇA] timestamp é recebido como argumento, não mais gerado aqui
 
         disk_details = get_disk_details_from_xml(dom, disk_targets)
         if disk_details is None:
             raise Exception("Falha ao obter detalhes dos discos. Verifique os logs acima.")
 
         # --- VERIFICAÇÃO DE PRÉ-EXECUÇÃO (Snapshot em Snapshot) ---
-        print(f"\n{GREEN}*{RESET} INFO: Verificando se os discos de origem já são snapshots...")
+        logger.info("Verificando se os discos de origem já são snapshots...")
         disks_on_snapshot = []
         
         for target_dev, info in disk_details.items():
             disk_filename = os.path.basename(info['path'])
             
-            # Heurística: se o nome do arquivo contém "_snapshot_", é um snapshot.
             if "_snapshot_" in disk_filename:
                 disks_on_snapshot.append(target_dev)
-                print(f"  -> {RED}PERIGO:{RESET} Disco '{CYAN}{target_dev}{RESET}' já está rodando em um snapshot:")
-                print(f"     {RED}{disk_filename}{RESET}")
+                logger.critical(f"PERIGO: Disco '{target_dev}' já está rodando em um snapshot:")
+                logger.critical(f"     {disk_filename}")
 
         if disks_on_snapshot:
-            print(f"\n{RED}******************************************************")
-            print(f"{RED}* {YELLOW}ABORTANDO: BACKUP EM DISCO JÁ SNAPSHOTADO{RED} *")
-            print(f"{RED}******************************************************")
-            print(f"{YELLOW}Os seguintes discos já estão em um estado de snapshot:")
+            logger.critical("******************************************************")
+            logger.critical("* ABORTANDO: BACKUP EM DISCO JÁ SNAPSHOTADO *")
+            logger.critical("******************************************************")
+            logger.warning("Os seguintes discos já estão em um estado de snapshot:")
             for dev in disks_on_snapshot:
-                print(f"  - {CYAN}{dev}{RESET}")
-            print(f"{YELLOW}Executar um novo backup (especialmente o modo snapshot) é perigoso.")
-            print(f"Por favor, consolide (commit) os snapshots pendentes antes de continuar.")
-            print(f"{YELLOW}Use 'virsh domblklist {domain_name}' e 'virsh blockcommit' para corrigir.{RESET}")
-            sys.exit(1) # Abortar
+                logger.warning(f"  - {dev}")
+            logger.warning("Executar um novo backup (especialmente o modo snapshot) é perigoso.")
+            logger.warning("Por favor, consolide (commit) os snapshots pendentes antes de continuar.")
+            logger.warning(f"Use 'virsh domblklist {domain_name}' e 'virsh blockcommit' para corrigir.")
+            sys.exit(1)
         else:
-            print(f"  -> {GREEN}Verificação OK.{RESET} Nenhum disco de origem está em estado de snapshot.")
+            logger.info("  -> Verificação OK. Nenhum disco de origem está em estado de snapshot.")
         # --- [FIM] VERIFICAÇÃO DE PRÉ-EXECUÇÃO ---
             
         if not check_available_space(backup_dir, disk_details):
@@ -637,50 +640,42 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backu
             run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp, retention_days)
         
         elif backup_mode == 'snapshot':
-            # Passa o bwlimit (em MB) para a função
             run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_mb)
         
         else:
-            # Isso não deve acontecer devido ao 'choices' do argparse
             raise Exception(f"Modo de backup desconheido: {backup_mode}")
 
-
     except KeyboardInterrupt:
-        print(f"\n{RED}*{RESET} INTERRUPÇÃO: Script interrompido pelo usuário (Ctrl+C).")
-        
-        # A lógica de limpeza específica do modo (abortar job, remover arquivos)
-        # é tratada dentro das próprias funções 'run_backup_*' ou nos seus 'except'
-        
-        # O modo 'snapshot' limpa seus próprios arquivos .bak no 'except'
-        # O modo 'libvirt' precisa de uma verificação aqui
+        logger.warning("\nINTERRUPÇÃO: Script interrompido pelo usuário (Ctrl+C).")
         
         if backup_mode == 'libvirt' and dom is not None:
-             print(f"{YELLOW}*{RESET} ATTENTION: Tentando abortar o job de backup (via CLI)...")
+             logger.warning("Tentando abortar o job de backup (via CLI)...")
              try:
                  subprocess.run(['virsh', 'domjobabort', domain_name], 
                                 check=True, 
                                 capture_output=True, 
                                 text=True)
-                 print(f"  -> {GREEN}Comando 'virsh domjobabort' enviado.{RESET}")
+                 logger.info("Comando 'virsh domjobabort' enviado.")
              except Exception as e_abort_cli:
                  error_output = e_abort_cli.stderr if hasattr(e_abort_cli, 'stderr') else str(e_abort_cli)
-                 print(f"{RED}*{RESET} ERROR: Falha ao tentar domjobabort: {error_output}", file=sys.stderr)
+                 logger.error(f"Falha ao tentar domjobabort: {error_output}")
         
-        print(f"{RED}*{RESET} Script encerrado.")
+        logger.error("Script encerrado.")
         sys.exit(130) 
 
     except Exception as e:
-        print(f"\n{RED}*{RESET} ERROR: Erro inesperado na execução principal: {e}", file=sys.stderr)
+        logger.exception(f"Erro inesperado na execução principal: {e}")
         sys.exit(1)
         
     finally:
         if conn:
             conn.close()
-            print(f"\n{GREEN}*{RESET} INFO: Conexão com o hypervisor fechada.")
+            logger.info("Conexão com o hypervisor fechada.")
 
 # --- EXECUÇÃO ---
 
 if __name__ == "__main__":
+    
     parser = argparse.ArgumentParser(description="Script de backup live KVM/QEMU com seleção de disco.")
     
     parser.add_argument('--domain', 
@@ -714,42 +709,56 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # [MUDANÇA] Gerar timestamp e configurar logging PRIMEIRO
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    setup_logging(args.domain, timestamp)
+    
     # --- Confirmação de Modo Snapshot ---
+    # (Usa print/input direto para cores e interação, mas loga o resultado)
     if args.mode == 'snapshot':
-        print(f"\n{RED}******************************************************")
-        print(f"{RED}* {YELLOW}AVISO DE MODO PERIGOSO: MODO SNAPSHOT SELECIONADO{RED} *")
-        print(f"{RED}******************************************************")
-        print(f"{YELLOW}Este modo (snapshot + rsync + blockcommit) é {RED}ALTAMENTE ARRIScado{YELLOW}.")
+        logger.info("Modo snapshot detectado. Exibindo aviso de segurança interativo.")
+        # Códigos de cor SÓ para este bloco
+        RED_TERM = '\033[31m'
+        YELLOW_TERM = '\033[33m'
+        RESET_TERM = '\033[0m'
+        CYAN_TERM = '\033[36m'
+        
+        print(f"\n{RED_TERM}******************************************************")
+        print(f"* {YELLOW_TERM}AVISO DE MODO PERIGOSO: MODO SNAPSHOT SELECIONADO{RED_TERM} *")
+        print(f"******************************************************{RESET_TERM}")
+        print(f"{YELLOW_TERM}Este modo (snapshot + rsync + blockcommit) é {RED_TERM}ALTAMENTE ARRISCADO{YELLOW_TERM}.")
         print("Se o script falhar no meio do processo (ex: falta de espaço, erro no rsync),")
-        print(f"a VM pode ficar em um {RED}ESTADO INCONSISTENTE{YELLOW} ou {RED}CORROMPIDO{YELLOW}.")
-        print(f"{YELLOW}Benefícios: Pode ser mais rápido (especialmente com rsync delta).")
-        print(f"{YELLOW}Riscos:     Requer intervenção manual ('virsh blockcommit') em caso de falha.")
-        print(f" -> {RED}Use por sua conta e risco.{RESET}")
+        print(f"a VM pode ficar em um {RED_TERM}ESTADO INCONSISTENTE{YELLOW_TERM} ou {RED_TERM}CORROMPIDO{YELLOW_TERM}.")
+        print(f"{YELLOW_TERM}Benefícios: Pode ser mais rápido (especialmente com rsync delta).")
+        print(f"Riscos:     Requer intervenção manual ('virsh blockcommit') em caso de falha.")
+        print(f" -> {RED_TERM}Use por sua conta e risco.{RESET_TERM}")
         
         try:
-            # Primeira confirmação
             print("\nPara continuar, digite 'y' e pressione Enter:")
-            confirm1 = input(f"{CYAN}> {RESET}").strip().lower()
+            confirm1 = input(f"{CYAN_TERM}> {RESET_TERM}").strip().lower()
             
             if confirm1 != 'y':
-                print(f"{RED}*{RESET} ABORTADO: Primeira confirmação falhou.")
+                logger.error("ABORTADO: Primeira confirmação falhou.")
                 sys.exit(1)
             
-            # Segunda confirmação
             print("\nTem certeza? Esta ação é arriscada. Digite 'y' novamente para confirmar:")
-            confirm2 = input(f"{CYAN}> {RESET}").strip().lower()
+            confirm2 = input(f"{CYAN_TERM}> {RESET_TERM}").strip().lower()
             
             if confirm2 != 'y':
-                print(f"{RED}*{RESET} ABORTADO: Segunda confirmação falhou.")
+                logger.error("ABORTADO: Segunda confirmação falhou.")
                 sys.exit(1)
             
-            print(f"\n{GREEN}*{RESET} Confirmação dupla recebida. Iniciando o backup em modo snapshot...{RESET}")
+            logger.info("Confirmação dupla recebida. Iniciando o backup em modo snapshot...")
             time.sleep(2) # Pausa para o usuário ler
             
         except KeyboardInterrupt:
-            print(f"\n{RED}*{RESET} ABORTADO: Operação cancelada pelo usuário.")
+            logger.error("\nABORTADO: Operação cancelada pelo usuário.")
             sys.exit(130)
     # --- [FIM] Confirmação de Modo Snapshot ---
     
-    # Passa args.bwlimit (MB) para a função principal
-    run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.mode, args.bwlimit)
+    try:
+        # [MUDANÇA] Passa o timestamp para a função principal
+        run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.mode, args.bwlimit, timestamp)
+    except Exception as e:
+        logger.critical(f"Uma exceção não tratada encerrou o script: {e}")
+        sys.exit(1)
