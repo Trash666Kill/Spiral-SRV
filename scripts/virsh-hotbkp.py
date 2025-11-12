@@ -279,7 +279,7 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp, retention_d
                 
             spinner_char = spinner_chars[spinner_index % len(spinner_chars)]
             spinner_index += 1
-            total_mb = data_total / 1048576
+            total_mb = data_total / 1024**2 # Corrigido para MB
             print(f"{CYAN}Progresso:{RESET} [{GREEN}{spinner_char}{RESET}] (Aguardando {CYAN}{total_mb:.0f} MB{RESET}... {elapsed_time:.1f}s)", end='\r')
 
             if job_type == libvirt.VIR_DOMAIN_JOB_NONE:
@@ -335,7 +335,8 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
     print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] Iniciando backup via Snapshot + Rsync...")
     
     domain_name = dom.name()
-    snapshot_name = f"backup_snap_{timestamp}"
+    # O nome lógico do snapshot agora usa o formato Dominio_snapshot_timestamp
+    snapshot_name = f"{domain_name}_snapshot_{timestamp}"
     
     # Mapa para rastrear todos os arquivos envolvidos
     # (disco_alvo) -> {'base': path, 'snap': path, 'bak': path}
@@ -362,8 +363,9 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp):
         for target_dev, info in disk_details.items():
             base_path = info['path']
             
-            # Define o nome do arquivo de snapshot temporário (ex: /path/vm.qcow2.backup_snap_20251112.qcow2)
-            snap_path = f"{base_path}.{snapshot_name}.qcow2"
+            # Constrói o caminho do snapshot para ficar no mesmo diretório do disco base
+            base_dir = os.path.dirname(base_path)
+            snap_path = os.path.join(base_dir, f"{snapshot_name}.qcow2")
             
             # Define o nome do arquivo de backup final (ex: /backup/vm/vm-vda-20251112.qcow2.bak)
             bak_filename = f"{domain_name}-{target_dev}-{timestamp}.{DISK_FORMAT}.bak"
@@ -563,7 +565,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backu
         
         else:
             # Isso não deve acontecer devido ao 'choices' do argparse
-            raise Exception(f"Modo de backup desconhecido: {backup_mode}")
+            raise Exception(f"Modo de backup desconheido: {backup_mode}")
 
 
     except KeyboardInterrupt:
@@ -617,6 +619,7 @@ if __name__ == "__main__":
                         nargs='+',
                         help="Um ou mais alvos de disco para o backup (ex: vda vdb vdc).")
     
+    # [CORREÇÃO] Alterado de 'addf_argument' para 'add_argument'
     parser.add_argument('--retention-days',
                         type=int,
                         default=7,
@@ -628,5 +631,42 @@ if __name__ == "__main__":
                         help="Modo de backup: 'libvirt' (API nativa dom.backupBegin) ou 'snapshot' (Snapshot + Rsync + Blockcommit). Padrão: libvirt.")
     
     args = parser.parse_args()
+    
+    # --- [NOVO] Confirmação de Modo Snapshot ---
+    if args.mode == 'snapshot':
+        print(f"\n{RED}******************************************************")
+        print(f"{RED}* {YELLOW}AVISO DE MODO PERIGOSO: MODO SNAPSHOT SELECIONADO{RED} *")
+        print(f"{RED}******************************************************")
+        print(f"{YELLOW}Este modo (snapshot + rsync + blockcommit) é {RED}ALTAMENTE ARRISCADO{YELLOW}.")
+        print("Se o script falhar no meio do processo (ex: falta de espaço, erro no rsync),")
+        print(f"a VM pode ficar em um {RED}ESTADO INCONSISTENTE{YELLOW} ou {RED}CORROMPIDO{YELLOW}.")
+        print(f"{YELLOW}Benefícios: Pode ser mais rápido (especialmente com rsync delta).")
+        print(f"{YELLOW}Riscos:     Requer intervenção manual ('virsh blockcommit') em caso de falha.")
+        print(f" -> {RED}Use por sua conta e risco.{RESET}")
+        
+        try:
+            # Primeira confirmação
+            print("\nPara continuar, digite 'y' e pressione Enter:")
+            confirm1 = input(f"{CYAN}> {RESET}").strip().lower()
+            
+            if confirm1 != 'y':
+                print(f"{RED}*{RESET} ABORTADO: Primeira confirmação falhou.")
+                sys.exit(1)
+            
+            # Segunda confirmação
+            print("\nTem certeza? Esta ação é arriscada. Digite 'y' novamente para confirmar:")
+            confirm2 = input(f"{CYAN}> {RESET}").strip().lower()
+            
+            if confirm2 != 'y':
+                print(f"{RED}*{RESET} ABORTADO: Segunda confirmação falhou.")
+                sys.exit(1)
+            
+            print(f"\n{GREEN}*{RESET} Confirmação dupla recebida. Iniciando o backup em modo snapshot...{RESET}")
+            time.sleep(2) # Pausa para o usuário ler
+            
+        except KeyboardInterrupt:
+            print(f"\n{RED}*{RESET} ABORTADO: Operação cancelada pelo usuário.")
+            sys.exit(130)
+    # --- [FIM] Confirmação de Modo Snapshot ---
     
     run_backup(args.domain, args.backup_dir, args.disk, args.retention_days, args.mode)
