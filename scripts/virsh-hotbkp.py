@@ -347,8 +347,8 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_
     try:
         # --- Preparar Comandos ---
         
-        # Comando para criar o snapshot (PASSO 1)
-        cmd_snapshot = [
+        # [MUDANÇA] Nomeia o comando com --quiesce explicitamente
+        cmd_snapshot_quiesce = [
             'virsh', 'snapshot-create-as', 
             '--domain', domain_name, 
             '--name', logical_snapshot_name,  # Usa o nome lógico/grupo
@@ -363,7 +363,7 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_
         for target_dev, info in disk_details.items():
             base_path = info['path']
             
-            # [CORREÇÃO] Gera um NOME DE ARQUIVO de snapshot ÚNICO para CADA disco
+            # Gera um NOME DE ARQUIVO de snapshot ÚNICO para CADA disco
             base_dir = os.path.dirname(base_path)
             snap_filename = f"{domain_name}_{target_dev}_snapshot_{timestamp}.qcow2"
             snap_path = os.path.join(base_dir, snap_filename)
@@ -376,8 +376,8 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_
             snapshot_files_map[target_dev] = {'base': base_path, 'snap': snap_path, 'bak': bak_path}
             
             # Adiciona a especificação do disco ao comando de snapshot
-            # (Diz ao libvirt para criar o snap_path como o novo disco ativo para vda)
-            cmd_snapshot.extend(['--diskspec', f"{target_dev},file={snap_path},driver=qcow2"])
+            diskspec = f"{target_dev},file={snap_path},driver=qcow2"
+            cmd_snapshot_quiesce.extend(['--diskspec', diskspec])
             
             # Prepara o comando rsync (base congelada -> destino de backup)
             rsync_cmd_base = ['rsync', '-avh', '--progress', '--inplace']
@@ -410,11 +410,50 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit_
 
         start_time = time.time()
 
-        # PASSO 1: Criar o snapshot
+        # [MUDANÇA] PASSO 1: Lógica de retry para --quiesce
         print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 1: Criando snapshot '{CYAN}{logical_snapshot_name}{RESET}'...")
-        run_subprocess(cmd_snapshot)
-        snapshot_created = True
-        print(f"  -> {GREEN}Snapshot criado.{RESET} Os discos base estão congelados.")
+        
+        max_quiesce_attempts = 3
+        retry_delay_seconds = 15
+        
+        quiesce_success = False
+        for attempt in range(max_quiesce_attempts):
+            try:
+                print(f"  -> {CYAN}Tentativa {attempt + 1} de {max_quiesce_attempts} com '--quiesce'...{RESET}")
+                run_subprocess(cmd_snapshot_quiesce)
+                quiesce_success = True # Sucesso!
+                snapshot_created = True # Informa ao handler de exceção que o snapshot foi criado
+                print(f"  -> {GREEN}Snapshot com '--quiesce' criado com sucesso.{RESET}")
+                break # Sai do loop 'for'
+            except Exception as e:
+                error_details = e.stderr if hasattr(e, 'stderr') else str(e)
+                print(f"     {YELLOW}Falha na tentativa {attempt + 1} com '--quiesce': {error_details.strip()}{RESET}")
+                
+                if attempt < max_quiesce_attempts - 1:
+                    print(f"     {CYAN}Aguardando {retry_delay_seconds}s antes de tentar novamente...{RESET}")
+                    time.sleep(retry_delay_seconds)
+                else:
+                    print(f"  -> {RED}Todas as {max_quiesce_attempts} tentativas com '--quiesce' falharam.{RESET}")
+
+        # Fallback se as tentativas com --quiesce falharam
+        if not quiesce_success:
+            print(f"  -> {YELLOW}AVISO:{RESET} Não foi possível criar snapshot com '--quiesce'.")
+            print(f"  -> {CYAN}Tentando uma última vez {RED}SEM '--quiesce'{RESET}. {YELLOW}O backup pode não ser 100% consistente.{RESET}")
+            
+            # Cria o comando sem --quiesce
+            cmd_snapshot_no_quiesce = [item for item in cmd_snapshot_quiesce if item != '--quiesce']
+            
+            try:
+                run_subprocess(cmd_snapshot_no_quiesce)
+                snapshot_created = True # Sucesso!
+                print(f"  -> {GREEN}Snapshot {RED}SEM '--quiesce'{GREEN} criado com sucesso.{RESET}")
+            except Exception as e:
+                # Se até isso falhou, o script deve parar.
+                print(f"  -> {RED}Falha catastrófica:{RESET} A tentativa final sem '--quiesce' também falhou.")
+                raise e # Re-levanta a exceção para o handler principal
+        
+        print(f"  -> {GREEN}Discos base estão congelados.{RESET}")
+        # [FIM DA MUDANÇA]
 
         # PASSO 2: Fazer backup (rsync)
         print(f"\n{GREEN}*{RESET} INFO: [Modo Snapshot] PASSO 2: Executando rsync dos discos base...")
@@ -561,7 +600,7 @@ def run_backup(domain_name, backup_base_dir, disk_targets, retention_days, backu
         if disk_details is None:
             raise Exception("Falha ao obter detalhes dos discos. Verifique os logs acima.")
 
-        # --- [NOVO] VERIFICAÇÃO DE PRÉ-EXECUÇÃO (Snapshot em Snapshot) ---
+        # --- VERIFICAÇÃO DE PRÉ-EXECUÇÃO (Snapshot em Snapshot) ---
         print(f"\n{GREEN}*{RESET} INFO: Verificando se os discos de origem já são snapshots...")
         disks_on_snapshot = []
         
@@ -680,7 +719,7 @@ if __name__ == "__main__":
         print(f"\n{RED}******************************************************")
         print(f"{RED}* {YELLOW}AVISO DE MODO PERIGOSO: MODO SNAPSHOT SELECIONADO{RED} *")
         print(f"{RED}******************************************************")
-        print(f"{YELLOW}Este modo (snapshot + rsync + blockcommit) é {RED}ALTAMENTE ARRISCADO{YELLOW}.")
+        print(f"{YELLOW}Este modo (snapshot + rsync + blockcommit) é {RED}ALTAMENTE ARRIScado{YELLOW}.")
         print("Se o script falhar no meio do processo (ex: falta de espaço, erro no rsync),")
         print(f"a VM pode ficar em um {RED}ESTADO INCONSISTENTE{YELLOW} ou {RED}CORROMPIDO{YELLOW}.")
         print(f"{YELLOW}Benefícios: Pode ser mais rápido (especialmente com rsync delta).")
