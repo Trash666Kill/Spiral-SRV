@@ -1,8 +1,7 @@
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 10
-EnvironmentFile=/etc/environment
-ExecStart=/root/.services/main.sh
+ExecStart=/usr/local/bin/prebuild.sh
 RemainAfterExit=true
 Restart=on-failure
 RestartSec=5s
