@@ -4,7 +4,6 @@ import argparse
 import configparser
 import os
 import random
-# import secrets # Não é mais necessário com sasl=off
 import shlex
 import socket
 import subprocess
