@@ -175,69 +175,85 @@ def check_available_space(backup_dir, disk_details):
         logger.error("Espaço insuficiente."); return False
     return True
 
-# --- [MODIFICADO] GERENCIAMENTO DE RETENÇÃO COM TRAVA DE SEGURANÇA ---
+# --- GERENCIAMENTO DE RETENÇÃO INTELIGENTE (1 por Dia + Retenção) ---
 def manage_retention(backup_dir, days):
     if not os.path.isdir(backup_dir): return
     
     cutoff = datetime.now() - timedelta(days=days)
-    valid_files = []
-    expired_files = []
+    
+    # Estruturas para classificação
+    backups = []
     
     try:
-        # Ordena por data de modificação (mais antigo primeiro)
-        files = sorted(
-            [f for f in os.listdir(backup_dir) if f.endswith('.bak')],
-            key=lambda x: os.path.getmtime(os.path.join(backup_dir, x))
-        )
+        # 1. Coletar todos os backups
+        for f in os.listdir(backup_dir):
+            if f.endswith('.bak'):
+                fp = os.path.join(backup_dir, f)
+                mtime = os.path.getmtime(fp)
+                dt = datetime.fromtimestamp(mtime)
+                # Guarda (caminho, datetime, data_str_YYYMMDD)
+                backups.append({'path': fp, 'dt': dt, 'date_key': dt.strftime('%Y-%m-%d')})
         
-        # Classificação
-        for f in files:
-            fp = os.path.join(backup_dir, f)
-            if os.path.isfile(fp):
-                mtime = datetime.fromtimestamp(os.path.getmtime(fp))
-                if mtime < cutoff:
-                    expired_files.append((fp, mtime))
-                else:
-                    valid_files.append((fp, mtime))
+        # 2. Ordenar por data (Mais recente primeiro)
+        backups.sort(key=lambda x: x['dt'], reverse=True)
+        
     except Exception as e:
-        logger.error(f"Erro ao listar retenção: {e}"); return
+        logger.error(f"Erro ao listar backups: {e}"); return
 
-    # Total atual de arquivos
-    total_backups = len(valid_files) + len(expired_files)
+    if not backups:
+        logger.info(f"--- RETENÇÃO: Nenhum backup anterior encontrado. ---")
+        return
 
-    if sys.stdout.isatty(): print()
-    logger.info(f"--- ANÁLISE DE RETENÇÃO ({days} dias) ---")
-    
-    # 1. Mostra Válidos
-    if valid_files:
-        logger.info("✅ VÁLIDOS (Mantidos):")
-        for fp, mtime in valid_files:
-            logger.info(f"   -> {os.path.basename(fp)} ({mtime.strftime('%d/%m/%Y %H:%M')})")
+    keep_list = []
+    delete_list = []
+    seen_days = set()
 
-    # 2. Processa Expirados com TRAVA DE SEGURANÇA
-    if expired_files:
-        logger.info("❌ EXPIRADOS (Analisando remoção...):")
-        
-        for fp, mtime in expired_files:
-            fname = os.path.basename(fp)
+    # 3. Processar Lógica (1 por dia + Validade)
+    for b in backups:
+        # Regra 1: Apenas um por dia (o mais recente desse dia)
+        if b['date_key'] in seen_days:
+            delete_list.append((b, "Redundante do mesmo dia"))
+        else:
+            # É o mais recente deste dia. Agora checa validade.
+            seen_days.add(b['date_key'])
             
-            # --- A TRAVA DE SEGURANÇA ---
-            # Se só existe 1 arquivo no total, NÃO deleta, independente da data.
-            if total_backups <= 1:
-                logger.warning(f"   -> 🔒 {fname} ({mtime.strftime('%d/%m/%Y %H:%M')})")
-                logger.warning("      -> AVISO: Único backup existente! Mantido por segurança.")
-                continue # Pula para o próximo (não deleta)
+            # Regra 2: Retenção de dias
+            if b['dt'] < cutoff:
+                delete_list.append((b, "Expirado (Idade)"))
+            else:
+                keep_list.append(b)
 
-            # Se tem mais de 1, pode deletar
+    # 4. TRAVA DE SEGURANÇA: Nunca zerar o diretório
+    if not keep_list and delete_list:
+        rescued, reason = delete_list.pop(0)
+        keep_list.append(rescued)
+        logger.warning(f"--- TRAVA DE SEGURANÇA ATIVADA ---")
+        logger.warning(f"O backup {os.path.basename(rescued['path'])} seria deletado ({reason}),")
+        logger.warning(f"mas foi mantido pois é o único backup restante.")
+
+    # 5. Relatório e Execução (SEM EMOJIS)
+    if sys.stdout.isatty(): print()
+    logger.info(f"--- ANÁLISE DE RETENÇÃO ({days} dias | 1 por dia) ---")
+
+    if keep_list:
+        logger.info("VÁLIDOS (Mantidos):")
+        for b in keep_list:
+            logger.info(f"   -> {os.path.basename(b['path'])} ({b['dt'].strftime('%d/%m %H:%M')})")
+    else:
+        logger.info("VÁLIDOS: Nenhum encontrado.")
+            
+    if delete_list:
+        logger.info("EXPIRADOS (Analisando remoção...):")
+        for b, reason in delete_list:
+            logger.info(f"   -> {os.path.basename(b['path'])} ({b['dt'].strftime('%d/%m %H:%M')}) - Motivo: {reason}")
             try:
-                os.remove(fp)
-                logger.info(f"   -> 🗑️  {fname} ({mtime.strftime('%d/%m/%Y %H:%M')}) REMOVIDO.")
-                total_backups -= 1 # Atualiza contagem
+                os.remove(b['path'])
+                logger.info("      -> [OK] Removido.")
             except Exception as e:
                 logger.error(f"      -> [ERRO] Falha ao remover: {e}")
     else:
-        logger.info("ℹ️  EXPIRADOS: Nenhum arquivo antigo.")
-    
+        logger.info("EXPIRADOS: Nenhum arquivo antigo para limpar.")
+
     logger.info("-" * 40)
     if sys.stdout.isatty(): print()
 
@@ -323,7 +339,8 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
         if not use_quiesce:
             run_subprocess(cmd_base); logger.info(" -> Snapshot padrão criado.")
 
-        logger.info("[Snapshot] Iniciando Cópia (CP)...")
+        # [MODIFICADO] Removido "(CP)" do log
+        logger.info("[Snapshot] Iniciando Cópia...")
         last_log_time = 0
         
         for cmd in copy_tasks:
