@@ -212,14 +212,9 @@ def check_clean_state(dom, disk_details):
             return False, f"Disco '{dev}' está sujo."
     return True, "Limpo"
 
-# [CORRIGIDO] Garante que o diretório da VM (backup_dir) seja criado
 def check_available_space(backup_dir, disk_details):
     needed = sum([os.path.getsize(i['path']) for i in disk_details.values()]) * (1 + SAFETY_MARGIN_PERCENT)
-    
-    # Cria o diretório FINAL (ex: .../Virt/Trixie) se não existir
     os.makedirs(backup_dir, exist_ok=True)
-    
-    # Verifica o espaço no diretório criado
     if needed > shutil.disk_usage(backup_dir).free:
         logger.error("Espaço insuficiente."); return False
     return True
@@ -274,81 +269,100 @@ def manage_retention(backup_dir, days):
     logger.info("-" * 40)
     if sys.stdout.isatty(): print()
 
-# --- BACKUP MODES ---
+# --- MONITORAMENTO E BACKUP ---
 
-def monitor_progress(source_total_bytes):
+def monitor_progress(dev_name, dest_file, total_bytes):
+    """
+    Exibe progresso de UM único disco na linha atual.
+    """
     spinner = "|/-\\"
-    last_log = 0
-    curr = 0
-    for f in FILES_TO_CLEANUP:
-        try:
-            if os.path.exists(f): curr += os.path.getsize(f)
-        except: pass
+    spin = spinner[int(time.time()*4)%4]
     
-    perc = (curr / source_total_bytes * 100) if source_total_bytes > 0 else 0
-    msg = f"[{spinner[int(time.time()*4)%4]}] Tamanho: {curr} / {source_total_bytes} Bytes ({perc:.1f}%)"
+    curr = 0
+    try:
+        if os.path.exists(dest_file): curr = os.path.getsize(dest_file)
+    except: pass
+    
+    perc = (curr / total_bytes * 100) if total_bytes > 0 else 0
+    msg = f"INFO: [{dev_name}] [{spin}] {curr} / {total_bytes} Bytes ({perc:.1f}%)"
     
     if sys.stdout.isatty():
-        sys.stdout.write(f"\rINFO: {msg}".ljust(80))
+        sys.stdout.write(f"\r\033[K{msg}") # \033[K limpa até o fim da linha
         sys.stdout.flush()
-    elif time.time() - last_log > 60:
-        logger.info(msg)
-        return time.time()
-    return last_log
+    return msg # Retorna msg para log se necessário
 
 def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
     global BACKUP_JOB_RUNNING, FILES_TO_CLEANUP
-    total_bytes = sum([os.path.getsize(i['path']) for i in disk_details.values()])
     
-    xml = "<domainbackup><disks>"
+    # Executa SEQUENCIALMENTE (um Job por vez)
     for dev, info in disk_details.items():
         fp = os.path.join(backup_dir, f"{dom.name()}-{dev}-{timestamp}.{DISK_FORMAT}.bak")
         FILES_TO_CLEANUP.append(fp)
-        xml += f"<disk name='{dev}' type='file'><target file='{fp}'/><driver type='{DISK_FORMAT}'/></disk>"
-        logger.info(f" -> Destino: {fp}")
-    xml += "</disks></domainbackup>"
-
-    logger.info("[Libvirt] Iniciando Job...")
-    try:
-        dom.backupBegin(xml, None, 0)
-        BACKUP_JOB_RUNNING = True
-        last_log_time = 0
         
-        while True:
-            stats = dom.jobStats()
-            if not stats or stats.get('type', 0) == 0:
-                print(); logger.info("Sucesso!"); BACKUP_JOB_RUNNING = False; FILES_TO_CLEANUP = []; break
-            new_log_time = monitor_progress(total_bytes)
-            if new_log_time: last_log_time = new_log_time
-            time.sleep(0.5)
+        # XML para UM disco
+        xml = f"<domainbackup><disks><disk name='{dev}' type='file'><target file='{fp}'/><driver type='{DISK_FORMAT}'/></disk></disks></domainbackup>"
+        
+        logger.info(f" -> Destino ({dev}): {fp}")
+        logger.info(f"[Libvirt] Iniciando Job para '{dev}'...")
+        
+        total_bytes = os.path.getsize(info['path'])
+        
+        try:
+            dom.backupBegin(xml, None, 0)
+            BACKUP_JOB_RUNNING = True
+            last_log_time = 0
             
-    except Exception as e:
-        logger.error(f"Erro Libvirt: {e}"); perform_cleanup(); raise
+            while True:
+                stats = dom.jobStats()
+                if not stats or stats.get('type', 0) == 0:
+                    # Finaliza a linha visual com 100% e pula linha
+                    if sys.stdout.isatty(): print(f"\r\033[KINFO: [{dev}] [OK] 100% Concluído.")
+                    BACKUP_JOB_RUNNING = False
+                    break
+                
+                current_time = time.time()
+                if sys.stdout.isatty():
+                    monitor_progress(dev, fp, total_bytes)
+                elif current_time - last_log_time > 60:
+                    logger.info(f"Progresso [{dev}]: {os.path.getsize(fp)}/{total_bytes}")
+                    last_log_time = current_time
+                time.sleep(0.5)
+                
+        except Exception as e:
+            logger.error(f"Erro Libvirt ({dev}): {e}"); perform_cleanup(); raise
+        
+        # Remove da lista de cleanup global pois já foi concluído com sucesso
+        if fp in FILES_TO_CLEANUP: FILES_TO_CLEANUP.remove(fp)
+
+    logger.info("Sucesso Total!")
 
 def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
     global CURRENT_SNAPSHOT_NAME, FILES_TO_CLEANUP, TEMP_SOURCE_FILES, CURRENT_COPY_PROCESS
     
-    total_bytes = sum([os.path.getsize(i['path']) for i in disk_details.values()])
     snap_name = f"{dom.name()}_snap_{timestamp}"
     CURRENT_SNAPSHOT_NAME = snap_name
     
     cmd_base = ['virsh', 'snapshot-create-as', '--domain', dom.name(), '--name', snap_name, '--disk-only', '--atomic', '--no-metadata']
     
-    copy_tasks = []
-    
+    # Prepara lista de tarefas, mas executa snapshot de TODOS juntos (Atomicidade)
+    tasks = []
     for dev, info in disk_details.items():
         tmp = os.path.join(os.path.dirname(info['path']), f"{dom.name()}_{dev}_tmp_{timestamp}.qcow2")
         TEMP_SOURCE_FILES.append(tmp)
-        
         dst = os.path.join(backup_dir, f"{dom.name()}-{dev}-{timestamp}.{DISK_FORMAT}.bak")
-        FILES_TO_CLEANUP.append(dst)
         
         cmd_base.extend(['--diskspec', f"{dev},file={tmp},driver=qcow2"])
-        cp_cmd = ['cp', '--archive', '--sparse=always', info['path'], dst]
-        copy_tasks.append(cp_cmd)
+        
+        # Guarda info para executar depois
+        tasks.append({
+            'dev': dev,
+            'src': info['path'], # CP copia do original (congelado)
+            'dst': dst,
+            'tmp': tmp
+        })
 
     try:
-        logger.info("[Snapshot] Criando snapshot...")
+        logger.info("[Snapshot] Criando snapshot de TODOS os discos...")
         use_quiesce = False
         if check_agent_availability(dom):
             try: run_subprocess(cmd_base + ['--quiesce'], allow_fail=True); use_quiesce = True
@@ -356,26 +370,42 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
         if not use_quiesce:
             run_subprocess(cmd_base); logger.info(" -> Snapshot padrão criado.")
 
-        logger.info("[Snapshot] Iniciando Cópia...")
-        last_log_time = 0
-        
-        for cmd in copy_tasks:
-            CURRENT_COPY_PROCESS = subprocess.Popen(cmd)
+        # Executa cópia e pivot SEQUENCIALMENTE
+        for task in tasks:
+            dev = task['dev']
+            dst = task['dst']
+            FILES_TO_CLEANUP.append(dst)
+            
+            logger.info(f"[{dev}] Iniciando Cópia...")
+            cp_cmd = ['cp', '--archive', '--sparse=always', task['src'], dst]
+            
+            CURRENT_COPY_PROCESS = subprocess.Popen(cp_cmd)
+            total_bytes = os.path.getsize(task['src'])
+            last_log_time = 0
+            
             while CURRENT_COPY_PROCESS.poll() is None:
-                new_log_time = monitor_progress(total_bytes)
-                if new_log_time: last_log_time = new_log_time
+                current_time = time.time()
+                if sys.stdout.isatty():
+                    monitor_progress(dev, dst, total_bytes)
+                elif current_time - last_log_time > 60:
+                     logger.info(f"Progresso [{dev}]: {os.path.getsize(dst)}/{total_bytes}")
+                     last_log_time = current_time
                 time.sleep(0.5)
             
             if CURRENT_COPY_PROCESS.returncode != 0:
-                raise Exception(f"Comando falhou com código {CURRENT_COPY_PROCESS.returncode}")
+                raise Exception(f"CP falhou para {dev}")
             CURRENT_COPY_PROCESS = None
             
-        logger.info("\n[Snapshot] Fazendo Pivot...")
-        for dev in disk_details.keys():
+            if sys.stdout.isatty(): print(f"\r\033[KINFO: [{dev}] Cópia Finalizada.")
+            
+            # Pivot individual (Merge do temp para o original)
+            logger.info(f"[{dev}] Fazendo Pivot...")
             subprocess.run(['virsh', 'blockcommit', dom.name(), dev, '--active', '--pivot'], check=True)
             remove_temp_source_file(dev)
             
-        CURRENT_SNAPSHOT_NAME = None; FILES_TO_CLEANUP = []; logger.info("Sucesso!")
+            if dst in FILES_TO_CLEANUP: FILES_TO_CLEANUP.remove(dst)
+            
+        CURRENT_SNAPSHOT_NAME = None; logger.info("Sucesso Total!")
         
     except Exception as e:
         logger.error(f"Erro Snapshot: {e}"); perform_cleanup(); raise
@@ -385,7 +415,6 @@ if __name__ == "__main__":
     config = load_or_create_config()
     
     parser = argparse.ArgumentParser(description="Backup KVM Live")
-    
     parser.add_argument('--domain', required=False, default=config.get('domain'), help="Nome da VM")
     parser.add_argument('--backup-dir', required=False, default=config.get('backup_dir'), help="Diretório de destino")
     parser.add_argument('--disk', required=False, nargs='+', default=config.get('disk'), help="Discos (ex: vda)")
@@ -394,7 +423,6 @@ if __name__ == "__main__":
     parser.add_argument('--force-unsafe', action='store_true', default=config.get('force_unsafe'))
     
     args = parser.parse_args()
-    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     if not args.domain or not args.backup_dir or not args.disk:
