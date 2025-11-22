@@ -8,6 +8,7 @@ import argparse
 import subprocess
 import signal
 import json
+import re  # <--- Adicionado para corrigir a retenção
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import logging
@@ -220,18 +221,40 @@ def check_available_space(backup_dir, disk_details):
     return True
 
 # --- GERENCIAMENTO DE RETENÇÃO ---
+# [CORRIGIDO] Agora distingue vda de vdb para não deletar redundantes errados
 def manage_retention(backup_dir, days):
     if not os.path.isdir(backup_dir): return
     cutoff = datetime.now() - timedelta(days=days)
     backups = []
+    
     try:
         for f in os.listdir(backup_dir):
             if f.endswith('.bak'):
                 fp = os.path.join(backup_dir, f)
                 mtime = os.path.getmtime(fp)
                 dt = datetime.fromtimestamp(mtime)
-                backups.append({'path': fp, 'dt': dt, 'date_key': dt.strftime('%Y-%m-%d')})
+                
+                # Tenta identificar o "nome base" do backup (ex: Trixie-vda) ignorando o timestamp
+                # Padrão esperado: NOME-DISK-TIMESTAMP.qcow2.bak
+                # Regex captura tudo antes do ultimo traço seguido de numeros
+                match = re.search(r"(.+)-(\d{8}_\d{6})", f)
+                if match:
+                    identity = match.group(1) # Ex: Trixie-vda
+                    date_str = dt.strftime('%Y-%m-%d')
+                    # A chave única é: DATA + IDENTIDADE (vda, vdb, etc)
+                    unique_key = f"{date_str}_{identity}"
+                else:
+                    unique_key = f"{dt.strftime('%Y-%m-%d')}_{f}" # Fallback
+                
+                backups.append({
+                    'path': fp, 
+                    'dt': dt, 
+                    'unique_key': unique_key
+                })
+                
+        # Ordena: mais novos primeiro
         backups.sort(key=lambda x: x['dt'], reverse=True)
+        
     except Exception as e: logger.error(f"Erro listar backups: {e}"); return
 
     if not backups:
@@ -240,66 +263,65 @@ def manage_retention(backup_dir, days):
 
     keep_list = []
     delete_list = []
-    seen_days = set()
+    seen_keys = set()
 
     for b in backups:
-        if b['date_key'] in seen_days:
+        # Se já vimos um arquivo HOJE com essa IDENTIDADE (ex: vda), o atual é velho
+        if b['unique_key'] in seen_keys:
             delete_list.append((b, "Redundante do mesmo dia"))
         else:
-            seen_days.add(b['date_key'])
-            if b['dt'] < cutoff: delete_list.append((b, "Expirado (Idade)"))
-            else: keep_list.append(b)
+            seen_keys.add(b['unique_key'])
+            if b['dt'] < cutoff: 
+                delete_list.append((b, "Expirado (Idade)"))
+            else: 
+                keep_list.append(b)
 
+    # Trava de segurança simples: se sobrar zero arquivos, mantém o último
     if not keep_list and delete_list:
         rescued, reason = delete_list.pop(0)
         keep_list.append(rescued)
         logger.warning(f"--- TRAVA DE SEGURANÇA: Mantendo último backup ({os.path.basename(rescued['path'])}) ---")
 
     if sys.stdout.isatty(): print()
-    logger.info(f"--- ANÁLISE DE RETENÇÃO ({days} dias | 1 por dia) ---")
+    logger.info(f"--- ANÁLISE DE RETENÇÃO ({days} dias | 1 por dia/disco) ---")
+    
     if keep_list:
         logger.info("VÁLIDOS (Mantidos):")
         for b in keep_list: logger.info(f"   -> {os.path.basename(b['path'])} ({b['dt'].strftime('%d/%m %H:%M')})")
+            
     if delete_list:
         logger.info("EXPIRADOS (Analisando remoção...):")
         for b, reason in delete_list:
             logger.info(f"   -> {os.path.basename(b['path'])} - Motivo: {reason}")
             try: os.remove(b['path']); logger.info("      -> [OK] Removido.")
             except: pass
+    
     logger.info("-" * 40)
     if sys.stdout.isatty(): print()
 
 # --- MONITORAMENTO E BACKUP ---
 
 def monitor_progress(dev_name, dest_file, total_bytes):
-    """
-    Exibe progresso de UM único disco na linha atual.
-    """
     spinner = "|/-\\"
     spin = spinner[int(time.time()*4)%4]
-    
     curr = 0
     try:
         if os.path.exists(dest_file): curr = os.path.getsize(dest_file)
     except: pass
-    
     perc = (curr / total_bytes * 100) if total_bytes > 0 else 0
     msg = f"INFO: [{dev_name}] [{spin}] {curr} / {total_bytes} Bytes ({perc:.1f}%)"
-    
     if sys.stdout.isatty():
-        sys.stdout.write(f"\r\033[K{msg}") # \033[K limpa até o fim da linha
+        sys.stdout.write(f"\r\033[K{msg}")
         sys.stdout.flush()
-    return msg # Retorna msg para log se necessário
+    return msg 
 
 def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
     global BACKUP_JOB_RUNNING, FILES_TO_CLEANUP
     
-    # Executa SEQUENCIALMENTE (um Job por vez)
     for dev, info in disk_details.items():
         fp = os.path.join(backup_dir, f"{dom.name()}-{dev}-{timestamp}.{DISK_FORMAT}.bak")
         FILES_TO_CLEANUP.append(fp)
         
-        # XML para UM disco
         xml = f"<domainbackup><disks><disk name='{dev}' type='file'><target file='{fp}'/><driver type='{DISK_FORMAT}'/></disk></disks></domainbackup>"
         
         logger.info(f" -> Destino ({dev}): {fp}")
@@ -315,7 +337,6 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
             while True:
                 stats = dom.jobStats()
                 if not stats or stats.get('type', 0) == 0:
-                    # Finaliza a linha visual com 100% e pula linha
                     if sys.stdout.isatty(): print(f"\r\033[KINFO: [{dev}] [OK] 100% Concluído.")
                     BACKUP_JOB_RUNNING = False
                     break
@@ -331,7 +352,6 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
         except Exception as e:
             logger.error(f"Erro Libvirt ({dev}): {e}"); perform_cleanup(); raise
         
-        # Remove da lista de cleanup global pois já foi concluído com sucesso
         if fp in FILES_TO_CLEANUP: FILES_TO_CLEANUP.remove(fp)
 
     logger.info("Sucesso Total!")
@@ -343,23 +363,15 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
     CURRENT_SNAPSHOT_NAME = snap_name
     
     cmd_base = ['virsh', 'snapshot-create-as', '--domain', dom.name(), '--name', snap_name, '--disk-only', '--atomic', '--no-metadata']
-    
-    # Prepara lista de tarefas, mas executa snapshot de TODOS juntos (Atomicidade)
     tasks = []
+    
     for dev, info in disk_details.items():
         tmp = os.path.join(os.path.dirname(info['path']), f"{dom.name()}_{dev}_tmp_{timestamp}.qcow2")
         TEMP_SOURCE_FILES.append(tmp)
         dst = os.path.join(backup_dir, f"{dom.name()}-{dev}-{timestamp}.{DISK_FORMAT}.bak")
         
         cmd_base.extend(['--diskspec', f"{dev},file={tmp},driver=qcow2"])
-        
-        # Guarda info para executar depois
-        tasks.append({
-            'dev': dev,
-            'src': info['path'], # CP copia do original (congelado)
-            'dst': dst,
-            'tmp': tmp
-        })
+        tasks.append({'dev': dev, 'src': info['path'], 'dst': dst, 'tmp': tmp})
 
     try:
         logger.info("[Snapshot] Criando snapshot de TODOS os discos...")
@@ -370,7 +382,6 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
         if not use_quiesce:
             run_subprocess(cmd_base); logger.info(" -> Snapshot padrão criado.")
 
-        # Executa cópia e pivot SEQUENCIALMENTE
         for task in tasks:
             dev = task['dev']
             dst = task['dst']
@@ -398,7 +409,6 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
             
             if sys.stdout.isatty(): print(f"\r\033[KINFO: [{dev}] Cópia Finalizada.")
             
-            # Pivot individual (Merge do temp para o original)
             logger.info(f"[{dev}] Fazendo Pivot...")
             subprocess.run(['virsh', 'blockcommit', dom.name(), dev, '--active', '--pivot'], check=True)
             remove_temp_source_file(dev)
