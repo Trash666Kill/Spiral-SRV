@@ -7,6 +7,7 @@ import time
 import argparse
 import subprocess
 import signal
+import json
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import logging
@@ -17,14 +18,25 @@ CONNECT_URI = 'qemu:///system'
 SAFETY_MARGIN_PERCENT = 0.10
 LOG_DIR = "/var/log/virsh"
 FORBIDDEN_PATTERNS = ['_snap_', '_tmp_', 'snapshot', '.bak']
+CONFIG_FILENAME = "config.json"
 
 # --- VARIÁVEIS GLOBAIS ---
 CURRENT_DOMAIN_NAME = None
 CURRENT_SNAPSHOT_NAME = None
 FILES_TO_CLEANUP = []      # Arquivos de DESTINO (.bak)
 TEMP_SOURCE_FILES = []     # Arquivos de ORIGEM temporários (_tmp_)
-CURRENT_COPY_PROCESS = None # Processo CP/Rsync ativo
+CURRENT_COPY_PROCESS = None # Processo CP ativo
 BACKUP_JOB_RUNNING = False
+
+# --- CONFIGURAÇÃO PADRÃO (JSON) ---
+DEFAULT_CONFIG = {
+    "domain": "vm46176",
+    "backup_dir": "/mnt/Local/USB/A/Backup/srv17517/Container/B/Virt",
+    "disk": ["vda"],
+    "retention_days": 7,
+    "mode": "libvirt",
+    "force_unsafe": False
+}
 
 # --- LOGGER ---
 logger = logging.getLogger('virsh_hotbkp')
@@ -47,6 +59,29 @@ def setup_logging(domain_name, timestamp):
         logger.addHandler(console_handler)
     except Exception as e:
         print(f"ERRO LOGS: {e}", file=sys.stderr); sys.exit(1)
+
+# --- GERENCIAMENTO DE CONFIGURAÇÃO (JSON) ---
+
+def load_or_create_config():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(script_dir, CONFIG_FILENAME)
+    
+    if not os.path.exists(config_path):
+        try:
+            with open(config_path, 'w') as f:
+                json.dump(DEFAULT_CONFIG, f, indent=4)
+            print(f"INFO: Arquivo de configuração criado em: {config_path}")
+            return DEFAULT_CONFIG
+        except Exception as e:
+            print(f"AVISO: Não foi possível criar arquivo de config: {e}")
+            return DEFAULT_CONFIG
+    else:
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"ERRO CRÍTICO: JSON de configuração inválido ({config_path}): {e}")
+            sys.exit(1)
 
 # --- LIMPEZA E EMERGÊNCIA ---
 
@@ -78,14 +113,12 @@ def perform_cleanup(exit_after=False):
     if sys.stdout.isatty(): print() 
     logger.warning("--- PROTOCOLO DE LIMPEZA INICIADO ---")
 
-    # 0. Matar processo de cópia (cp) se estiver rodando
     if CURRENT_COPY_PROCESS and CURRENT_COPY_PROCESS.poll() is None:
         logger.warning("Encerrando processo de cópia ativo...")
         CURRENT_COPY_PROCESS.terminate()
         try: CURRENT_COPY_PROCESS.wait(timeout=2)
         except: CURRENT_COPY_PROCESS.kill()
 
-    # 1. AUTO-CURA: Pivot de Emergência
     if CURRENT_DOMAIN_NAME:
         dirty_disks = get_dirty_disks_from_live_vm(CURRENT_DOMAIN_NAME)
         if dirty_disks:
@@ -102,19 +135,16 @@ def perform_cleanup(exit_after=False):
                 except:
                     logger.critical(f" -> FALHA: Execute manualmente: virsh blockcommit {CURRENT_DOMAIN_NAME} {dev} --active --pivot")
 
-    # 2. Abortar Job Libvirt
     if BACKUP_JOB_RUNNING and CURRENT_DOMAIN_NAME:
         try: subprocess.run(['virsh', 'domjobabort', CURRENT_DOMAIN_NAME], capture_output=True)
         except: pass
         BACKUP_JOB_RUNNING = False
 
-    # 3. Remover Metadados Snapshot
     if CURRENT_SNAPSHOT_NAME and CURRENT_DOMAIN_NAME:
         try: subprocess.run(['virsh', 'snapshot-delete', CURRENT_DOMAIN_NAME, CURRENT_SNAPSHOT_NAME, '--metadata'], capture_output=True)
         except: pass
         CURRENT_SNAPSHOT_NAME = None
 
-    # 4. Limpar arquivos .bak
     if FILES_TO_CLEANUP:
         logger.info("Limpando arquivos parciais de destino...")
         for f in FILES_TO_CLEANUP:
@@ -148,15 +178,29 @@ def check_agent_availability(dom):
 def get_disk_details_from_xml(dom, target_devs_list):
     logger.info(f"Lendo XML para discos: {target_devs_list}")
     details = {}
+    found_devs = []
     try:
         root = ET.fromstring(dom.XMLDesc(0))
         for device in root.findall('./devices/disk'):
             target = device.find('target')
-            if target is not None and target.get('dev') in target_devs_list:
-                source = device.find('source')
-                if source is not None and source.get('file'):
-                    details[target.get('dev')] = {'path': source.get('file')}
+            if target is not None:
+                dev_name = target.get('dev')
+                if dev_name in target_devs_list:
+                    source = device.find('source')
+                    if source is not None and source.get('file'):
+                        details[dev_name] = {'path': source.get('file')}
+                        found_devs.append(dev_name)
     except Exception as e: logger.error(f"Erro XML: {e}"); return None
+        
+    missing_devs = [d for d in target_devs_list if d not in found_devs]
+    if missing_devs:
+        logger.error("="*60)
+        logger.error(f"ERRO FATAL: Discos solicitados não existem na VM: {missing_devs}")
+        logger.error(f"Discos encontrados: {found_devs}")
+        logger.error("Verifique o parâmetro --disk ou o arquivo config.json")
+        logger.error("="*60)
+        return None
+
     return details
 
 def check_clean_state(dom, disk_details):
@@ -168,37 +212,32 @@ def check_clean_state(dom, disk_details):
             return False, f"Disco '{dev}' está sujo."
     return True, "Limpo"
 
+# [CORRIGIDO] Garante que o diretório da VM (backup_dir) seja criado
 def check_available_space(backup_dir, disk_details):
     needed = sum([os.path.getsize(i['path']) for i in disk_details.values()]) * (1 + SAFETY_MARGIN_PERCENT)
-    os.makedirs(os.path.dirname(backup_dir), exist_ok=True)
-    if needed > shutil.disk_usage(os.path.dirname(backup_dir)).free:
+    
+    # Cria o diretório FINAL (ex: .../Virt/Trixie) se não existir
+    os.makedirs(backup_dir, exist_ok=True)
+    
+    # Verifica o espaço no diretório criado
+    if needed > shutil.disk_usage(backup_dir).free:
         logger.error("Espaço insuficiente."); return False
     return True
 
-# --- GERENCIAMENTO DE RETENÇÃO INTELIGENTE (1 por Dia + Retenção) ---
+# --- GERENCIAMENTO DE RETENÇÃO ---
 def manage_retention(backup_dir, days):
     if not os.path.isdir(backup_dir): return
-    
     cutoff = datetime.now() - timedelta(days=days)
-    
-    # Estruturas para classificação
     backups = []
-    
     try:
-        # 1. Coletar todos os backups
         for f in os.listdir(backup_dir):
             if f.endswith('.bak'):
                 fp = os.path.join(backup_dir, f)
                 mtime = os.path.getmtime(fp)
                 dt = datetime.fromtimestamp(mtime)
-                # Guarda (caminho, datetime, data_str_YYYMMDD)
                 backups.append({'path': fp, 'dt': dt, 'date_key': dt.strftime('%Y-%m-%d')})
-        
-        # 2. Ordenar por data (Mais recente primeiro)
         backups.sort(key=lambda x: x['dt'], reverse=True)
-        
-    except Exception as e:
-        logger.error(f"Erro ao listar backups: {e}"); return
+    except Exception as e: logger.error(f"Erro listar backups: {e}"); return
 
     if not backups:
         logger.info(f"--- RETENÇÃO: Nenhum backup anterior encontrado. ---")
@@ -208,52 +247,30 @@ def manage_retention(backup_dir, days):
     delete_list = []
     seen_days = set()
 
-    # 3. Processar Lógica (1 por dia + Validade)
     for b in backups:
-        # Regra 1: Apenas um por dia (o mais recente desse dia)
         if b['date_key'] in seen_days:
             delete_list.append((b, "Redundante do mesmo dia"))
         else:
-            # É o mais recente deste dia. Agora checa validade.
             seen_days.add(b['date_key'])
-            
-            # Regra 2: Retenção de dias
-            if b['dt'] < cutoff:
-                delete_list.append((b, "Expirado (Idade)"))
-            else:
-                keep_list.append(b)
+            if b['dt'] < cutoff: delete_list.append((b, "Expirado (Idade)"))
+            else: keep_list.append(b)
 
-    # 4. TRAVA DE SEGURANÇA: Nunca zerar o diretório
     if not keep_list and delete_list:
         rescued, reason = delete_list.pop(0)
         keep_list.append(rescued)
-        logger.warning(f"--- TRAVA DE SEGURANÇA ATIVADA ---")
-        logger.warning(f"O backup {os.path.basename(rescued['path'])} seria deletado ({reason}),")
-        logger.warning(f"mas foi mantido pois é o único backup restante.")
+        logger.warning(f"--- TRAVA DE SEGURANÇA: Mantendo último backup ({os.path.basename(rescued['path'])}) ---")
 
-    # 5. Relatório e Execução (SEM EMOJIS)
     if sys.stdout.isatty(): print()
     logger.info(f"--- ANÁLISE DE RETENÇÃO ({days} dias | 1 por dia) ---")
-
     if keep_list:
         logger.info("VÁLIDOS (Mantidos):")
-        for b in keep_list:
-            logger.info(f"   -> {os.path.basename(b['path'])} ({b['dt'].strftime('%d/%m %H:%M')})")
-    else:
-        logger.info("VÁLIDOS: Nenhum encontrado.")
-            
+        for b in keep_list: logger.info(f"   -> {os.path.basename(b['path'])} ({b['dt'].strftime('%d/%m %H:%M')})")
     if delete_list:
         logger.info("EXPIRADOS (Analisando remoção...):")
         for b, reason in delete_list:
-            logger.info(f"   -> {os.path.basename(b['path'])} ({b['dt'].strftime('%d/%m %H:%M')}) - Motivo: {reason}")
-            try:
-                os.remove(b['path'])
-                logger.info("      -> [OK] Removido.")
-            except Exception as e:
-                logger.error(f"      -> [ERRO] Falha ao remover: {e}")
-    else:
-        logger.info("EXPIRADOS: Nenhum arquivo antigo para limpar.")
-
+            logger.info(f"   -> {os.path.basename(b['path'])} - Motivo: {reason}")
+            try: os.remove(b['path']); logger.info("      -> [OK] Removido.")
+            except: pass
     logger.info("-" * 40)
     if sys.stdout.isatty(): print()
 
@@ -339,7 +356,6 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
         if not use_quiesce:
             run_subprocess(cmd_base); logger.info(" -> Snapshot padrão criado.")
 
-        # [MODIFICADO] Removido "(CP)" do log
         logger.info("[Snapshot] Iniciando Cópia...")
         last_log_time = 0
         
@@ -351,7 +367,7 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
                 time.sleep(0.5)
             
             if CURRENT_COPY_PROCESS.returncode != 0:
-                raise Exception(f"Comando CP falhou com código {CURRENT_COPY_PROCESS.returncode}")
+                raise Exception(f"Comando falhou com código {CURRENT_COPY_PROCESS.returncode}")
             CURRENT_COPY_PROCESS = None
             
         logger.info("\n[Snapshot] Fazendo Pivot...")
@@ -366,17 +382,25 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
 
 # --- MAIN ---
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--domain', required=True)
-    parser.add_argument('--backup-dir', required=True)
-    parser.add_argument('--disk', required=True, nargs='+')
-    parser.add_argument('--retention-days', type=int, default=7)
-    parser.add_argument('--mode', choices=['libvirt', 'snapshot'], default='libvirt')
-    parser.add_argument('--bwlimit', type=int, default=0)
-    parser.add_argument('--force-unsafe', action='store_true')
+    config = load_or_create_config()
+    
+    parser = argparse.ArgumentParser(description="Backup KVM Live")
+    
+    parser.add_argument('--domain', required=False, default=config.get('domain'), help="Nome da VM")
+    parser.add_argument('--backup-dir', required=False, default=config.get('backup_dir'), help="Diretório de destino")
+    parser.add_argument('--disk', required=False, nargs='+', default=config.get('disk'), help="Discos (ex: vda)")
+    parser.add_argument('--retention-days', type=int, required=False, default=config.get('retention_days'), help="Dias de retenção")
+    parser.add_argument('--mode', choices=['libvirt', 'snapshot'], required=False, default=config.get('mode'), help="Modo de backup")
+    parser.add_argument('--force-unsafe', action='store_true', default=config.get('force_unsafe'))
+    
     args = parser.parse_args()
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    if not args.domain or not args.backup_dir or not args.disk:
+        print("ERRO: Configurações obrigatórias não encontradas.")
+        sys.exit(1)
+        
     setup_logging(args.domain, timestamp)
     
     if args.mode == 'snapshot' and not args.force_unsafe:
@@ -398,7 +422,7 @@ if __name__ == "__main__":
         manage_retention(bkp_dir, args.retention_days)
         
         details = get_disk_details_from_xml(dom, args.disk)
-        if not details: raise Exception("Discos não encontrados")
+        if not details: raise Exception("Discos solicitados não encontrados.")
         
         clean, msg = check_clean_state(dom, details)
         if not clean:
