@@ -175,7 +175,7 @@ def check_available_space(backup_dir, disk_details):
         logger.error("Espaço insuficiente."); return False
     return True
 
-# --- [NOVO] GERENCIAMENTO DE RETENÇÃO DETALHADO ---
+# --- [MODIFICADO] GERENCIAMENTO DE RETENÇÃO COM TRAVA DE SEGURANÇA ---
 def manage_retention(backup_dir, days):
     if not os.path.isdir(backup_dir): return
     
@@ -183,23 +183,28 @@ def manage_retention(backup_dir, days):
     valid_files = []
     expired_files = []
     
-    # Lista e classifica os arquivos
     try:
-        # Ordena para ficar cronológico no log
-        files = sorted(os.listdir(backup_dir))
+        # Ordena por data de modificação (mais antigo primeiro)
+        files = sorted(
+            [f for f in os.listdir(backup_dir) if f.endswith('.bak')],
+            key=lambda x: os.path.getmtime(os.path.join(backup_dir, x))
+        )
+        
+        # Classificação
         for f in files:
             fp = os.path.join(backup_dir, f)
-            if f.endswith('.bak') and os.path.isfile(fp):
+            if os.path.isfile(fp):
                 mtime = datetime.fromtimestamp(os.path.getmtime(fp))
                 if mtime < cutoff:
                     expired_files.append((fp, mtime))
                 else:
                     valid_files.append((fp, mtime))
     except Exception as e:
-        logger.error(f"Erro ao listar diretório para retenção: {e}")
-        return
+        logger.error(f"Erro ao listar retenção: {e}"); return
 
-    # Exibe Relatório
+    # Total atual de arquivos
+    total_backups = len(valid_files) + len(expired_files)
+
     if sys.stdout.isatty(): print()
     logger.info(f"--- ANÁLISE DE RETENÇÃO ({days} dias) ---")
     
@@ -208,21 +213,30 @@ def manage_retention(backup_dir, days):
         logger.info("✅ VÁLIDOS (Mantidos):")
         for fp, mtime in valid_files:
             logger.info(f"   -> {os.path.basename(fp)} ({mtime.strftime('%d/%m/%Y %H:%M')})")
-    else:
-        logger.info("ℹ️  VÁLIDOS: Nenhum encontrado.")
 
-    # 2. Mostra e Remove Expirados
+    # 2. Processa Expirados com TRAVA DE SEGURANÇA
     if expired_files:
-        logger.info("❌ EXPIRADOS (Serão Removidos):")
+        logger.info("❌ EXPIRADOS (Analisando remoção...):")
+        
         for fp, mtime in expired_files:
-            logger.info(f"   -> {os.path.basename(fp)} ({mtime.strftime('%d/%m/%Y %H:%M')})")
+            fname = os.path.basename(fp)
+            
+            # --- A TRAVA DE SEGURANÇA ---
+            # Se só existe 1 arquivo no total, NÃO deleta, independente da data.
+            if total_backups <= 1:
+                logger.warning(f"   -> 🔒 {fname} ({mtime.strftime('%d/%m/%Y %H:%M')})")
+                logger.warning("      -> AVISO: Único backup existente! Mantido por segurança.")
+                continue # Pula para o próximo (não deleta)
+
+            # Se tem mais de 1, pode deletar
             try:
                 os.remove(fp)
-                logger.info("      -> [OK] Arquivo removido.")
+                logger.info(f"   -> 🗑️  {fname} ({mtime.strftime('%d/%m/%Y %H:%M')}) REMOVIDO.")
+                total_backups -= 1 # Atualiza contagem
             except Exception as e:
                 logger.error(f"      -> [ERRO] Falha ao remover: {e}")
     else:
-        logger.info("ℹ️  EXPIRADOS: Nenhum arquivo antigo para limpar.")
+        logger.info("ℹ️  EXPIRADOS: Nenhum arquivo antigo.")
     
     logger.info("-" * 40)
     if sys.stdout.isatty(): print()
