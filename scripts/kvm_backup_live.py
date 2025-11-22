@@ -23,9 +23,8 @@ CURRENT_DOMAIN_NAME = None
 CURRENT_SNAPSHOT_NAME = None
 FILES_TO_CLEANUP = []      # Arquivos de DESTINO (.bak)
 TEMP_SOURCE_FILES = []     # Arquivos de ORIGEM temporários (_tmp_)
-DEVICES_TO_PIVOT = []      # Discos que precisam de merge
+CURRENT_COPY_PROCESS = None # Processo CP/Rsync ativo
 BACKUP_JOB_RUNNING = False
-CURRENT_COPY_PROCESS = None # [NOVO] Para matar o 'cp' se cancelar
 
 # --- LOGGER ---
 logger = logging.getLogger('virsh_hotbkp')
@@ -176,29 +175,64 @@ def check_available_space(backup_dir, disk_details):
         logger.error("Espaço insuficiente."); return False
     return True
 
+# --- [NOVO] GERENCIAMENTO DE RETENÇÃO DETALHADO ---
 def manage_retention(backup_dir, days):
     if not os.path.isdir(backup_dir): return
+    
     cutoff = datetime.now() - timedelta(days=days)
-    for f in os.listdir(backup_dir):
-        fp = os.path.join(backup_dir, f)
-        if f.endswith('.bak') and os.path.isfile(fp):
-            if datetime.fromtimestamp(os.path.getmtime(fp)) < cutoff:
-                try: os.remove(fp); logger.info(f"Retenção: {f}")
-                except: pass
+    valid_files = []
+    expired_files = []
+    
+    # Lista e classifica os arquivos
+    try:
+        # Ordena para ficar cronológico no log
+        files = sorted(os.listdir(backup_dir))
+        for f in files:
+            fp = os.path.join(backup_dir, f)
+            if f.endswith('.bak') and os.path.isfile(fp):
+                mtime = datetime.fromtimestamp(os.path.getmtime(fp))
+                if mtime < cutoff:
+                    expired_files.append((fp, mtime))
+                else:
+                    valid_files.append((fp, mtime))
+    except Exception as e:
+        logger.error(f"Erro ao listar diretório para retenção: {e}")
+        return
+
+    # Exibe Relatório
+    if sys.stdout.isatty(): print()
+    logger.info(f"--- ANÁLISE DE RETENÇÃO ({days} dias) ---")
+    
+    # 1. Mostra Válidos
+    if valid_files:
+        logger.info("✅ VÁLIDOS (Mantidos):")
+        for fp, mtime in valid_files:
+            logger.info(f"   -> {os.path.basename(fp)} ({mtime.strftime('%d/%m/%Y %H:%M')})")
+    else:
+        logger.info("ℹ️  VÁLIDOS: Nenhum encontrado.")
+
+    # 2. Mostra e Remove Expirados
+    if expired_files:
+        logger.info("❌ EXPIRADOS (Serão Removidos):")
+        for fp, mtime in expired_files:
+            logger.info(f"   -> {os.path.basename(fp)} ({mtime.strftime('%d/%m/%Y %H:%M')})")
+            try:
+                os.remove(fp)
+                logger.info("      -> [OK] Arquivo removido.")
+            except Exception as e:
+                logger.error(f"      -> [ERRO] Falha ao remover: {e}")
+    else:
+        logger.info("ℹ️  EXPIRADOS: Nenhum arquivo antigo para limpar.")
+    
+    logger.info("-" * 40)
+    if sys.stdout.isatty(): print()
 
 # --- BACKUP MODES ---
 
 def monitor_progress(source_total_bytes):
-    """Loop compartilhado de monitoramento visual."""
     spinner = "|/-\\"
     last_log = 0
-    start_time = time.time()
-    
-    # Enquanto o processo principal (cp ou libvirt) estiver rodando...
-    # (A função chamadora controla o break)
-    
     curr = 0
-    # Soma o tamanho de todos os arquivos de destino sendo criados
     for f in FILES_TO_CLEANUP:
         try:
             if os.path.exists(f): curr += os.path.getsize(f)
@@ -212,8 +246,7 @@ def monitor_progress(source_total_bytes):
         sys.stdout.flush()
     elif time.time() - last_log > 60:
         logger.info(msg)
-        return time.time() # Retorna novo last_log
-        
+        return time.time()
     return last_log
 
 def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
@@ -238,8 +271,6 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
             stats = dom.jobStats()
             if not stats or stats.get('type', 0) == 0:
                 print(); logger.info("Sucesso!"); BACKUP_JOB_RUNNING = False; FILES_TO_CLEANUP = []; break
-            
-            # Reutiliza lógica visual
             new_log_time = monitor_progress(total_bytes)
             if new_log_time: last_log_time = new_log_time
             time.sleep(0.5)
@@ -256,7 +287,6 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
     
     cmd_base = ['virsh', 'snapshot-create-as', '--domain', dom.name(), '--name', snap_name, '--disk-only', '--atomic', '--no-metadata']
     
-    # Preparação das cópias (CP)
     copy_tasks = []
     
     for dev, info in disk_details.items():
@@ -267,8 +297,6 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
         FILES_TO_CLEANUP.append(dst)
         
         cmd_base.extend(['--diskspec', f"{dev},file={tmp},driver=qcow2"])
-        
-        # [MODIFICADO] Usando CP com --sparse=always para eficiência em XFS
         cp_cmd = ['cp', '--archive', '--sparse=always', info['path'], dst]
         copy_tasks.append(cp_cmd)
 
@@ -284,22 +312,16 @@ def run_backup_snapshot_cp(dom, backup_dir, disk_details, timestamp):
         logger.info("[Snapshot] Iniciando Cópia (CP)...")
         last_log_time = 0
         
-        # Executa as cópias SEQUENCIALMENTE, mas monitorando
         for cmd in copy_tasks:
-            # Popen é não-bloqueante
             CURRENT_COPY_PROCESS = subprocess.Popen(cmd)
-            
-            # Loop de monitoramento enquanto o CP roda
             while CURRENT_COPY_PROCESS.poll() is None:
                 new_log_time = monitor_progress(total_bytes)
                 if new_log_time: last_log_time = new_log_time
                 time.sleep(0.5)
             
-            # Verifica se o CP deu erro
             if CURRENT_COPY_PROCESS.returncode != 0:
                 raise Exception(f"Comando CP falhou com código {CURRENT_COPY_PROCESS.returncode}")
-            
-            CURRENT_COPY_PROCESS = None # Libera
+            CURRENT_COPY_PROCESS = None
             
         logger.info("\n[Snapshot] Fazendo Pivot...")
         for dev in disk_details.keys():
@@ -319,7 +341,7 @@ if __name__ == "__main__":
     parser.add_argument('--disk', required=True, nargs='+')
     parser.add_argument('--retention-days', type=int, default=7)
     parser.add_argument('--mode', choices=['libvirt', 'snapshot'], default='libvirt')
-    parser.add_argument('--bwlimit', type=int, default=0) # Mantido para compatibilidade, ignorado no CP
+    parser.add_argument('--bwlimit', type=int, default=0)
     parser.add_argument('--force-unsafe', action='store_true')
     args = parser.parse_args()
     
