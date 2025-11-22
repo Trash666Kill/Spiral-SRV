@@ -17,9 +17,7 @@ CONNECT_URI = 'qemu:///system'
 SAFETY_MARGIN_PERCENT = 0.10
 LOG_DIR = "/var/log/virsh"
 
-# --- VARIÁVEIS GLOBAIS DE ESTADO (PARA LIMPEZA) ---
-# Necessárias para que o Signal Handler saiba o que limpar
-CURRENT_DOMAIN_OBJ = None
+# --- VARIÁVEIS GLOBAIS (Estado) ---
 CURRENT_DOMAIN_NAME = None
 CURRENT_SNAPSHOT_NAME = None
 FILES_TO_CLEANUP = []
@@ -52,65 +50,48 @@ def setup_logging(domain_name, timestamp):
         logger.addHandler(console_handler)
         
     except Exception as e:
-        print(f"ERRO CRÍTICO LOGS: {e}", file=sys.stderr)
+        print(f"ERRO LOGS: {e}", file=sys.stderr)
         sys.exit(1)
 
-# --- FUNÇÕES DE LIMPEZA E SINAIS ---
+# --- FUNÇÕES DE LIMPEZA ---
 
 def perform_cleanup(exit_after=False):
-    """Executa a limpeza de arquivos parciais e jobs travados."""
+    """Limpa arquivos parciais e aborta jobs se interrompido."""
     global BACKUP_JOB_RUNNING, CURRENT_SNAPSHOT_NAME
     
-    print("\n") # Pular linha visualmente
-    logger.warning("--- INICIANDO PROTOCOLO DE LIMPEZA ---")
+    if sys.stdout.isatty(): print() 
+    logger.warning("--- LIMPEZA INICIADA ---")
 
-    # 1. Abortar Job do Libvirt (se ativo)
     if BACKUP_JOB_RUNNING and CURRENT_DOMAIN_NAME:
-        logger.info(f"Tentando abortar job no domínio '{CURRENT_DOMAIN_NAME}'...")
+        logger.info(f"Abortando job '{CURRENT_DOMAIN_NAME}'...")
         try:
             subprocess.run(['virsh', 'domjobabort', CURRENT_DOMAIN_NAME], capture_output=True)
-            logger.info("  -> Job abortado.")
-        except Exception as e:
-            logger.error(f"  -> Falha ao abortar job: {e}")
+        except Exception: pass
         BACKUP_JOB_RUNNING = False
 
-    # 2. Remover Snapshot Temporário (se existir)
     if CURRENT_SNAPSHOT_NAME and CURRENT_DOMAIN_NAME:
-        logger.info(f"Removendo snapshot órfão '{CURRENT_SNAPSHOT_NAME}'...")
+        logger.info(f"Removendo snapshot '{CURRENT_SNAPSHOT_NAME}'...")
         try:
-            subprocess.run(
-                ['virsh', 'snapshot-delete', CURRENT_DOMAIN_NAME, CURRENT_SNAPSHOT_NAME, '--metadata'], 
-                capture_output=True
-            )
-            logger.info("  -> Snapshot removido.")
-        except Exception as e:
-            logger.error(f"  -> Falha ao remover snapshot: {e}")
+            subprocess.run(['virsh', 'snapshot-delete', CURRENT_DOMAIN_NAME, CURRENT_SNAPSHOT_NAME, '--metadata'], capture_output=True)
+        except Exception: pass
         CURRENT_SNAPSHOT_NAME = None
 
-    # 3. Deletar Arquivos Parciais (.bak ou .qcow2 temporários)
     if FILES_TO_CLEANUP:
-        logger.info("Removendo arquivos de backup incompletos...")
+        logger.info("Removendo arquivos incompletos...")
         for fpath in FILES_TO_CLEANUP:
             if os.path.exists(fpath):
                 try:
                     os.remove(fpath)
                     logger.info(f"  -> Deletado: {os.path.basename(fpath)}")
-                except Exception as e:
-                    logger.error(f"  -> Erro ao deletar {fpath}: {e}")
-            else:
-                # Pode já ter sido movido ou deletado
-                pass
+                except Exception: pass
     
-    logger.warning("--- LIMPEZA CONCLUÍDA ---")
     if exit_after:
+        logger.warning("--- INTERROMPIDO PELO USUÁRIO ---")
         sys.exit(1)
 
 def signal_handler(sig, frame):
-    """Captura Ctrl+C (SIGINT) e força limpeza."""
-    logger.warning(f"\nSINAL DE INTERRUPÇÃO DETECTADO ({sig})!")
     perform_cleanup(exit_after=True)
 
-# Registra o listener de Ctrl+C
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
@@ -149,7 +130,7 @@ def manage_retention(backup_dir, retention_days):
             if datetime.fromtimestamp(os.path.getmtime(full_path)) < cutoff:
                 try:
                     os.remove(full_path)
-                    logger.info(f"Retenção - Removido antigo: {f}")
+                    logger.info(f"Retenção - Removido: {f}")
                 except: pass
 
 def check_available_space(backup_dir, disk_details):
@@ -161,20 +142,33 @@ def check_available_space(backup_dir, disk_details):
         return False
     return True
 
-# --- MODOS DE BACKUP ---
+def format_bytes(size):
+    # Retorna em GB se > 1GB, senão MB
+    power = 2**30 # 1024**3
+    n = size / power
+    if n >= 1: return f"{n:.2f} GB"
+    return f"{size / (2**20):.2f} MB"
+
+# --- MODO LIBVIRT (MODIFICADO PARA LER ARQUIVO) ---
 
 def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
     global BACKUP_JOB_RUNNING, FILES_TO_CLEANUP
     
+    # 1. Calcula tamanho total da ORIGEM
+    source_total_bytes = 0
+    try:
+        for info in disk_details.values():
+            source_total_bytes += os.path.getsize(info['path'])
+    except Exception:
+        source_total_bytes = 1 # Evita div/0
+
     backup_xml_parts = ["<domainbackup><disks>"]
     
     for target_dev, info in disk_details.items():
         fpath = os.path.join(backup_dir, f"{dom.name()}-{target_dev}-{timestamp}.{DISK_FORMAT}.bak")
-        # REGISTRA O ARQUIVO PARA LIMPEZA EM CASO DE ERRO
         FILES_TO_CLEANUP.append(fpath)
-        
         backup_xml_parts.append(f"<disk name='{target_dev}' type='file'><target file='{fpath}'/><driver type='{DISK_FORMAT}'/></disk>")
-        logger.info(f"  -> Alvo: {fpath}")
+        logger.info(f"  -> Destino: {fpath}")
 
     backup_xml = "".join(backup_xml_parts) + "</disks></domainbackup>"
     
@@ -183,7 +177,7 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
     
     try:
         dom.backupBegin(backup_xml, None, 0)
-        BACKUP_JOB_RUNNING = True # Marca job como ativo
+        BACKUP_JOB_RUNNING = True
         
         spinner = "|/-\\"
         last_log = 0
@@ -193,52 +187,68 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
             if not stats or stats.get('type', libvirt.VIR_DOMAIN_JOB_NONE) == libvirt.VIR_DOMAIN_JOB_NONE:
                 if sys.stdout.isatty(): print()
                 logger.info("Sucesso! Backup finalizado.")
-                BACKUP_JOB_RUNNING = False # Job acabou, desmarca flag
-                FILES_TO_CLEANUP.clear() # Sucesso, remove da lista de limpeza (não deletar os bons!)
+                BACKUP_JOB_RUNNING = False
+                FILES_TO_CLEANUP.clear()
                 break
             
-            processed = stats.get('data_processed', 0) / 1024**2
+            # --- LÓGICA DE TAMANHO REAL ---
+            # Soma o tamanho atual dos arquivos de DESTINO no disco
+            dest_current_bytes = 0
+            for fpath in FILES_TO_CLEANUP:
+                try:
+                    if os.path.exists(fpath):
+                        dest_current_bytes += os.path.getsize(fpath)
+                except OSError: pass
+            
+            percent = (dest_current_bytes / source_total_bytes * 100) if source_total_bytes > 0 else 0
             elapsed = time.time() - start_time
             spin = spinner[int(time.time()*4) % 4]
             
-            msg = f"[{spin}] Copiando: {processed:.0f} MB... ({elapsed:.0f}s)"
+            # Formata para ficar legível, mas mostra os bytes se preferir
+            # Opção 1: Bytes brutos (como ls -al)
+            # msg = f"[{spin}] {dest_current_bytes} / {source_total_bytes} Bytes ({percent:.1f}%)"
+            
+            # Opção 2: GB/MB (Mais legível)
+            msg = f"[{spin}] Tamanho: {dest_current_bytes} / {source_total_bytes} Bytes ({percent:.1f}%)"
             
             if sys.stdout.isatty():
-                sys.stdout.write(f"\rINFO: {msg}".ljust(60))
+                sys.stdout.write(f"\rINFO: {msg}".ljust(80))
                 sys.stdout.flush()
             elif time.time() - last_log > 60:
                 logger.info(msg)
                 last_log = time.time()
             
-            time.sleep(0.25)
+            time.sleep(0.5) # Intervalo um pouco maior para leitura de disco
             
     except Exception as e:
-        logger.error(f"Erro durante execução Libvirt: {e}")
-        perform_cleanup() # Chama limpeza explicita
+        logger.error(f"Erro Libvirt: {e}")
+        perform_cleanup()
         raise
+
+# --- MODO SNAPSHOT ---
 
 def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit):
     global CURRENT_SNAPSHOT_NAME, FILES_TO_CLEANUP
     
+    # Neste modo, o rsync já mostra o progresso detalhado se rodar interativo
+    # Mas vamos manter a estrutura
     snap_name = f"{dom.name()}_snap_{timestamp}"
     CURRENT_SNAPSHOT_NAME = snap_name
     
-    # Preparar comandos
     cmd_snap = ['virsh', 'snapshot-create-as', '--domain', dom.name(), '--name', snap_name, '--disk-only', '--atomic', '--no-metadata']
     cmds_rsync = []
     cmds_pivot = []
     
-    # Montar estrutura
     for dev, info in disk_details.items():
         base_dir = os.path.dirname(info['path'])
         snap_file = os.path.join(base_dir, f"{dom.name()}_{dev}_tmp_{timestamp}.qcow2")
         dest_file = os.path.join(backup_dir, f"{dom.name()}-{dev}-{timestamp}.bak")
         
-        # Registra arquivos que serão criados
         FILES_TO_CLEANUP.append(dest_file) 
         
         cmd_snap.extend(['--diskspec', f"{dev},file={snap_file},driver=qcow2"])
         
+        # Rsync com progress nativo
         rsync = ['rsync', '-ah', '--inplace', '--progress', info['path'], dest_file]
         if bwlimit > 0: rsync.insert(1, f"--bwlimit={bwlimit*1024}")
         cmds_rsync.append(rsync)
@@ -249,28 +259,28 @@ def run_backup_snapshot_rsync(dom, backup_dir, disk_details, timestamp, bwlimit)
         logger.info("[Snapshot] Criando snapshot...")
         run_subprocess(cmd_snap)
         
-        logger.info("[Snapshot] Iniciando Rsync...")
+        logger.info("[Snapshot] Iniciando Rsync (Acompanhe saída abaixo)...")
         for cmd in cmds_rsync:
-            run_subprocess(cmd)
+            # subprocess.run conecta stdout direto no terminal para ver o rsync
+            subprocess.run(cmd, check=True)
             
-        logger.info("[Snapshot] Fazendo Pivot (Blockcommit)...")
+        logger.info("[Snapshot] Fazendo Pivot...")
         for cmd in cmds_pivot:
             run_subprocess(cmd)
             
-        CURRENT_SNAPSHOT_NAME = None # Já foi comitado, não precisa mais limpar snapshot
-        FILES_TO_CLEANUP.clear() # Sucesso, não deletar backups
+        CURRENT_SNAPSHOT_NAME = None
+        FILES_TO_CLEANUP.clear()
         logger.info("Sucesso! Modo Snapshot finalizado.")
         
     except Exception as e:
-        logger.error(f"Erro no fluxo Snapshot: {e}")
+        logger.error(f"Erro Snapshot: {e}")
         perform_cleanup()
         raise
 
 # --- MAIN ---
 
 def run_backup(args, timestamp):
-    global CURRENT_DOMAIN_NAME, CURRENT_DOMAIN_OBJ
-    
+    global CURRENT_DOMAIN_NAME
     CURRENT_DOMAIN_NAME = args.domain
     conn = None
     
@@ -279,11 +289,12 @@ def run_backup(args, timestamp):
         if not conn: raise Exception("Falha conexão Libvirt")
         
         dom = conn.lookupByName(args.domain)
-        CURRENT_DOMAIN_OBJ = dom
         
-        # Aborta jobs presos anteriores
-        if dom.jobInfo()[0] != libvirt.VIR_DOMAIN_JOB_NONE:
-            subprocess.run(['virsh', 'domjobabort', args.domain], stderr=subprocess.DEVNULL)
+        # Limpa jobs velhos
+        try:
+            if dom.jobInfo()[0] != libvirt.VIR_DOMAIN_JOB_NONE:
+                subprocess.run(['virsh', 'domjobabort', args.domain], stderr=subprocess.DEVNULL)
+        except: pass
             
         backup_dir = os.path.join(args.backup_dir, args.domain)
         manage_retention(backup_dir, args.retention_days)
@@ -301,7 +312,6 @@ def run_backup(args, timestamp):
 
     except Exception as e:
         logger.exception(f"Falha geral: {e}")
-        # A limpeza já é chamada dentro das subfunções ou pelo signal handler
         sys.exit(1)
     finally:
         if conn: conn.close()
