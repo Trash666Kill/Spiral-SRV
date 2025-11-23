@@ -37,12 +37,13 @@ DEFAULT_JSON_CONFIG = {
             "--chmod=ugo+r", "--ignore-errors", "--force", "--delete"
         ],
         "retention_policy": {
+            "keep_logs_days": 30,
             "keep_full_backups_days": 30,
             "keep_differential_files_days": 240,
             "cleanup_empty_dirs": True
         }
     },
-    "excludes": ["*.tmp"]
+    "excludes": ["*.tmp", "Thumbs.db"]
 }
 
 class BackupJob:
@@ -72,8 +73,10 @@ class BackupJob:
         self.diff_dir = os.path.join(root, "Differential", rel)
         self.full_dir = os.path.join(root, "Full", rel)
         
-        safe_name = rel.replace('/', '_').replace('\\', '_')
-        log_name = f"backup_{safe_name}_{self.date_str}.log"
+        # Cria um nome seguro para arquivos (logs, patterns)
+        self.safe_name = rel.replace('/', '_').replace('\\', '_')
+        
+        log_name = f"backup_{self.safe_name}_{self.date_str}.log"
         self.log_file = os.path.join(paths['log_dir'], log_name)
 
     def setup_logging(self):
@@ -165,11 +168,9 @@ class BackupJob:
         try:
             src = self.orig_dir if self.orig_dir.endswith('/') else self.orig_dir + '/'
             
-            # Montagem do comando: Base + User Flags + Logic Flags
             cmd = ["rsync", f"--bwlimit={bw_kb}"]
-            cmd.extend(rsync_flags) # Adiciona flags do JSON
+            cmd.extend(rsync_flags)
             
-            # Adiciona flags OBRIGATÓRIAS para a lógica do script (Não remover)
             cmd.extend([
                 f"--exclude-from={tmp_exclude}",
                 "--backup", 
@@ -274,6 +275,29 @@ class BackupJob:
             self.logger.error(f"Erro na compactação: {e}")
             raise
 
+    def cleanup_logs(self):
+        """Limpa logs antigos deste job específico."""
+        policy = self.config['settings'].get('retention_policy', {})
+        # Padrão: 30 dias se não especificado
+        days = policy.get('keep_logs_days', 30)
+        log_dir = self.config['paths']['log_dir']
+        
+        # Padrão de busca: backup_NOME_CLIENTE_*.log
+        # Isso evita apagar logs de outros clientes
+        log_pattern = f"backup_{self.safe_name}_*.log"
+        
+        self.logger.info(f"Limpando logs antigos de '{self.safe_name}' (> {days} dias)...")
+        
+        cmd = [
+            "find", log_dir,
+            "-name", log_pattern,
+            "-type", "f",
+            "-mtime", f"+{days}",
+            "-delete"
+        ]
+        
+        self._run_cmd(cmd, check=False)
+
     def cleanup(self, did_mount):
         if did_mount:
             self.logger.info("Desmontando...")
@@ -307,9 +331,14 @@ def main():
 
         job.check_pre_flight()
         did_mount = job.mount_share()
+        
         job.run_rsync()
         job.cleanup_differential()
         job.run_full_backup()
+        
+        # Nova chamada de limpeza de logs
+        job.cleanup_logs()
+        
         job.logger.info("=== Sucesso ===")
     except KeyboardInterrupt:
         sys.exit(130)
