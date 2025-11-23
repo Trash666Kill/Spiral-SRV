@@ -307,7 +307,15 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
 # --- MAIN ---
 if __name__ == "__main__":
     
-    parser = argparse.ArgumentParser(description="Atomic Live KVM Backup (Libvirt API) - CLI")
+    example_text = '''Example (Cron):
+  59 23 * * * /usr/bin/python3 /root/.services/scheduled/kvmhotbkp.py --domain Trixie --backup-dir /mnt/Local/USB/A/Backup/srv17517/Container/B/Virt/Trixie --disk vda vdb
+'''
+    
+    parser = argparse.ArgumentParser(
+        description="Atomic Live KVM Backup (Libvirt API) - CLI",
+        epilog=example_text,
+        formatter_class=argparse.RawTextHelpFormatter
+    )
     
     parser.add_argument('--domain', required=True, help="VM Name (e.g., vm46176)")
     parser.add_argument('--backup-dir', required=True, help="Base destination directory")
