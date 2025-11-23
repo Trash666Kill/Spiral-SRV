@@ -316,4 +316,3 @@ if __name__ == "__main__":
     except Exception as e: logger.exception(f"Fatal: {e}"); sys.exit(1)
     finally: 
         if 'conn' in locals() and conn: conn.close()
-        
