@@ -16,16 +16,15 @@ from datetime import datetime
 HELP_TEXT = textwrap.dedent("""
     \033[1mLÓGICA DE FUNCIONAMENTO:\033[0m
     Este script utiliza uma estrutura de diretórios centrada no cliente (Client-Centric).
-    Todos os tipos de backup (Incremental, Full, Differential) são agrupados dentro
-    da pasta do compartilhamento específico.
+    A estrutura de pastas local é automaticamente derivada do campo 'remote_share' 
+    (Ex: //192.168.0.100/Share -> 192_168_0_100/Share).
 
     \033[1m1. Estrutura de Diretórios:\033[0m
-       - O nome da pasta local é definido pelo campo 'relative_path' (nome lógico/servidor).
-       - Endereços IP (pontos) são sanitizados para underscores.
-       - Estrutura: [Backup Root] / [relative_path sanitizado] / {Incremental, Differential, Full}
+       - O nome da pasta local é definido pelo endereço IP do servidor (sanitizado).
+       - Estrutura: [Backup Root] / [IP_sanitizado/Share] / {Incremental, Differential, Full}
 
     \033[1m2. Backup Full (Snapshot + Compressão):\033[0m
-       - Utiliza 'Reflink' (Copy-on-Write) para criar a cópia base instantaneamente.
+       - Utiliza 'Reflink' (Copy-on-Write) para cópia instantânea.
        - Se já existir um Full válido (conforme retenção), a criação é PULADA.
 
     \033[1m3. Limpeza Automática:\033[0m
@@ -48,7 +47,6 @@ DEFAULT_JSON_CONFIG = {
         "remote_share": "//192.168.0.100/Dados/Share",
         "mount_point": "/mnt/Remote/MountPoint",
         "backup_root": "/mnt/Backup",
-        "relative_path": "SRV-FILE01/Dados/Share",
         "log_dir": "/var/log/rsync"
     },
     "settings": {
@@ -91,25 +89,28 @@ class BackupJob:
     def setup_paths(self):
         paths = self.config['paths']
         root = paths['backup_root']
-        rel = paths['relative_path']
         
-        # O ponto de montagem (source) não é afetado pela nova estrutura
+        # O ponto de montagem (source) não é afetado
         self.orig_dir = paths['mount_point']
 
-        # --- LÓGICA DE SANITIZAÇÃO E ESTRUTURA CLIENT-CENTRIC ---
+        # --- LÓGICA DE DERIVAÇÃO DE CAMINHO (Máxima Automação) ---
         
-        # 1. Sanitiza o nome lógico (relative_path) trocando pontos por underline
+        # 1. Obtém o nome base do diretório removendo o prefixo de rede (//)
+        remote_path = paths['remote_share']
+        rel = remote_path[2:] # Remove o prefixo "//"
+
+        # 2. Sanitiza o nome (troca IPs por underscores: 192.168.0.100 -> 192_168_0_100)
         rel_sanitized = rel.replace('.', '_')
         
-        # 2. Define a raiz deste cliente: [backup_root] / [relative_path_sanitized]
+        # 3. Define a raiz deste cliente: [backup_root] / [remote_share_sanitized]
         self.client_root = os.path.join(root, rel_sanitized)
 
-        # 3. Define as pastas de TIPO (Incremental/Differential/Full) dentro da raiz do cliente
+        # 4. Define as pastas de TIPO (Incremental/Differential/Full) dentro da raiz do cliente
         self.incr_dir = os.path.join(self.client_root, "Incremental")
         self.diff_dir = os.path.join(self.client_root, "Differential")
         self.full_dir = os.path.join(self.client_root, "Full")
         
-        # 4. Nome seguro para logs (remove barras também)
+        # 5. Nome seguro para logs
         self.safe_name = rel_sanitized.replace('/', '_').replace('\\', '_')
         
         log_name = f"backup_{self.safe_name}_{self.date_str}.log"
