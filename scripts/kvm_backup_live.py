@@ -7,7 +7,6 @@ import time
 import argparse
 import subprocess
 import signal
-import json
 import re 
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -19,20 +18,11 @@ CONNECT_URI = 'qemu:///system'
 SAFETY_MARGIN_PERCENT = 0.10
 LOG_DIR = "/var/log/virsh"
 FORBIDDEN_PATTERNS = ['_snap_', '_tmp_', 'snapshot', '.bak']
-CONFIG_FILENAME = "config.json"
 
 # --- VARIÁVEIS GLOBAIS ---
 CURRENT_DOMAIN_NAME = None
 BACKUP_JOB_RUNNING = False
 FILES_TO_CLEANUP = []      # Arquivos de DESTINO (.bak)
-
-# --- CONFIGURAÇÃO PADRÃO (JSON) ---
-DEFAULT_CONFIG = {
-    "domain": "vm46176",
-    "backup_dir": "/mnt/Local/USB/A/Backup/srv17517/Container/B/Virt",
-    "disk": ["vda", "vdb"], # <-- CORREÇÃO: Padrão com vda e vdb separados
-    "retention_days": 7,
-}
 
 # --- LOGGER ---
 logger = logging.getLogger('virsh_hotbkp')
@@ -41,6 +31,7 @@ logger.setLevel(logging.DEBUG)
 def setup_logging(domain_name, timestamp):
     try:
         log_dir_final = LOG_DIR
+        # Se não tiver permissão no /var/log, usa /tmp
         if not os.access(os.path.dirname(LOG_DIR), os.W_OK) and not os.path.isdir(LOG_DIR):
             log_dir_final = "/tmp/virsh_logs"
         os.makedirs(log_dir_final, exist_ok=True)
@@ -56,30 +47,7 @@ def setup_logging(domain_name, timestamp):
     except Exception as e:
         print(f"ERRO LOGS: {e}", file=sys.stderr); sys.exit(1)
 
-# --- GERENCIAMENTO DE CONFIGURAÇÃO (JSON) ---
-
-def load_or_create_config():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(script_dir, CONFIG_FILENAME)
-    
-    if not os.path.exists(config_path):
-        try:
-            with open(config_path, 'w') as f:
-                json.dump(DEFAULT_CONFIG, f, indent=4)
-            print(f"INFO: Arquivo de configuração criado em: {config_path}")
-            return DEFAULT_CONFIG
-        except Exception as e:
-            print(f"AVISO: Não foi possível criar arquivo de config: {e}")
-            return DEFAULT_CONFIG
-    else:
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"ERRO CRÍTICO: JSON de configuração inválido ({config_path}): {e}")
-            sys.exit(1)
-
-# --- LIMPEZA E EMERGÊNCIA (Simplificada) ---
+# --- LIMPEZA E EMERGÊNCIA ---
 
 def perform_cleanup(exit_after=False):
     global BACKUP_JOB_RUNNING, CURRENT_DOMAIN_NAME
@@ -150,7 +118,7 @@ def get_disk_details_from_xml(dom, target_devs_list):
         logger.error("="*60)
         logger.error(f"ERRO FATAL: Discos solicitados não existem na VM: {missing_devs}")
         logger.error(f"Discos encontrados: {found_devs}")
-        logger.error("Verifique o parâmetro --disk ou o arquivo config.json")
+        logger.error("Verifique o parâmetro --disk")
         logger.error("="*60)
         return None
 
@@ -300,27 +268,30 @@ def run_backup_libvirt_api(dom, backup_dir, disk_details, timestamp):
 
 # --- MAIN ---
 if __name__ == "__main__":
-    config = load_or_create_config()
     
-    parser = argparse.ArgumentParser(description="Backup KVM Live (Libvirt API)")
-    # Argumentos OPCIONAIS (pegam padrão do JSON se não passados)
-    parser.add_argument('--domain', required=False, default=config.get('domain'), help="Nome da VM")
-    parser.add_argument('--backup-dir', required=False, default=config.get('backup_dir'), help="Diretório de destino")
-    parser.add_argument('--disk', required=False, nargs='+', default=config.get('disk'), help="Discos (ex: vda vdb)")
-    parser.add_argument('--retention-days', type=int, required=False, default=config.get('retention_days'), help="Dias de retenção")
+    parser = argparse.ArgumentParser(description="Backup KVM Live (Libvirt API) - Modo Estrito CLI")
+    
+    # Argumentos agora são OBRIGATÓRIOS (required=True)
+    parser.add_argument('--domain', required=True, help="Nome da VM (Ex: vm46176)")
+    parser.add_argument('--backup-dir', required=True, help="Diretório base de destino")
+    parser.add_argument('--disk', required=True, nargs='+', help="Lista de discos para backup (Ex: vda vdb)")
+    
+    # Argumento opcional com valor padrão em código
+    parser.add_argument('--retention-days', type=int, required=False, default=7, help="Dias de retenção (Padrão: 7)")
     
     args = parser.parse_args()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    if not args.domain or not args.backup_dir or not args.disk:
-        print("ERRO: Configurações obrigatórias não encontradas.")
-        sys.exit(1)
-        
     setup_logging(args.domain, timestamp)
     
     try:
         conn = libvirt.open(CONNECT_URI)
-        dom = conn.lookupByName(args.domain)
+        try:
+            dom = conn.lookupByName(args.domain)
+        except libvirt.libvirtError:
+            logger.error(f"VM '{args.domain}' não encontrada.")
+            sys.exit(1)
+            
         CURRENT_DOMAIN_NAME = args.domain 
 
         try: 
