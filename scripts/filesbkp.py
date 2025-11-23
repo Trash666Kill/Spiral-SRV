@@ -32,6 +32,10 @@ DEFAULT_JSON_CONFIG = {
         "bandwidth_limit_mb": 10,
         "ionice_class": 3,
         "nice_priority": 19,
+        "rsync_flags": [
+            "-ahx", "--acls", "--xattrs", "--numeric-ids", 
+            "--chmod=ugo+r", "--ignore-errors", "--force", "--delete"
+        ],
         "retention_policy": {
             "keep_full_backups_days": 30,
             "keep_differential_files_days": 240,
@@ -149,6 +153,10 @@ class BackupJob:
     def run_rsync(self):
         bw_kb = int(self.config['settings']['bandwidth_limit_mb'] * 1024)
         
+        # Recupera flags customizadas do JSON ou usa padrão seguro
+        default_flags = ["-ahx", "--acls", "--xattrs", "--numeric-ids", "--chmod=ugo+r", "--ignore-errors", "--force", "--delete"]
+        rsync_flags = self.config['settings'].get('rsync_flags', default_flags)
+        
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
             if 'excludes' in self.config:
                 tmp.write('\n'.join(self.config['excludes']))
@@ -157,15 +165,20 @@ class BackupJob:
         try:
             src = self.orig_dir if self.orig_dir.endswith('/') else self.orig_dir + '/'
             
-            cmd = [
-                "rsync", f"--bwlimit={bw_kb}",
-                "-ahx", "--acls", "--xattrs", "--numeric-ids", "--chmod=ugo+r",
-                "--ignore-errors", "--force",
+            # Montagem do comando: Base + User Flags + Logic Flags
+            cmd = ["rsync", f"--bwlimit={bw_kb}"]
+            cmd.extend(rsync_flags) # Adiciona flags do JSON
+            
+            # Adiciona flags OBRIGATÓRIAS para a lógica do script (Não remover)
+            cmd.extend([
                 f"--exclude-from={tmp_exclude}",
-                "--delete", "--backup", f"--backup-dir={self.diff_dir}",
-                "--info=del,name,stats2", f"--log-file={self.log_file}",
-                src, self.incr_dir
-            ]
+                "--backup", 
+                f"--backup-dir={self.diff_dir}",
+                "--info=del,name,stats2", 
+                f"--log-file={self.log_file}",
+                src, 
+                self.incr_dir
+            ])
             
             self.logger.info("Executando Rsync...")
             res = self._run_cmd(cmd, check=False)
@@ -193,12 +206,9 @@ class BackupJob:
         policy = self.config['settings'].get('retention_policy', {})
         retention = policy.get('keep_full_backups_days', 30)
 
-        # 1. Limpeza de Arquivos ZST Antigos
         self.logger.info(f"Verificando Fulls antigos (> {retention} dias)...")
         self._run_cmd(["find", self.full_dir, "-type", "f", "-name", "Full_*.tar.zst", "-mtime", f"+{retention}", "-delete"], check=False)
 
-        # 2. Verificação se DEVE criar um novo Full
-        # Verifica se existe algum .zst criado nos últimos 'retention' dias
         self.logger.info(f"Verificando validade do Full atual (< {retention} dias)...")
         cmd_check = [
             "find", self.full_dir, 
@@ -209,27 +219,17 @@ class BackupJob:
         ]
         
         res = self._run_cmd(cmd_check, check=False, capture_output=True, text=True)
-        
-        # Se encontrou um backup recente, não faz nada e encerra a função.
-        # Isso preserva a pasta 'Full' existente e o arquivo zst.
         if res.stdout and res.stdout.strip():
             recent_file = res.stdout.strip()
             self.logger.info(f"Backup Full válido encontrado ({recent_file}). Mantendo estrutura atual.")
             return
 
-        # -------------------------------------------------------------
-        # SE CHEGOU AQUI, PRECISA CRIAR UM NOVO FULL E ATUALIZAR A PASTA
-        # -------------------------------------------------------------
-        
-        # O diretório persistente se chamará simplesmente "Full"
         persistent_full_dir = os.path.join(self.full_dir, "Full")
 
-        # 3. Remove a pasta 'Full' ANTIGA (já que vamos criar uma nova snapshot)
         if os.path.exists(persistent_full_dir):
             self.logger.info(f"Removendo diretório '{persistent_full_dir}' antigo para atualização...")
             shutil.rmtree(persistent_full_dir)
 
-        # 4. Cria a nova cópia do Incremental
         self.logger.info("Criando novo Snapshot 'Full' (Reflink)...")
         try:
             cmd_reflink = ["cp", "-a", "--reflink=always", self.incr_dir, persistent_full_dir]
@@ -238,7 +238,6 @@ class BackupJob:
             self.logger.warning("Reflink falhou. Usando cp -a.")
             self._run_cmd(["cp", "-a", self.incr_dir, persistent_full_dir], check=True)
 
-        # 5. Compacta a nova pasta 'Full'
         filename = f"Full_{self.date_str}.tar.zst"
         zst_path = os.path.join(self.full_dir, filename)
         
@@ -247,7 +246,6 @@ class BackupJob:
 
         self.logger.info(f"Compactando: {filename}")
         
-        # O tar compacta a pasta "Full" que está dentro de self.full_dir
         cmd_tar = [
             "ionice", "-c", ionice, "nice", "-n", nice, 
             "tar", "-cvf", "-", 
@@ -275,8 +273,6 @@ class BackupJob:
         except Exception as e:
             self.logger.error(f"Erro na compactação: {e}")
             raise
-            
-        # NOTA: Não removemos 'persistent_full_dir' aqui. Ele fica no disco até o próximo ciclo de 30 dias.
 
     def cleanup(self, did_mount):
         if did_mount:
