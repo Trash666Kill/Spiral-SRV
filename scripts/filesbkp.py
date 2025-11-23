@@ -9,7 +9,45 @@ import logging
 import subprocess
 import argparse
 import tempfile
+import textwrap
 from datetime import datetime
+
+# --- Texto de Ajuda Detalhado ---
+HELP_TEXT = textwrap.dedent("""
+    \033[1mLÓGICA DE FUNCIONAMENTO:\033[0m
+    Este script implementa uma estratégia de backup híbrida (Incremental + Diferencial + Full Sintético)
+    otimizada para sistemas de arquivos modernos (XFS/Btrfs) e redes corporativas.
+
+    \033[1m1. Backup Incremental (O Espelho):\033[0m
+       - O script mantém uma pasta local 'Incremental' que é um espelho exato da origem.
+       - Apenas os arquivos modificados ou novos são transferidos pela rede (Rsync).
+    
+    \033[1m2. Backup Diferencial (O Histórico):\033[0m
+       - Quando um arquivo é alterado ou deletado na origem, a versão antiga que estava no
+         'Incremental' NÃO é perdida. Ela é movida para a pasta 'Differential'.
+       - Retenção: Arquivos nesta pasta são apagados após X dias (configurável: keep_differential_files_days).
+
+    \033[1m3. Backup Full (Snapshot + Compressão):\033[0m
+       - O script gera arquivos '.tar.zst' completos sem baixar os dados novamente da rede.
+       - \033[36mTécnica Reflink:\033[0m A cópia do 'Incremental' para o diretório de staging 'Full'
+         é instantânea e não ocupa espaço duplicado no disco (Copy-on-Write), economizando TBs de espaço.
+       - \033[36mInteligência:\033[0m Se já existir um arquivo Full válido criado recentemente (dentro do
+         prazo de retenção), o script PULA a criação de um novo, economizando CPU.
+       - O diretório base 'Full' é mantido no disco para acelerar a próxima execução.
+
+    \033[1m4. Limpeza de Logs:\033[0m
+       - Logs antigos são rotacionados e removidos automaticamente baseados no nome do cliente.
+
+    \033[1mEXEMPLOS DE USO:\033[0m
+       # 1. Gerar um modelo de configuração vazio
+       $ python3 filesbkp.py --init
+
+       # 2. Executar o backup de um cliente
+       $ python3 filesbkp.py clientes/sugisawa.json
+
+       # 3. Executar em modo Debug (mostra comandos mount, rsync, tar no terminal)
+       $ python3 filesbkp.py clientes/sugisawa.json --debug
+""")
 
 # --- Configuração Padrão ---
 DEFAULT_JSON_CONFIG = {
@@ -73,7 +111,6 @@ class BackupJob:
         self.diff_dir = os.path.join(root, "Differential", rel)
         self.full_dir = os.path.join(root, "Full", rel)
         
-        # Cria um nome seguro para arquivos (logs, patterns)
         self.safe_name = rel.replace('/', '_').replace('\\', '_')
         
         log_name = f"backup_{self.safe_name}_{self.date_str}.log"
@@ -156,7 +193,6 @@ class BackupJob:
     def run_rsync(self):
         bw_kb = int(self.config['settings']['bandwidth_limit_mb'] * 1024)
         
-        # Recupera flags customizadas do JSON ou usa padrão seguro
         default_flags = ["-ahx", "--acls", "--xattrs", "--numeric-ids", "--chmod=ugo+r", "--ignore-errors", "--force", "--delete"]
         rsync_flags = self.config['settings'].get('rsync_flags', default_flags)
         
@@ -276,14 +312,10 @@ class BackupJob:
             raise
 
     def cleanup_logs(self):
-        """Limpa logs antigos deste job específico."""
         policy = self.config['settings'].get('retention_policy', {})
-        # Padrão: 30 dias se não especificado
         days = policy.get('keep_logs_days', 30)
         log_dir = self.config['paths']['log_dir']
         
-        # Padrão de busca: backup_NOME_CLIENTE_*.log
-        # Isso evita apagar logs de outros clientes
         log_pattern = f"backup_{self.safe_name}_*.log"
         
         self.logger.info(f"Limpando logs antigos de '{self.safe_name}' (> {days} dias)...")
@@ -304,10 +336,16 @@ class BackupJob:
             self._run_cmd(["umount", self.orig_dir], check=False)
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("config_file", nargs="?")
-    parser.add_argument("--init", action="store_true")
-    parser.add_argument("--debug", action="store_true")
+    parser = argparse.ArgumentParser(
+        description="Gerenciador de Backup Corporativo",
+        epilog=HELP_TEXT,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument("config_file", nargs="?", help="Caminho do arquivo JSON de configuração")
+    parser.add_argument("--init", action="store_true", help="Cria um modelo de configuração padrão no local especificado")
+    parser.add_argument("--debug", action="store_true", help="Exibe os comandos executados no shell para depuração")
+    
     args = parser.parse_args()
 
     if args.init:
@@ -316,11 +354,15 @@ def main():
         with open(target, 'w') as f: json.dump(DEFAULT_JSON_CONFIG, f, indent=4)
         print(f"Modelo criado: {target}"); sys.exit(0)
 
-    if not args.config_file: parser.error("Arquivo JSON obrigatório.")
+    if not args.config_file:
+        parser.print_help()
+        sys.exit(1)
 
     if not os.path.exists(args.config_file):
-        print(f"Criando modelo em {args.config_file}...")
+        print(f"[\033[93mAVISO\033[0m] '{args.config_file}' não encontrado.")
+        print(f"Criando modelo padrão...")
         with open(args.config_file, 'w') as f: json.dump(DEFAULT_JSON_CONFIG, f, indent=4)
+        print("Arquivo criado. Edite-o e tente novamente.")
         sys.exit(0)
 
     job = None; did_mount = False
@@ -335,8 +377,6 @@ def main():
         job.run_rsync()
         job.cleanup_differential()
         job.run_full_backup()
-        
-        # Nova chamada de limpeza de logs
         job.cleanup_logs()
         
         job.logger.info("=== Sucesso ===")
