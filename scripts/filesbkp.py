@@ -10,20 +10,24 @@ import subprocess
 import argparse
 import tempfile
 from datetime import datetime
-from pathlib import Path
 
-# Configuração Padrão para geração de template (caso arquivo não exista)
+# --- Configuração Padrão ---
 DEFAULT_JSON_CONFIG = {
     "description": "Template de Configuração",
+    "credentials": {
+        "username": "usuario",
+        "password": "senha",
+        "domain": "dominio.local"
+    },
     "paths": {
-        "remote_share": "//IP/SHARE",
-        "mount_point": "/mnt/Remote/Servers/Cliente/Share",
-        "backup_root": "/mnt/Local/Container/A/Backup",
-        "relative_path": "Cliente/Share",
-        "log_dir": "/var/log/rsync",
-        "credentials_file": "/root/.smbcreds_template"
+        "remote_share": "//Servidor/Share",
+        "mount_point": "/mnt/Remote/MountPoint",
+        "backup_root": "/mnt/Backup",
+        "relative_path": "Cliente/Pasta",
+        "log_dir": "/var/log/rsync"
     },
     "settings": {
+        "mount_options": "ro",
         "min_space_mb": 1024,
         "bandwidth_limit_mb": 10,
         "ionice_class": 3,
@@ -38,8 +42,9 @@ DEFAULT_JSON_CONFIG = {
 }
 
 class BackupJob:
-    def __init__(self, config_path):
+    def __init__(self, config_path, debug=False):
         self.config_path = config_path
+        self.debug = debug
         self.config = self._load_config()
         self.date_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         self.setup_paths()
@@ -50,219 +55,271 @@ class BackupJob:
             with open(self.config_path, 'r') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Erro ao ler arquivo de configuração: {e}")
+            print(f"[\033[91mERRO\033[0m] Erro no JSON: {e}")
             sys.exit(1)
 
     def setup_paths(self):
-        """Constrói os caminhos baseados na raiz e no caminho relativo do cliente."""
         paths = self.config['paths']
+        self.orig_dir = paths['mount_point']
         root = paths['backup_root']
         rel = paths['relative_path']
 
-        # Diretório de Montagem (Origem)
-        self.orig_dir = paths['mount_point']
-        
-        # Diretórios de Destino
         self.incr_dir = os.path.join(root, "Incremental", rel)
         self.diff_dir = os.path.join(root, "Differential", rel)
         self.full_dir = os.path.join(root, "Full", rel)
         
-        # Arquivo de Log
-        log_name = f"backup_{rel.replace('/', '_')}_{self.date_str}.log"
+        safe_name = rel.replace('/', '_').replace('\\', '_')
+        log_name = f"backup_{safe_name}_{self.date_str}.log"
         self.log_file = os.path.join(paths['log_dir'], log_name)
 
     def setup_logging(self):
-        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
-        logging.basicConfig(
-            level=logging.INFO,
-            format='[%(asctime)s] %(levelname)s: %(message)s',
-            handlers=[
-                logging.FileHandler(self.log_file),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
-        self.logger = logging.getLogger()
+        try:
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+            logging.basicConfig(
+                level=logging.INFO,
+                format='[%(asctime)s] %(levelname)s: %(message)s',
+                handlers=[
+                    logging.FileHandler(self.log_file),
+                    logging.StreamHandler(sys.stdout)
+                ]
+            )
+            self.logger = logging.getLogger()
+        except Exception as e:
+            print(f"[\033[91mERRO\033[0m] Erro no Log: {e}")
+            sys.exit(1)
+
+    def _run_cmd(self, cmd, check=True, **kwargs):
+        if self.debug:
+            cmd_str = ' '.join([str(x) for x in cmd])
+            self.logger.info(f"[\033[36mDEBUG\033[0m] Executando: {cmd_str}")
+        return subprocess.run(cmd, check=check, **kwargs)
 
     def check_pre_flight(self):
-        """Verificações de disco e criação de pastas (mkdir -p)."""
-        # 1. Checagem de Espaço (MB -> Bytes)
         req_mb = self.config['settings']['min_space_mb']
         req_bytes = req_mb * 1024 * 1024
         
-        # Encontra o diretório existente mais próximo para checar espaço
         check_path = self.config['paths']['backup_root']
-        if not os.path.exists(check_path):
-            try:
-                os.makedirs(check_path, exist_ok=True)
-            except:
-                pass # Se falhar aqui, o disk_usage abaixo vai pegar o erro ou checar o pai
+        while not os.path.exists(check_path):
+            check_path = os.path.dirname(check_path)
+            if not check_path or check_path == "/": break
+        if not os.path.exists(check_path): check_path = "/"
 
-        total, used, free = shutil.disk_usage(os.path.dirname(self.orig_dir)) # Checa montagem local ou raiz
+        total, used, free = shutil.disk_usage(check_path)
         
-        # Nota: Normalmente checamos o destino (backup_root).
-        total, used, free = shutil.disk_usage("/") # Fallback simples se o path não existir ainda
-        if os.path.exists(self.config['paths']['backup_root']):
-             total, used, free = shutil.disk_usage(self.config['paths']['backup_root'])
-
         if free < req_bytes:
-            raise Exception(f"Espaço insuficiente. Requerido: {req_mb}MB, Livre: {free/1024/1024:.2f}MB")
+            raise Exception(f"Espaço insuficiente. Livre: {free/1024/1024:.2f} MB")
+        
+        self.logger.info(f"Disco OK. Livre: {free/1024/1024:.2f} MB")
 
-        # 2. Criação de Diretórios (Automático)
         for d in [self.orig_dir, self.incr_dir, self.diff_dir, self.full_dir]:
             if not os.path.exists(d):
-                self.logger.info(f"Criando diretório: {d}")
+                self.logger.info(f"Criando: {d}")
                 os.makedirs(d, exist_ok=True)
 
     def mount_share(self):
-        """Monta o CIFS usando arquivo de credenciais seguro."""
         if os.path.ismount(self.orig_dir):
-            self.logger.info("Origem já montada. Pulando montagem.")
-            return False
+            self.logger.info("Já montado. Pulando.")
+            return False 
 
-        creds = self.config['paths']['credentials_file']
-        remote = self.config['paths']['remote_share']
+        creds = self.config.get('credentials', {})
+        user = creds.get('username')
+        password = creds.get('password')
+        domain = creds.get('domain')
         
-        if not os.path.exists(creds):
-            raise FileNotFoundError(f"Arquivo de credenciais não encontrado: {creds}")
+        remote = self.config['paths']['remote_share']
+        opts = self.config['settings'].get('mount_options', 'ro')
 
-        self.logger.info(f"Montando {remote}...")
-        subprocess.run(
-            ["mount", "-t", "cifs", remote, self.orig_dir, "-o", f"ro,credentials={creds}"],
-            check=True
-        )
-        return True
+        if not user or not password:
+            raise ValueError("Credenciais incompletas no JSON.")
+
+        self.logger.info(f"Montando {remote} (Opções: {opts})...")
+        
+        auth_opts = f"username={user},password={password}"
+        if domain: auth_opts += f",domain={domain}"
+        final_opts = f"{opts},{auth_opts}"
+        
+        cmd = ["mount", "-t", "cifs", remote, self.orig_dir, "-o", final_opts]
+        
+        try:
+            self._run_cmd(cmd, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"Erro no mount (Exit Code {e.returncode})")
 
     def run_rsync(self):
-        """Executa Rsync Incremental com gestão de exclusões e bandwidth."""
         bw_kb = int(self.config['settings']['bandwidth_limit_mb'] * 1024)
         
-        # Cria arquivo de exclusão temporário
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
-            tmp.write('\n'.join(self.config['excludes']))
+            if 'excludes' in self.config:
+                tmp.write('\n'.join(self.config['excludes']))
             tmp_exclude = tmp.name
 
         try:
+            src = self.orig_dir if self.orig_dir.endswith('/') else self.orig_dir + '/'
+            
             cmd = [
                 "rsync", f"--bwlimit={bw_kb}",
                 "-ahx", "--acls", "--xattrs", "--numeric-ids", "--chmod=ugo+r",
                 "--ignore-errors", "--force",
                 f"--exclude-from={tmp_exclude}",
                 "--delete", "--backup", f"--backup-dir={self.diff_dir}",
-                "--info=del,name,stats2",
-                f"--log-file={self.log_file}",
-                self.orig_dir + "/", self.incr_dir # Barra no final da origem é importante
+                "--info=del,name,stats2", f"--log-file={self.log_file}",
+                src, self.incr_dir
             ]
             
-            self.logger.info("Iniciando sincronização (Incremental)...")
-            ret = subprocess.run(cmd)
+            self.logger.info("Executando Rsync...")
+            res = self._run_cmd(cmd, check=False)
             
-            if ret.returncode not in [0, 23]:
-                raise subprocess.CalledProcessError(ret.returncode, cmd)
-            if ret.returncode == 23:
-                self.logger.warning("Rsync finalizou com código 23 (Transferência Parcial).")
+            if res.returncode == 0:
+                self.logger.info("Rsync: Sucesso.")
+            elif res.returncode == 23:
+                self.logger.warning("Rsync: Aviso (Code 23).")
             else:
-                self.logger.info("Rsync finalizado com sucesso.")
+                raise subprocess.CalledProcessError(res.returncode, cmd)
         finally:
-            os.remove(tmp_exclude)
+            if os.path.exists(tmp_exclude): os.remove(tmp_exclude)
 
     def cleanup_differential(self):
-        """Limpa arquivos diferenciais antigos baseados na política do JSON."""
-        days = self.config['settings']['retention_policy']['keep_differential_files_days']
-        clean_dirs = self.config['settings']['retention_policy']['cleanup_empty_dirs']
+        policy = self.config['settings'].get('retention_policy', {})
+        days = policy.get('keep_differential_files_days', 240)
         
-        self.logger.info(f"Limpando arquivos diferenciais com mais de {days} dias...")
-        subprocess.run(["find", self.diff_dir, "-type", "f", "-mtime", f"+{days}", "-delete"])
+        self.logger.info(f"Limpando Diff > {days} dias...")
+        self._run_cmd(["find", self.diff_dir, "-type", "f", "-mtime", f"+{days}", "-delete"], check=False)
         
-        if clean_dirs:
-            self.logger.info("Removendo diretórios vazios no Differential...")
-            subprocess.run(["find", self.diff_dir, "-type", "d", "-empty", "-delete"])
+        if policy.get('cleanup_empty_dirs', True):
+            self._run_cmd(["find", self.diff_dir, "-type", "d", "-empty", "-delete"], check=False)
 
     def run_full_backup(self):
-        """Gera Full Backup (.tar.zst) usando Reflink + Pipeline."""
-        retention = self.config['settings']['retention_policy']['keep_full_backups_days']
-        
-        # 1. Limpeza de Fulls Antigos
-        subprocess.run(["find", self.full_dir, "-type", "f", "-name", "Full_*.tar.zst", "-mtime", f"+{retention}", "-delete"])
+        policy = self.config['settings'].get('retention_policy', {})
+        retention = policy.get('keep_full_backups_days', 30)
 
-        # 2. Verifica se já existe backup recente (Opcional, baseado no script original logic)
-        # O script original checava se existia um arquivo < 30 dias. 
-        # Vamos pular essa verificação complexa e focar na criação segura
-        
-        staging_dir = os.path.join(self.full_dir, "Full_Staging")
-        if os.path.exists(staging_dir):
-            shutil.rmtree(staging_dir)
+        # 1. Limpeza de Arquivos ZST Antigos
+        self.logger.info(f"Verificando Fulls antigos (> {retention} dias)...")
+        self._run_cmd(["find", self.full_dir, "-type", "f", "-name", "Full_*.tar.zst", "-mtime", f"+{retention}", "-delete"], check=False)
 
-        # 3. Cópia Inteligente (Reflink)
-        self.logger.info("Preparando snapshot para Full Backup...")
+        # 2. Verificação se DEVE criar um novo Full
+        # Verifica se existe algum .zst criado nos últimos 'retention' dias
+        self.logger.info(f"Verificando validade do Full atual (< {retention} dias)...")
+        cmd_check = [
+            "find", self.full_dir, 
+            "-type", "f", 
+            "-name", "Full_*.tar.zst", 
+            "-mtime", f"-{retention}", 
+            "-print", "-quit"
+        ]
+        
+        res = self._run_cmd(cmd_check, check=False, capture_output=True, text=True)
+        
+        # Se encontrou um backup recente, não faz nada e encerra a função.
+        # Isso preserva a pasta 'Full' existente e o arquivo zst.
+        if res.stdout and res.stdout.strip():
+            recent_file = res.stdout.strip()
+            self.logger.info(f"Backup Full válido encontrado ({recent_file}). Mantendo estrutura atual.")
+            return
+
+        # -------------------------------------------------------------
+        # SE CHEGOU AQUI, PRECISA CRIAR UM NOVO FULL E ATUALIZAR A PASTA
+        # -------------------------------------------------------------
+        
+        # O diretório persistente se chamará simplesmente "Full"
+        persistent_full_dir = os.path.join(self.full_dir, "Full")
+
+        # 3. Remove a pasta 'Full' ANTIGA (já que vamos criar uma nova snapshot)
+        if os.path.exists(persistent_full_dir):
+            self.logger.info(f"Removendo diretório '{persistent_full_dir}' antigo para atualização...")
+            shutil.rmtree(persistent_full_dir)
+
+        # 4. Cria a nova cópia do Incremental
+        self.logger.info("Criando novo Snapshot 'Full' (Reflink)...")
         try:
-            subprocess.run(
-                ["cp", "-a", "--reflink=always", self.incr_dir, staging_dir],
-                check=True, stderr=subprocess.PIPE
-            )
-            self.logger.info("Snapshot via Reflink (CoW) realizado.")
+            cmd_reflink = ["cp", "-a", "--reflink=always", self.incr_dir, persistent_full_dir]
+            self._run_cmd(cmd_reflink, check=True, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError:
-            self.logger.warning("Reflink falhou. Usando cópia padrão (cp -a)...")
-            subprocess.run(["cp", "-a", self.incr_dir, staging_dir], check=True)
+            self.logger.warning("Reflink falhou. Usando cp -a.")
+            self._run_cmd(["cp", "-a", self.incr_dir, persistent_full_dir], check=True)
 
-        # 4. Compactação (Tar -> Zstd)
-        zst_file = os.path.join(self.full_dir, f"Full_{self.date_str}.tar.zst")
-        io_cls = str(self.config['settings']['ionice_class'])
-        nice_pri = str(self.config['settings']['nice_priority'])
+        # 5. Compacta a nova pasta 'Full'
+        filename = f"Full_{self.date_str}.tar.zst"
+        zst_path = os.path.join(self.full_dir, filename)
+        
+        ionice = str(self.config['settings']['ionice_class'])
+        nice = str(self.config['settings']['nice_priority'])
 
-        self.logger.info(f"Compactando: {zst_file}")
+        self.logger.info(f"Compactando: {filename}")
+        
+        # O tar compacta a pasta "Full" que está dentro de self.full_dir
+        cmd_tar = [
+            "ionice", "-c", ionice, "nice", "-n", nice, 
+            "tar", "-cvf", "-", 
+            "-C", self.full_dir, 
+            "Full"
+        ]
+        cmd_zstd = ["zstd", "--threads=2"]
+
+        if self.debug:
+            self.logger.info(f"[\033[36mDEBUG\033[0m] Pipeline: {' '.join(cmd_tar)} | {' '.join(cmd_zstd)} > {zst_path}")
+
         try:
-            p_tar = subprocess.Popen(
-                ["ionice", "-c", io_cls, "nice", "-n", nice_pri, "tar", "-cvf", "-", "-C", os.path.dirname(staging_dir), os.path.basename(staging_dir)],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-            )
-            with open(zst_file, "wb") as f_out:
-                p_zstd = subprocess.Popen(["zstd", "--threads=2"], stdin=p_tar.stdout, stdout=f_out)
-            
+            p_tar = subprocess.Popen(cmd_tar, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            with open(zst_path, "wb") as f_out:
+                p_zstd = subprocess.Popen(cmd_zstd, stdin=p_tar.stdout, stdout=f_out)
+
             p_tar.stdout.close()
             p_zstd.communicate()
             
             if p_zstd.returncode == 0:
-                self.logger.info("Backup Full criado com sucesso.")
+                self.logger.info("Full Backup concluído. Diretório 'Full' mantido no disco.")
             else:
-                raise Exception("Erro no ZSTD")
-        finally:
-            if os.path.exists(staging_dir):
-                shutil.rmtree(staging_dir)
+                raise Exception(f"Zstd falhou: {p_zstd.returncode}")
+        
+        except Exception as e:
+            self.logger.error(f"Erro na compactação: {e}")
+            raise
+            
+        # NOTA: Não removemos 'persistent_full_dir' aqui. Ele fica no disco até o próximo ciclo de 30 dias.
 
     def cleanup(self, did_mount):
         if did_mount:
-            self.logger.info("Desmontando origem...")
-            subprocess.run(["umount", self.orig_dir])
+            self.logger.info("Desmontando...")
+            self._run_cmd(["umount", self.orig_dir], check=False)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("config_file", nargs="?", default="config.json")
+    parser.add_argument("config_file", nargs="?")
+    parser.add_argument("--init", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
-    # Bootstrap
+    if args.init:
+        target = args.config_file if args.config_file else "config_modelo.json"
+        if os.path.exists(target): sys.exit(1)
+        with open(target, 'w') as f: json.dump(DEFAULT_JSON_CONFIG, f, indent=4)
+        print(f"Modelo criado: {target}"); sys.exit(0)
+
+    if not args.config_file: parser.error("Arquivo JSON obrigatório.")
+
     if not os.path.exists(args.config_file):
         print(f"Criando modelo em {args.config_file}...")
-        with open(args.config_file, 'w') as f:
-            json.dump(DEFAULT_JSON_CONFIG, f, indent=4)
+        with open(args.config_file, 'w') as f: json.dump(DEFAULT_JSON_CONFIG, f, indent=4)
         sys.exit(0)
 
-    did_mount = False
-    job = None
+    job = None; did_mount = False
     try:
-        job = BackupJob(args.config_file)
+        job = BackupJob(args.config_file, debug=args.debug)
         job.logger.info(f"=== Job Iniciado: {args.config_file} ===")
-        
+        if args.debug: job.logger.info("MODO DEBUG ATIVADO")
+
         job.check_pre_flight()
         did_mount = job.mount_share()
-        
         job.run_rsync()
-        job.cleanup_differential() # Limpeza de arquivos diff antigos
+        job.cleanup_differential()
         job.run_full_backup()
-        
-        job.logger.info("=== Job Finalizado ===")
+        job.logger.info("=== Sucesso ===")
+    except KeyboardInterrupt:
+        sys.exit(130)
     except Exception as e:
-        if job: job.logger.error(f"FALHA CRÍTICA: {e}")
-        else: print(e)
+        if job: job.logger.error(f"FALHA: {e}")
+        else: print(f"ERRO: {e}")
         sys.exit(1)
     finally:
         if job: job.cleanup(did_mount)
