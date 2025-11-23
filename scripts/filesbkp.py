@@ -15,37 +15,24 @@ from datetime import datetime
 # --- Texto de Ajuda Detalhado ---
 HELP_TEXT = textwrap.dedent("""
     \033[1mLÓGICA DE FUNCIONAMENTO:\033[0m
-    Este script implementa uma estratégia de backup híbrida (Incremental + Diferencial + Full Sintético)
-    otimizada para sistemas de arquivos modernos (XFS/Btrfs) e redes corporativas.
+    Este script utiliza uma estrutura de diretórios centrada no cliente (Client-Centric).
+    Todos os tipos de backup (Incremental, Full, Differential) são agrupados dentro
+    da pasta do compartilhamento específico.
 
-    \033[1m1. Backup Incremental (O Espelho):\033[0m
-       - O script mantém uma pasta local 'Incremental' que é um espelho exato da origem.
-       - Apenas os arquivos modificados ou novos são transferidos pela rede (Rsync).
-    
-    \033[1m2. Backup Diferencial (O Histórico):\033[0m
-       - Quando um arquivo é alterado ou deletado na origem, a versão antiga que estava no
-         'Incremental' NÃO é perdida. Ela é movida para a pasta 'Differential'.
-       - Retenção: Arquivos nesta pasta são apagados após X dias (configurável: keep_differential_files_days).
+    \033[1m1. Estrutura de Diretórios:\033[0m
+       - O nome da pasta local é definido pelo campo 'relative_path' (nome lógico/servidor).
+       - Endereços IP (pontos) são sanitizados para underscores.
+       - Estrutura: [Backup Root] / [relative_path sanitizado] / {Incremental, Differential, Full}
 
-    \033[1m3. Backup Full (Snapshot + Compressão):\033[0m
-       - O script gera arquivos '.tar.zst' completos sem baixar os dados novamente da rede.
-       - \033[36mTécnica Reflink:\033[0m A cópia do 'Incremental' para o diretório de staging 'Full'
-         é instantânea e não ocupa espaço duplicado no disco (Copy-on-Write), economizando TBs de espaço.
-       - \033[36mInteligência:\033[0m Se já existir um arquivo Full válido criado recentemente (dentro do
-         prazo de retenção), o script PULA a criação de um novo, economizando CPU.
-       - O diretório base 'Full' é mantido no disco para acelerar a próxima execução.
+    \033[1m2. Backup Full (Snapshot + Compressão):\033[0m
+       - Utiliza 'Reflink' (Copy-on-Write) para criar a cópia base instantaneamente.
+       - Se já existir um Full válido (conforme retenção), a criação é PULADA.
 
-    \033[1m4. Limpeza de Logs:\033[0m
-       - Logs antigos são rotacionados e removidos automaticamente baseados no nome do cliente.
+    \033[1m3. Limpeza Automática:\033[0m
+       - Logs antigos, arquivos diferenciais e arquivos Full expirados são removidos com base na política.
 
-    \033[1mEXEMPLOS DE USO:\033[0m
-       # 1. Gerar um modelo de configuração vazio
+    \033[1mEXEMPLOS:\033[0m
        $ python3 filesbkp.py --init
-
-       # 2. Executar o backup de um cliente
-       $ python3 filesbkp.py clientes/sugisawa.json
-
-       # 3. Executar em modo Debug (mostra comandos mount, rsync, tar no terminal)
        $ python3 filesbkp.py clientes/sugisawa.json --debug
 """)
 
@@ -58,10 +45,10 @@ DEFAULT_JSON_CONFIG = {
         "domain": "dominio.local"
     },
     "paths": {
-        "remote_share": "//Servidor/Share",
+        "remote_share": "//192.168.0.100/Dados/Share",
         "mount_point": "/mnt/Remote/MountPoint",
         "backup_root": "/mnt/Backup",
-        "relative_path": "Cliente/Pasta",
+        "relative_path": "SRV-FILE01/Dados/Share",
         "log_dir": "/var/log/rsync"
     },
     "settings": {
@@ -103,15 +90,27 @@ class BackupJob:
 
     def setup_paths(self):
         paths = self.config['paths']
-        self.orig_dir = paths['mount_point']
         root = paths['backup_root']
         rel = paths['relative_path']
-
-        self.incr_dir = os.path.join(root, "Incremental", rel)
-        self.diff_dir = os.path.join(root, "Differential", rel)
-        self.full_dir = os.path.join(root, "Full", rel)
         
-        self.safe_name = rel.replace('/', '_').replace('\\', '_')
+        # O ponto de montagem (source) não é afetado pela nova estrutura
+        self.orig_dir = paths['mount_point']
+
+        # --- LÓGICA DE SANITIZAÇÃO E ESTRUTURA CLIENT-CENTRIC ---
+        
+        # 1. Sanitiza o nome lógico (relative_path) trocando pontos por underline
+        rel_sanitized = rel.replace('.', '_')
+        
+        # 2. Define a raiz deste cliente: [backup_root] / [relative_path_sanitized]
+        self.client_root = os.path.join(root, rel_sanitized)
+
+        # 3. Define as pastas de TIPO (Incremental/Differential/Full) dentro da raiz do cliente
+        self.incr_dir = os.path.join(self.client_root, "Incremental")
+        self.diff_dir = os.path.join(self.client_root, "Differential")
+        self.full_dir = os.path.join(self.client_root, "Full")
+        
+        # 4. Nome seguro para logs (remove barras também)
+        self.safe_name = rel_sanitized.replace('/', '_').replace('\\', '_')
         
         log_name = f"backup_{self.safe_name}_{self.date_str}.log"
         self.log_file = os.path.join(paths['log_dir'], log_name)
@@ -155,7 +154,8 @@ class BackupJob:
         
         self.logger.info(f"Disco OK. Livre: {free/1024/1024:.2f} MB")
 
-        for d in [self.orig_dir, self.incr_dir, self.diff_dir, self.full_dir]:
+        dirs_to_create = [self.orig_dir, self.incr_dir, self.diff_dir, self.full_dir]
+        for d in dirs_to_create:
             if not os.path.exists(d):
                 self.logger.info(f"Criando: {d}")
                 os.makedirs(d, exist_ok=True)
