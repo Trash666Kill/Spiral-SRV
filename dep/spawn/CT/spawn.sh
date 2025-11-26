@@ -118,7 +118,7 @@ if [ $? -eq 0 ]; then
 
     reserve() {
     # Obtém o endereço IP do container a partir do DNS
-    local IP_ADDRESS=$(/etc/spawn/CT/grepip.sh)
+    local IP_ADDRESS=$(/etc/spawn/CT/grepip.sh "$NEW_CT")
 
     # Monta a string de reserva de DNS
     RESULT="$MAC_ADDRESS,$IP_ADDRESS,$NEW_CT"
