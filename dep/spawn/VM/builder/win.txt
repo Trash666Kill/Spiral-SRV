@@ -1,0 +1,14 @@
+Driver VirtIO SCSI instalado
+Usuários comuns do grupo 'Usuários', não podem desligar o host
+Display nunca desliga
+Usuário administrador padrão ativo e sem senha
+Delivery Optimization desativado
+Logout automático por tempo de inatividade do usuário por quinze minutos
+Serviço de Área de Trabalho Remota do Windows está ativo
+Efeitos visuais definidos para melhor desempenho
+Diretório C:\Temp criado
+Ping ICMP4 permitido via regras de firewall
+(Solicitação de Eco - ICMPv4-In), Perfil particular e público
+
+gpedit.msc, Configuração do Computador, Configurações do Windows, Configurações de segurança, Políticas locais, Atribuição de direitos de usuário, Desligar o sistema.
+gpedit.msc, Configuração do Computador, Modelos Administrativos, Componentes do Windows, Serviços de Área de Trabalho Remota, Host de Sessão da Área de Trabalho Remota, Limites de tempo de sessão, Definir limite de tempo para sessões desconectadas.
