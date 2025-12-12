@@ -6,49 +6,50 @@ set -e
 swap() {
     readonly DEVICE_SWAP_UUID=""
 
-    readonly CALCULATION_BASE_MB=512
-    readonly THRESHOLD_MB=512
-
     echo "INFO: Validating script configuration..."
     if [[ -z "$DEVICE_SWAP_UUID" ]]; then
-        echo "ERROR: The DEVICE_SWAP_UUID variable is not set in the script." >&2
-        echo "Please edit the script and provide a valid UUID in the CONFIGURATION section." >&2
+        echo "ERROR: The DEVICE_SWAP_UUID variable is not set." >&2
         exit 1
     fi
-    echo "INFO: Configuration is valid. Proceeding with execution."
 
-    TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-    TOTAL_MEM_MB=$((TOTAL_MEM_KB / 1024))
+    echo "INFO: Configuring ZRAM..."
 
-    echo "INFO: Detected Total System RAM: ${TOTAL_MEM_MB} MB"
+    # Carrega o módulo
+    modprobe zram 2>/dev/null
 
-    if (( TOTAL_MEM_MB > THRESHOLD_MB )); then
-        echo "INFO: System has more than ${THRESHOLD_MB} MB of RAM. Calculating dynamic swappiness value."
-        CALCULATED_SWAPPINESS=$(awk -v base="${CALCULATION_BASE_MB}" -v total="${TOTAL_MEM_MB}" 'BEGIN {printf "%.0f", (base / total) * 100}')
+    local ZRAM_SIZE
+    ZRAM_SIZE="$(($(grep -Po 'MemTotal:\s*\K\d+' /proc/meminfo)/2))KiB"
 
-        echo "INFO: Calculated swappiness value: ${CALCULATED_SWAPPINESS}"
-        sysctl vm.swappiness=${CALCULATED_SWAPPINESS}
+    local ZRAM_DEV
+    ZRAM_DEV=$(zramctl --find --algorithm zstd --size "$ZRAM_SIZE")
 
-        if [[ $? -ne 0 ]]; then
-            echo "ERROR: Failed to set vm.swappiness." >&2
+    if [[ -n "$ZRAM_DEV" ]]; then
+        echo "INFO: ZRAM device created at $ZRAM_DEV with size $ZRAM_SIZE"
+
+        mkswap -U clear "$ZRAM_DEV" >/dev/null
+        swapon --discard --priority 100 "$ZRAM_DEV"
+
+        if [[ $? -eq 0 ]]; then
+            echo "SUCCESS: ZRAM active on $ZRAM_DEV (Priority 100)."
         else
-            CURRENT_SWAPPINESS=$(sysctl -n vm.swappiness)
-            echo "SUCCESS: vm.swappiness is now set to ${CURRENT_SWAPPINESS}."
+            echo "ERROR: Failed to activate swapon on $ZRAM_DEV." >&2
         fi
     else
-        echo "INFO: System has ${THRESHOLD_MB} MB of RAM or less."
-        echo "INFO: Skipping swappiness configuration to rely on system defaults."
+        echo "ERROR: Could not create/find a ZRAM device with zramctl." >&2
     fi
 
     echo
 
-    echo "INFO: Activating swap device with specified UUID: ${DEVICE_SWAP_UUID}"
-    swapon -U "${DEVICE_SWAP_UUID}"
+    echo "INFO: Activating disk swap for hibernation support..."
+
+    swapoff -U "${DEVICE_SWAP_UUID}" 2>/dev/null
+
+    swapon --priority -10 -U "${DEVICE_SWAP_UUID}"
 
     if [[ $? -eq 0 ]]; then
-        echo "SUCCESS: Swap activation command finished."
+        echo "SUCCESS: Disk Swap activated (Priority -10)."
     else
-        echo "ERROR: The swap activation command failed. Please verify the UUID is correct." >&2
+        echo "ERROR: Failed to activate Disk Swap. Check UUID." >&2
     fi
 
     echo "INFO: Current swap status:"
