@@ -14,7 +14,6 @@ swap() {
 
     echo "INFO: Configuring ZRAM..."
 
-    # Carrega o módulo
     modprobe zram 2>/dev/null
 
     local ZRAM_SIZE
