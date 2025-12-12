@@ -4,6 +4,7 @@
 set -e
 
 swap() {
+    # Insert the UUID of your swap partition here
     readonly DEVICE_SWAP_UUID=""
 
     echo "INFO: Validating script configuration..."
@@ -12,43 +13,62 @@ swap() {
         exit 1
     fi
 
+    # ZRAM Configuration (Primary Swap - Priority 100)
     echo "INFO: Configuring ZRAM..."
-
     modprobe zram 2>/dev/null
 
+    # Calculate size (50% of Total RAM)
     local ZRAM_SIZE
     ZRAM_SIZE="$(($(grep -Po 'MemTotal:\s*\K\d+' /proc/meminfo)/2))KiB"
 
+    # Find a free ZRAM device and configure it
+    # Using --find ensures the device node (e.g., /dev/zram0) is created dynamically
     local ZRAM_DEV
     ZRAM_DEV=$(zramctl --find --algorithm zstd --size "$ZRAM_SIZE")
 
     if [[ -n "$ZRAM_DEV" ]]; then
-        echo "INFO: ZRAM device created at $ZRAM_DEV with size $ZRAM_SIZE"
-
-        mkswap -U clear "$ZRAM_DEV" >/dev/null
-        swapon --discard --priority 100 "$ZRAM_DEV"
-
-        if [[ $? -eq 0 ]]; then
-            echo "SUCCESS: ZRAM active on $ZRAM_DEV (Priority 100)."
+        # Format and activate
+        mkswap -U clear "$ZRAM_DEV" >/dev/null 2>&1
+        swapon --discard --priority 100 "$ZRAM_DEV" 2>/dev/null
+        
+        # Verify activation
+        if swapon --show | grep -q "$ZRAM_DEV"; then
+             echo "SUCCESS: ZRAM active on $ZRAM_DEV (Priority 100)."
         else
-            echo "ERROR: Failed to activate swapon on $ZRAM_DEV." >&2
+             echo "ERROR: Could not verify ZRAM activation." >&2
         fi
     else
-        echo "ERROR: Could not create/find a ZRAM device with zramctl." >&2
+        echo "ERROR: Could not create/find a ZRAM device." >&2
     fi
 
     echo
 
-    echo "INFO: Activating disk swap for hibernation support..."
+    # Disk Swap Configuration (Hibernation/Fallback - Priority -2)
+    echo "INFO: Configuring disk swap priority to -2..."
 
-    swapoff -U "${DEVICE_SWAP_UUID}" 2>/dev/null
+    # Resolve UUID to actual device path (e.g., /dev/nvme0n1p3) for reliability
+    local DISK_DEV
+    DISK_DEV=$(blkid -U "$DEVICE_SWAP_UUID")
 
-    swapon --priority -10 -U "${DEVICE_SWAP_UUID}"
-
-    if [[ $? -eq 0 ]]; then
-        echo "SUCCESS: Disk Swap activated (Priority -10)."
+    if [[ -n "$DISK_DEV" ]]; then
+        echo "INFO: Found swap device at $DISK_DEV"
+        
+        # Turn off first to ensure we can re-apply the specific priority
+        swapoff "$DISK_DEV" 2>/dev/null
+        
+        # Activate with priority -2 as requested
+        swapon --priority -2 "$DISK_DEV"
+        
+        if [[ $? -eq 0 ]]; then
+            echo "SUCCESS: Disk Swap activated on $DISK_DEV (Priority -2)."
+        else
+            echo "WARNING: Failed to set explicit priority -2." >&2
+            echo "INFO: Retrying without explicit priority (System will auto-assign negative)."
+            # Fallback: Let the kernel decide the negative priority
+            swapon "$DISK_DEV"
+        fi
     else
-        echo "ERROR: Failed to activate Disk Swap. Check UUID." >&2
+        echo "ERROR: Could not find device with UUID: $DEVICE_SWAP_UUID" >&2
     fi
 
     echo "INFO: Current swap status:"
