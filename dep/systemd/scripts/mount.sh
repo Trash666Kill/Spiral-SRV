@@ -59,8 +59,6 @@ swap() {
         else
             echo "WARNING: Failed to set explicit priority -2." >&2
             echo "INFO: Retrying without explicit priority (System will auto-assign negative)."
-            
-            # Fallback: Se falhar aqui, o || true garante que o script continue
             swapon "$DISK_DEV" || echo "ERROR: Could not activate swap on fallback attempt." >&2
         fi
     else
