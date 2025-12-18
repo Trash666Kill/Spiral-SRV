@@ -533,9 +533,11 @@ ssh() {
     # Create root SSH key and adjust permissions of authorized keys folder
     touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
     ssh-keygen -t rsa -b 4096 -N '' <<<$'\n' > /dev/null 2>&1
+    sed -i "s/@debian$/@$HOSTNAME/" /root/.ssh/id_rsa.pub
 
     # Create SSH key for specified user and adjust permissions of .ssh folder
     su - "$TARGET_USER" -c "echo | ssh-keygen -t rsa -b 4096 -N '' <<<$'\n'" > /dev/null 2>&1
+    su - "$TARGET_USER" -c "sed -i 's/@debian$/@$HOSTNAME/' /home/"$TARGET_USER"/.ssh/id_rsa.pub"
     chmod 700 /home/"$TARGET_USER"/.ssh
 
     # Create the user's authorized_keys file and adjust permissions
