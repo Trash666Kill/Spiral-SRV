@@ -7,62 +7,101 @@ swap() {
     # Insert the UUID of your swap partition here
     readonly DEVICE_SWAP_UUID=""
 
-    echo "INFO: Validating script configuration..."
+    local TARGET_MODE="${1:-both}" # Default to 'both'
+
+    echo "INFO: Validating script configuration for mode: $TARGET_MODE..."
+
+    # 1. Validation: Fail only if UUID is missing AND mode requires disk
     if [[ -z "$DEVICE_SWAP_UUID" ]]; then
-        echo "ERROR: The DEVICE_SWAP_UUID variable is not set." >&2
-        exit 1
+        if [[ "$TARGET_MODE" =~ ^(swap|both)$ ]]; then
+            echo "ERROR: The DEVICE_SWAP_UUID variable is not set (Required for mode '$TARGET_MODE')." >&2
+            return 1
+        else
+            echo "WARNING: DEVICE_SWAP_UUID not set. Disk swap management will be skipped."
+        fi
     fi
 
-    # ZRAM Configuration (Primary Swap - Priority 100)
-    echo "INFO: Configuring ZRAM..."
-    modprobe zram 2>/dev/null || true
+    # Allow 'zram' as an alias for 'zwap'
+    if [[ ! "$TARGET_MODE" =~ ^(swap|zwap|zram|both)$ ]]; then
+        echo "ERROR: Invalid mode. Use: 'swap', 'zwap' (or 'zram'), or 'both'." >&2
+        return 1
+    fi
 
-    # Calculate size (50% of Total RAM)
-    local ZRAM_SIZE
-    ZRAM_SIZE="$(($(grep -Po 'MemTotal:\s*\K\d+' /proc/meminfo)/2))KiB"
-
-    # Find a free ZRAM device and configure it
-    local ZRAM_DEV
-    ZRAM_DEV=$(zramctl --find --algorithm zstd --size "$ZRAM_SIZE")
-
-    if [[ -n "$ZRAM_DEV" ]]; then
-        # Format and activate
-        mkswap -U clear "$ZRAM_DEV" >/dev/null 2>&1
-        swapon --discard --priority 100 "$ZRAM_DEV" 2>/dev/null || true
-        
-        # Verify activation
-        if swapon --show | grep -q "$ZRAM_DEV"; then
-             echo "SUCCESS: ZRAM active on $ZRAM_DEV (Priority 100)."
+    # ZRAM Configuration (Active for 'zwap', 'zram' and 'both')
+    if [[ "$TARGET_MODE" =~ ^(zwap|zram|both)$ ]]; then
+        # Check if already active to avoid duplicates
+        if swapon --show | grep -q "/dev/zram"; then
+             echo "INFO: ZRAM is already active. Skipping creation."
         else
-             echo "ERROR: Could not verify ZRAM activation." >&2
+             echo "INFO: Configuring ZRAM..."
+             modprobe zram 2>/dev/null || true
+
+             # Calculate size (50% of Total RAM)
+             local ZRAM_SIZE
+             ZRAM_SIZE="$(($(grep -Po 'MemTotal:\s*\K\d+' /proc/meminfo)/2))KiB"
+
+             # Find a free ZRAM device and configure it
+             local ZRAM_DEV
+             ZRAM_DEV=$(zramctl --find --algorithm zstd --size "$ZRAM_SIZE")
+
+             if [[ -n "$ZRAM_DEV" ]]; then
+                 # Format and activate
+                 mkswap -U clear "$ZRAM_DEV" >/dev/null 2>&1
+                 swapon --discard --priority 100 "$ZRAM_DEV" 2>/dev/null || true
+                 
+                 echo "SUCCESS: ZRAM active on $ZRAM_DEV (Priority 100)."
+             else
+                 echo "ERROR: Could not create/find a ZRAM device." >&2
+             fi
         fi
     else
-        echo "ERROR: Could not create/find a ZRAM device." >&2
+        # If mode is 'swap' (disk only), ensure ZRAM is OFF
+        if swapon --show | grep -q "/dev/zram"; then
+            echo "INFO: Mode is '$TARGET_MODE'. Disabling ZRAM..."
+            swapoff /dev/zram* 2>/dev/null || true
+            zramctl --reset-all 2>/dev/null || true
+        fi
     fi
 
     echo
 
-    # Disk Swap Configuration (Hibernation/Fallback - Priority -2)
-    echo "INFO: Configuring disk swap priority to -2..."
+    # Disk Swap Configuration (Active for 'swap' and 'both')
+    local DISK_DEV=""
+    # Only try to resolve disk if UUID is set
+    if [[ -n "$DEVICE_SWAP_UUID" ]]; then
+        DISK_DEV=$(blkid -U "$DEVICE_SWAP_UUID")
+    fi
 
-    # Resolve UUID to actual device path
-    local DISK_DEV
-    DISK_DEV=$(blkid -U "$DEVICE_SWAP_UUID")
+    # If mode needs disk but device not found (and UUID was provided), fail.
+    if [[ "$TARGET_MODE" =~ ^(swap|both)$ ]]; then
+        if [[ -z "$DISK_DEV" ]]; then
+             echo "ERROR: Could not find device with UUID: $DEVICE_SWAP_UUID" >&2
+             return 1
+        fi
+        echo "INFO: Configuring disk swap ($TARGET_MODE)..."
 
-    if [[ -n "$DISK_DEV" ]]; then
-        echo "INFO: Found swap device at $DISK_DEV"
+        # Check if we need to reactivate to change priority
+        if grep -q "$DISK_DEV" /proc/swaps; then
+             echo "INFO: Disk swap active. Adjusting priority..."
+             swapoff "$DISK_DEV" 2>/dev/null || true
+        fi
 
-        swapoff "$DISK_DEV" 2>/dev/null || true
-
+        # Priority -2 ensures it is used after ZRAM (100)
         if swapon --priority -2 "$DISK_DEV" 2>/dev/null; then
             echo "SUCCESS: Disk Swap activated on $DISK_DEV (Priority -2)."
         else
             echo "WARNING: Failed to set explicit priority -2." >&2
-            echo "INFO: Retrying without explicit priority (System will auto-assign negative)."
-            swapon "$DISK_DEV" || echo "ERROR: Could not activate swap on fallback attempt." >&2
+            swapon "$DISK_DEV" || echo "ERROR: Could not activate swap." >&2
         fi
-    else
-        echo "ERROR: Could not find device with UUID: $DEVICE_SWAP_UUID" >&2
+
+    elif [[ "$TARGET_MODE" =~ ^(zwap|zram)$ ]]; then
+        # If mode is 'zwap' (zram only), ensure Disk is OFF (Only if we know the disk)
+        if [[ -n "$DISK_DEV" ]]; then
+            if grep -q "$DISK_DEV" /proc/swaps; then
+                echo "INFO: Mode is '$TARGET_MODE'. Disabling Disk Swap..."
+                swapoff "$DISK_DEV" 2>/dev/null || true
+            fi
+        fi
     fi
 
     echo "INFO: Current swap status:"
