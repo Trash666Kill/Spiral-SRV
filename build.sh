@@ -278,6 +278,9 @@ directories() {
     mkdir -p /mnt/{Temp,Local/{Container/{A,B},USB/{A,B}},Remote/Servers}
     mkdir -p /root/{Temp,.services/scheduled,.crypt} && chmod 600 /root/.crypt
 
+    # Adjusting the location of standard environment variables
+    mv /etc/environment /root/.services && ln -s /root/.services/environment /etc/environment
+
     # Create directory for rsync logs and adjust permissions
     mkdir /var/log/rsync && chown "$TARGET_USER":"$TARGET_USER" -R /var/log/rsync
 
