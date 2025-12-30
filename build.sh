@@ -327,7 +327,7 @@ network() {
         systemctl disable --now systemd-timesyncd --quiet
 
         # Fixing NTP Server
-        sed -i 's/#NTP=/NTP=10.0.6.62/' /etc/systemd/timesyncd.conf
+        sed -i 's/#NTP=/NTP=10.0.6.1/' /etc/systemd/timesyncd.conf
 
         # Set the time zone
         export TZ=${TIMEZONE}
