@@ -674,8 +674,15 @@ class BackupJob:
         MAX_RETRIES   = 3
         keep_original = split_cfg.get('keep_original_after_split', True)
 
-        # Parseia e valida chunk_size antes de qualquer operação
-        chunk_size_raw = split_cfg.get('chunk_size', '4gb')
+        # Parseia e valida chunk_size antes de qualquer operação.
+        # Sem fallback — a ausência do campo é um erro explícito para não
+        # executar o split silenciosamente com um valor padrão inesperado.
+        if 'chunk_size' not in split_cfg:
+            raise Exception(
+                "Configuração de split inválida: campo 'chunk_size' ausente no JSON. "
+                "Exemplo: \"chunk_size\": \"4gb\""
+            )
+        chunk_size_raw = split_cfg['chunk_size']
         try:
             chunk_bytes, chunk_str = self._parse_chunk_size(chunk_size_raw)
         except ValueError as e:
@@ -748,9 +755,6 @@ class BackupJob:
                 zst_path,
                 prefix,
             ]
-
-            if self.debug:
-                self.logger.debug(f"[\033[36mDEBUG\033[0m] Executando: {' '.join(cmd)}")
 
             try:
                 self._run_cmd(cmd, check=True)
