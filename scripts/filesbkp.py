@@ -6,6 +6,7 @@ import sys
 import json
 import shutil
 import stat
+import signal
 import logging
 import subprocess
 import argparse
@@ -235,6 +236,11 @@ class BackupJob:
         """
         FIX 3 — O rsync é executado sob o usuário configurado em 'rsync_user'
         utilizando 'su -c', replicando o comportamento do script shell original.
+
+        GRACEFUL SHUTDOWN — Ao receber SIGINT (Ctrl+C), o sinal é encaminhado ao
+        processo rsync filho e o script aguarda ele terminar antes de prosseguir
+        com a desmontagem. Isso evita o 'Broken pipe' e garante que o rsync feche
+        seus descritores e libere o mountpoint corretamente.
         """
         bw_kb       = int(self.config['settings']['bandwidth_limit_mb'] * 1024)
         rsync_user  = self.config['settings'].get('rsync_user', 'root')
@@ -253,6 +259,9 @@ class BackupJob:
 
         # Permissão de leitura para o usuário que executa o rsync
         os.chmod(tmp_exclude, 0o644)
+
+        proc = None
+        interrupted = False
 
         try:
             src = self.orig_dir if self.orig_dir.endswith('/') else self.orig_dir + '/'
@@ -285,14 +294,55 @@ class BackupJob:
             if self.debug:
                 self.logger.debug("CMD: " + ' '.join(str(x) for x in cmd))
 
-            res = self._run_cmd(cmd, check=False)
+            # Usa Popen para manter referência ao processo filho e poder
+            # encaminhar sinais de forma controlada.
+            proc = subprocess.Popen(cmd)
 
-            if res.returncode == 0:
+            # Captura SIGINT enquanto o rsync está rodando.
+            # Em vez de lançar KeyboardInterrupt imediatamente, encaminha o sinal
+            # ao filho e aguarda ele finalizar — evitando broken pipe e umount
+            # com mountpoint ocupado.
+            original_sigint = signal.getsignal(signal.SIGINT)
+
+            def _handle_sigint(signum, frame):
+                nonlocal interrupted
+                interrupted = True
+                self.logger.warning(
+                    "Interrupção recebida (Ctrl+C). Aguardando rsync finalizar "
+                    "graciosamente antes de desmontar..."
+                )
+                if proc and proc.poll() is None:
+                    proc.send_signal(signal.SIGINT)  # Encaminha ao rsync filho
+
+            signal.signal(signal.SIGINT, _handle_sigint)
+
+            try:
+                proc.wait()  # Bloqueia até o rsync terminar (inclusive após SIGINT)
+            finally:
+                # Restaura o handler original independente do que acontecer
+                signal.signal(signal.SIGINT, original_sigint)
+
+            returncode = proc.returncode
+
+            if interrupted:
+                # Rsync recebeu SIGINT e saiu com code 20 — saída esperada
+                self.logger.warning(
+                    f"Rsync interrompido pelo usuário (code {returncode}). "
+                    "Prosseguindo para desmontagem segura."
+                )
+                # Propaga KeyboardInterrupt para o fluxo principal (finally do main
+                # garante a desmontagem)
+                raise KeyboardInterrupt
+            elif returncode == 0:
                 self.logger.info("Rsync: Sucesso.")
-            elif res.returncode == 23:
-                self.logger.warning("Rsync: Aviso (Code 23) — transferência parcial (ex: permissão negada). Continuando.")
+            elif returncode == 23:
+                self.logger.warning(
+                    "Rsync: Aviso (Code 23) — transferência parcial "
+                    "(ex: permissão negada). Continuando."
+                )
             else:
-                raise subprocess.CalledProcessError(res.returncode, cmd)
+                raise subprocess.CalledProcessError(returncode, cmd)
+
         finally:
             if os.path.exists(tmp_exclude):
                 os.remove(tmp_exclude)
@@ -570,6 +620,10 @@ def main():
         job.logger.info("=== Sucesso ===")
 
     except KeyboardInterrupt:
+        if job:
+            job.logger.warning("=== Job interrompido pelo usuário (Ctrl+C) ===")
+        else:
+            print("\n[AVISO] Interrompido pelo usuário.")
         sys.exit(130)
     except Exception as e:
         if job:
