@@ -165,10 +165,41 @@ class BackupJob:
             )
 
     # ------------------------------------------------------------------
+    # Verificação de dependências
+    # ------------------------------------------------------------------
+
+    REQUIRED_TOOLS = [
+        "rsync", "mount", "umount", "find", "du", "df",
+        "cp", "tar", "zstd", "pv", "ionice", "nice", "su",
+    ]
+
+    def check_dependencies(self):
+        """
+        Verifica se todas as ferramentas externas necessárias estão disponíveis
+        no PATH antes de iniciar qualquer operação. Encerra com erro listando
+        claramente o que está faltando, para que o administrador possa instalar
+        os pacotes necessários antes de tentar novamente.
+        """
+        missing = [tool for tool in self.REQUIRED_TOOLS if not shutil.which(tool)]
+        if missing:
+            self.logger.error(
+                "Ferramentas obrigatórias não encontradas no PATH: %s. "
+                "Instale os pacotes correspondentes e tente novamente.",
+                ", ".join(missing)
+            )
+            sys.exit(1)
+        self.logger.info(
+            "Dependências OK: todas as ferramentas necessárias foram encontradas."
+        )
+
+    # ------------------------------------------------------------------
     # Pre-flight
     # ------------------------------------------------------------------
 
     def check_pre_flight(self):
+        # Dependências primeiro — aborta imediatamente se algo faltar
+        self.check_dependencies()
+
         # FIX 1 — verifica permissões do arquivo de config
         self._check_config_file_permissions()
 
