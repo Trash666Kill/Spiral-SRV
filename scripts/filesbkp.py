@@ -434,8 +434,16 @@ class BackupJob:
         )
 
         if policy.get('cleanup_empty_dirs', True):
+            # "-mindepth 1" protege o próprio diretório raiz de ser removido
+            # quando ele fica vazio — apenas subdiretórios órfãos são deletados.
             self._run_cmd(
-                ["find", self.diff_dir, "-type", "d", "-empty", "-delete"],
+                [
+                    "find", self.diff_dir,
+                    "-mindepth", "1",
+                    "-type", "d",
+                    "-empty",
+                    "-delete"
+                ],
                 check=False
             )
 
