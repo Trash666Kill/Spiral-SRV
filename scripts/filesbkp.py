@@ -4,6 +4,7 @@
 import os
 import sys
 import json
+import math
 import shutil
 import stat
 import signal
@@ -69,6 +70,11 @@ DEFAULT_JSON_CONFIG = {
             "keep_full_backups_days": 30,
             "keep_differential_files_days": 240,
             "cleanup_empty_dirs": True
+        },
+        "split": {
+            "enabled": False,
+            "chunk_size": "4gb",
+            "keep_original_after_split": True
         }
     },
     "excludes": ["*.tmp", "Thumbs.db"]
@@ -220,8 +226,17 @@ class BackupJob:
         no PATH antes de iniciar qualquer operação. Encerra com erro listando
         claramente o que está faltando, para que o administrador possa instalar
         os pacotes necessários antes de tentar novamente.
+
+        'split' é verificado separadamente apenas se estiver habilitado no JSON,
+        pois é uma dependência opcional.
         """
         missing = [tool for tool in self.REQUIRED_TOOLS if not shutil.which(tool)]
+
+        # Verifica 'split' somente se o recurso estiver ativo no JSON
+        split_cfg = self.config.get('settings', {}).get('split', {})
+        if split_cfg.get('enabled', False) and not shutil.which('split'):
+            missing.append('split')
+
         if missing:
             self.logger.error(
                 "Ferramentas obrigatórias não encontradas no PATH: %s. "
@@ -593,8 +608,187 @@ class BackupJob:
             self.logger.error(f"Erro na compactação: {e}")
             raise
 
+        # ------------------------------------------------------------------
+        # Split — executado logo após a compressão, se habilitado no JSON
+        # ------------------------------------------------------------------
+        split_cfg = self.config['settings'].get('split', {})
+        if split_cfg.get('enabled', False):
+            self._run_split(zst_path, split_cfg)
+
     # ------------------------------------------------------------------
-    # Limpeza de logs
+    # Split do arquivo Full compactado
+    # ------------------------------------------------------------------
+
+    def _parse_chunk_size(self, chunk_size_str: str) -> tuple:
+        """
+        Converte uma string de tamanho de chunk (ex: '4gb', '500mb', '2tb')
+        em (bytes: int, split_unit: str).
+
+        split_unit é o sufixo aceito pelo comando split: 'M', 'G' ou 'T'.
+        Unidades aceitas: mb, gb, tb (case-insensitive).
+        Lança ValueError com mensagem clara para qualquer valor inválido.
+        """
+        UNITS = {
+            'mb': (1024 ** 2, 'M'),
+            'gb': (1024 ** 3, 'G'),
+            'tb': (1024 ** 4, 'T'),
+        }
+        raw = str(chunk_size_str).strip().lower()
+        # Separa número de unidade (ex: '4gb' → '4', 'gb')
+        for suffix, (multiplier, split_letter) in UNITS.items():
+            if raw.endswith(suffix):
+                num_str = raw[: -len(suffix)].strip()
+                try:
+                    num = float(num_str)
+                except ValueError:
+                    raise ValueError(
+                        f"Valor numérico inválido em chunk_size: '{chunk_size_str}'. "
+                        f"Esperado ex: '4gb', '500mb', '2tb'."
+                    )
+                if num <= 0:
+                    raise ValueError(
+                        f"chunk_size deve ser maior que zero, recebido: '{chunk_size_str}'."
+                    )
+                chunk_bytes = int(num * multiplier)
+                # Reconstrói a string para o split (ex: '4G', '500M')
+                num_clean = int(num) if num == int(num) else num
+                split_str  = f"{num_clean}{split_letter}"
+                return chunk_bytes, split_str
+        raise ValueError(
+            f"Unidade desconhecida em chunk_size: '{chunk_size_str}'. "
+            f"Use 'mb', 'gb' ou 'tb' (ex: '4gb', '500mb')."
+        )
+
+    def _run_split(self, zst_path: str, split_cfg: dict):
+        """
+        Divide o arquivo .tar.zst em partes conforme chunk_size definido no JSON.
+
+        Parâmetros calculados automaticamente:
+          - num_partes  = ceil(tamanho / chunk_bytes)
+          - sufixo -a   = max(3, len(str(num_partes)))  → mínimo 3 dígitos
+          - --numeric-suffixes=1                         → sempre começa em 001
+
+        Retry: até 3 tentativas. A cada tentativa o diretório splitted/ é limpo.
+        Validação: soma dos fragmentos deve ser igual ao tamanho do .tar.zst original.
+        """
+        MAX_RETRIES   = 3
+        keep_original = split_cfg.get('keep_original_after_split', True)
+
+        # Parseia e valida chunk_size antes de qualquer operação
+        chunk_size_raw = split_cfg.get('chunk_size', '4gb')
+        try:
+            chunk_bytes, chunk_str = self._parse_chunk_size(chunk_size_raw)
+        except ValueError as e:
+            raise Exception(f"Configuração de split inválida: {e}")
+
+        zst_size   = os.path.getsize(zst_path)
+        num_partes = math.ceil(zst_size / chunk_bytes)
+        suffix_len = max(3, len(str(num_partes)))
+
+        split_dir      = os.path.join(self.full_dir, "splitted")
+        # O prefixo preserva o nome original do arquivo + separador de parte
+        prefix         = os.path.join(split_dir, os.path.basename(zst_path) + ".part_")
+
+        self.logger.info(
+            f"Split habilitado. Arquivo: {os.path.basename(zst_path)} "
+            f"({zst_size / 1024**3:.2f} GB) → {num_partes} parte(s) de {chunk_size_raw.upper()} "
+            f"(sufixo -{suffix_len} dígitos)."
+        )
+
+        def _prepare_split_dir():
+            """Cria ou limpa o diretório splitted/ antes de cada tentativa."""
+            if os.path.exists(split_dir):
+                self.logger.info(f"Limpando '{split_dir}' antes do split...")
+                for entry in os.scandir(split_dir):
+                    try:
+                        os.remove(entry.path)
+                    except OSError as e:
+                        self.logger.warning(f"Não foi possível remover '{entry.path}': {e}")
+            else:
+                self.logger.info(f"Criando '{split_dir}'...")
+                os.makedirs(split_dir, exist_ok=True)
+
+        def _validate_parts() -> bool:
+            """Compara a soma dos tamanhos dos fragmentos com o arquivo original."""
+            try:
+                parts = sorted(
+                    entry.path for entry in os.scandir(split_dir)
+                    if entry.is_file()
+                )
+                if not parts:
+                    self.logger.warning("Validação: nenhum fragmento encontrado.")
+                    return False
+                total = sum(os.path.getsize(p) for p in parts)
+                if total != zst_size:
+                    self.logger.warning(
+                        f"Validação falhou: soma dos fragmentos ({total} bytes) "
+                        f"≠ original ({zst_size} bytes)."
+                    )
+                    return False
+                self.logger.info(
+                    f"Validação OK: {len(parts)} fragmento(s), "
+                    f"{total / 1024**3:.2f} GB totais."
+                )
+                return True
+            except Exception as e:
+                self.logger.warning(f"Erro durante validação: {e}")
+                return False
+
+        success = False
+        for attempt in range(1, MAX_RETRIES + 1):
+            self.logger.info(f"Split — tentativa {attempt}/{MAX_RETRIES}...")
+            _prepare_split_dir()
+
+            cmd = [
+                "split",
+                f"--bytes={chunk_str}",
+                f"--numeric-suffixes=1",
+                f"-a", str(suffix_len),
+                "--verbose",
+                zst_path,
+                prefix,
+            ]
+
+            if self.debug:
+                self.logger.debug(f"[\033[36mDEBUG\033[0m] Executando: {' '.join(cmd)}")
+
+            try:
+                self._run_cmd(cmd, check=True)
+            except subprocess.CalledProcessError as e:
+                self.logger.warning(f"Split retornou erro (code {e.returncode}) na tentativa {attempt}.")
+                continue   # processo falhou → próxima tentativa
+
+            # Processo saiu com 0 — valida integridade dos fragmentos
+            if _validate_parts():
+                success = True
+                break
+            # Validação falhou → próxima tentativa (split_dir será limpo no início do loop)
+
+        if not success:
+            # Esgotou as tentativas — limpa fragmentos corrompidos e mantém o .tar.zst intacto
+            self.logger.error(
+                f"Split falhou após {MAX_RETRIES} tentativas. "
+                f"Fragmentos removidos. Arquivo original '{os.path.basename(zst_path)}' preservado."
+            )
+            _prepare_split_dir()   # deixa o diretório vazio mas existente
+            raise Exception(f"Split de '{zst_path}' não concluído após {MAX_RETRIES} tentativas.")
+
+        # ------------------------------------------------------------------
+        # Pós-split bem-sucedido — decide se mantém ou remove o original
+        # ------------------------------------------------------------------
+        if not keep_original:
+            self.logger.info(
+                f"keep_original_after_split=false — removendo '{os.path.basename(zst_path)}'..."
+            )
+            try:
+                os.remove(zst_path)
+                self.logger.info("Arquivo original removido.")
+            except OSError as e:
+                self.logger.warning(f"Não foi possível remover o original: {e}")
+        else:
+            self.logger.info(
+                f"keep_original_after_split=true — '{os.path.basename(zst_path)}' mantido."
+            )
     # FIX 5 — retenção por CONTAGEM (keep_logs_count) em vez de só por data,
     # replicando o `tail -n +32` do script shell original.
     # ------------------------------------------------------------------
