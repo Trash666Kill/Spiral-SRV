@@ -144,10 +144,51 @@ class BackupJob:
     # Helpers
     # ------------------------------------------------------------------
 
+    # Padrões de opções de mount que contêm credenciais e devem ser ocultados.
+    _SENSITIVE_MOUNT_KEYS = {"username", "password", "domain"}
+
+    @staticmethod
+    def _redact_mount_opts(opts_str: str) -> str:
+        """
+        Recebe a string de opções do mount (ex: 'ro,username=foo,password=bar')
+        e substitui o VALOR de cada chave sensível por '***'.
+        """
+        parts = opts_str.split(',')
+        redacted = []
+        for part in parts:
+            if '=' in part:
+                key, _ = part.split('=', 1)
+                if key.strip() in BackupJob._SENSITIVE_MOUNT_KEYS:
+                    redacted.append(f"{key}=***")
+                    continue
+            redacted.append(part)
+        return ','.join(redacted)
+
+    def _redact_cmd(self, cmd: list) -> str:
+        """
+        Converte a lista de argumentos do comando em string para log,
+        ocultando o valor do argumento '-o' quando ele contiver credenciais
+        de mount (username/password/domain).
+        """
+        parts = [str(x) for x in cmd]
+        result = []
+        skip_next = False
+        for i, part in enumerate(parts):
+            if skip_next:
+                result.append(self._redact_mount_opts(part))
+                skip_next = False
+            elif part == '-o' and i + 1 < len(parts):
+                result.append(part)
+                skip_next = True   # próximo token é o valor de -o
+            else:
+                result.append(part)
+        return ' '.join(result)
+
     def _run_cmd(self, cmd, check=True, **kwargs):
         if self.debug:
-            cmd_str = ' '.join([str(x) for x in cmd])
-            self.logger.debug(f"[\033[36mDEBUG\033[0m] Executando: {cmd_str}")
+            self.logger.debug(
+                f"[\033[36mDEBUG\033[0m] Executando: {self._redact_cmd(cmd)}"
+            )
         return subprocess.run(cmd, check=check, **kwargs)
 
     def _check_config_file_permissions(self):
@@ -245,7 +286,7 @@ class BackupJob:
         if not user or not password:
             raise ValueError("Credenciais incompletas no JSON.")
 
-        self.logger.info(f"Montando {remote} (Opções: {opts})...")
+        self.logger.info(f"Montando {remote}...")
 
         auth_opts  = f"username={user},password={password}"
         if domain:
