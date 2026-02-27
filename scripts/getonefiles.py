@@ -57,8 +57,7 @@ _speed_limit_mbs: float = 0.0
 def aplicar_throttle(bytes_transferidos: int, tempo_inicio: float):
     """
     Pausa o tempo necessario para respeitar o limite de velocidade.
-    bytes_transferidos: total de bytes ja transferidos nesta sessao
-    tempo_inicio: timestamp do inicio da transferencia
+    Baseado no total acumulado transferido desde tempo_inicio.
     """
     if _speed_limit_mbs <= 0:
         return
@@ -70,6 +69,32 @@ def aplicar_throttle(bytes_transferidos: int, tempo_inicio: float):
 
     if espera > 0:
         time.sleep(espera)
+
+
+def ler_com_throttle(f, tamanho: int) -> bytes:
+    """
+    Le 'tamanho' bytes do arquivo em sub-chunks de 256KB,
+    aplicando throttle continuo entre cada sub-chunk.
+    Garante que a limitacao de velocidade seja aplicada em tempo real
+    em vez de apenas como media por chunk grande.
+    """
+    if _speed_limit_mbs <= 0:
+        return f.read(tamanho)
+
+    SUB_CHUNK = 256 * 1024  # 256 KB
+    dados = b""
+    tempo_inicio = time.time()
+    lido = 0
+
+    while lido < tamanho:
+        parte = f.read(min(SUB_CHUNK, tamanho - lido))
+        if not parte:
+            break
+        dados += parte
+        lido  += len(parte)
+        aplicar_throttle(lido, tempo_inicio)
+
+    return dados
 
 
 # ---------------------------------------------
@@ -278,14 +303,13 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
         handle_error(resp, "Criar upload session")
 
     upload_url = resp.json()["uploadUrl"]
-    log_info(f"[INFO] Upload session criada. Enviando em chunks de {CHUNK_SIZE // (1024 * 1024)} MB...")
+    log_info(f"Upload session criada. Enviando em chunks de {CHUNK_SIZE // (1024 * 1024)} MB...")
     log.debug(f"Upload session URL obtida para: {caminho_remoto}")
 
-    offset      = 0
-    tempo_inicio = time.time()
+    offset = 0
     with open(caminho_local, "rb") as f:
         while offset < tamanho_total:
-            chunk     = f.read(CHUNK_SIZE)
+            chunk     = ler_com_throttle(f, CHUNK_SIZE)
             chunk_len = len(chunk)
             fim       = offset + chunk_len - 1
 
@@ -301,9 +325,7 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
                 log_erro(f"Falha no chunk {offset}-{fim}: {resp_chunk.status_code} - {resp_chunk.text}")
                 sys.exit(1)
 
-            offset += chunk_len
-            aplicar_throttle(offset, tempo_inicio)
-
+            offset   += chunk_len
             progresso = (offset / tamanho_total) * 100
             print(f"  -> {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
             log.debug(f"Chunk enviado: {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
@@ -319,10 +341,10 @@ def upload(caminho_local: str, caminho_remoto: str):
     nome_arquivo = os.path.basename(caminho_local)
     if not os.path.splitext(caminho_remoto)[1]:
         caminho_remoto = caminho_remoto.rstrip("/") + "/" + nome_arquivo
-        log_info(f"[INFO] Destino resolvido para: {caminho_remoto}")
+        log_info(f"Destino resolvido para: {caminho_remoto}")
 
     tamanho = os.path.getsize(caminho_local)
-    log_info(f"[INFO] Upload: {caminho_local} ({formatar_tamanho(tamanho)}) -> {caminho_remoto}")
+    log_info(f"Upload: {caminho_local} ({formatar_tamanho(tamanho)}) -> {caminho_remoto}")
 
     if tamanho >= UPLOAD_THRESHOLD:
         upload_session(caminho_local, caminho_remoto, tamanho)
@@ -357,18 +379,19 @@ def download_arquivo(caminho_remoto: str, caminho_local: str):
         nome_arquivo  = meta.get("name", os.path.basename(caminho_remoto))
         caminho_local = os.path.join(caminho_local, nome_arquivo)
 
-    log_info(f"[INFO] Baixando : {caminho_remoto} ({formatar_tamanho(tamanho_total)})")
-    log_info(f"[INFO] Destino  : {caminho_local}")
+    log_info(f"Baixando : {caminho_remoto} ({formatar_tamanho(tamanho_total)})")
+    log_info(f"Destino  : {caminho_local}")
 
     with requests.get(download_url, stream=True) as r:
         if r.status_code != 200:
             log_erro(f"Falha no download: {r.status_code}")
             sys.exit(1)
 
+        SUB_CHUNK    = 256 * 1024  # 256 KB
         baixado      = 0
         tempo_inicio = time.time()
         with open(caminho_local, "wb") as f:
-            for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+            for chunk in r.iter_content(chunk_size=SUB_CHUNK):
                 if chunk:
                     f.write(chunk)
                     baixado += len(chunk)
@@ -391,11 +414,11 @@ def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int
     os.makedirs(destino_local, exist_ok=True)
 
     if not itens:
-        log_info(f"{indent}[INFO] Pasta vazia: {caminho_remoto}")
+        log_info(f"{indent}Pasta vazia: {caminho_remoto}")
         return
 
     if arquivos:
-        log_info(f"{indent}[INFO] {len(arquivos)} arquivo(s) em: {caminho_remoto}")
+        log_info(f"{indent}{len(arquivos)} arquivo(s) em: {caminho_remoto}")
         for item in arquivos:
             nome        = item["name"]
             remoto_item = f"{caminho_remoto.rstrip('/')}/{nome}"
@@ -403,7 +426,7 @@ def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int
             download_arquivo(remoto_item, destino_local)
 
     if pastas:
-        log_info(f"\n{indent}[INFO] {len(pastas)} subpasta(s) em: {caminho_remoto}")
+        log_info(f"\n{indent}{len(pastas)} subpasta(s) em: {caminho_remoto}")
         for pasta in pastas:
             nome_pasta      = pasta["name"]
             remoto_subpasta = f"{caminho_remoto.rstrip('/')}/{nome_pasta}"
@@ -421,8 +444,8 @@ def download(caminho_remoto: str, destino_local: str):
     meta = resp_meta.json()
 
     if "folder" in meta:
-        log_info(f"\n[INFO] Iniciando download recursivo de: {caminho_remoto}")
-        log_info(f"[INFO] Destino local: {destino_local}\n")
+        log_info(f"Iniciando download recursivo de: {caminho_remoto}")
+        log_info(f"Destino local: {destino_local}\n")
         download_pasta_recursivo(caminho_remoto, destino_local)
         log_ok(f"Download recursivo concluido: {destino_local}")
     else:
@@ -447,10 +470,10 @@ def deletar_conteudo(caminho_remoto: str):
     itens = listar_itens(caminho_remoto)
 
     if not itens:
-        log_info(f"[INFO] Pasta ja esta vazia: {caminho_remoto}")
+        log_info(f"Pasta ja esta vazia: {caminho_remoto}")
         return
 
-    log_info(f"[INFO] {len(itens)} item(s) encontrado(s) em: {caminho_remoto}")
+    log_info(f"{len(itens)} item(s) encontrado(s) em: {caminho_remoto}")
     erros = 0
 
     for idx, item in enumerate(itens, start=1):
@@ -485,7 +508,7 @@ def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
     resp = requests.get(url, headers=headers())
 
     if resp.status_code == 404:
-        log_info(f"[INFO] Pasta remota ainda nao existe, sera criada no primeiro upload: {caminho_remoto}")
+        log_info(f"Pasta remota ainda nao existe, sera criada no primeiro upload: {caminho_remoto}")
         return {}
     elif resp.status_code != 200:
         handle_error(resp, f"Mapear remoto '{caminho_remoto}'")
@@ -539,18 +562,18 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
         sys.exit(1)
 
     log_secao("INICIO DO SYNC")
-    log_info(f"[SYNC] Local  : {diretorio_local}")
-    log_info(f"[SYNC] Remoto : {caminho_remoto}")
-    log_info(f"[SYNC] Modo   : {'espelho (--delete ativo)' if deletar_remotos else 'incremental (sem --delete)'}")
+    log_info(f"Local  : {diretorio_local}")
+    log_info(f"Remoto : {caminho_remoto}")
+    log_info(f"Modo   : {'espelho (--delete ativo)' if deletar_remotos else 'incremental (sem --delete)'}")
 
-    log_info(f"\n[INFO] Mapeando arquivos locais...")
+    log_info(f"Mapeando arquivos locais...")
     mapa_local = mapear_local_recursivo(diretorio_local)
 
-    log_info(f"[INFO] Mapeando arquivos remotos...")
+    log_info(f"Mapeando arquivos remotos...")
     mapa_remoto = mapear_remoto_recursivo_seguro(caminho_remoto)
 
-    log_info(f"\n[INFO] Arquivos locais : {len(mapa_local)}")
-    log_info(f"[INFO] Arquivos remotos: {len(mapa_remoto)}")
+    log_info(f"Arquivos locais : {len(mapa_local)}")
+    log_info(f"Arquivos remotos: {len(mapa_remoto)}")
 
     # Classificar
     a_enviar  = []
@@ -570,10 +593,10 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
             if rel not in mapa_local:
                 a_deletar.append(rel)
 
-    log_info(f"\n[SYNC] {len(identicos)} arquivo(s) identico(s) - ignorados")
-    log_info(f"[SYNC] {len(a_enviar)} arquivo(s) a enviar")
+    log_info(f"{len(identicos)} arquivo(s) identico(s) - ignorados")
+    log_info(f"{len(a_enviar)} arquivo(s) a enviar")
     if deletar_remotos:
-        log_info(f"[SYNC] {len(a_deletar)} arquivo(s) a deletar do remoto")
+        log_info(f"{len(a_deletar)} arquivo(s) a deletar do remoto")
 
     if not a_enviar and not a_deletar:
         log_ok("Tudo sincronizado. Nenhuma acao necessaria.")
@@ -792,7 +815,7 @@ def main():
     log_file = setup_logging(args.log_dir)
 
     if _speed_limit_mbs > 0:
-        log_info(f"[INFO] Limite de velocidade: {_speed_limit_mbs:.1f} MB/s")
+        log_info(f"Limite de velocidade: {_speed_limit_mbs:.1f} MB/s")
 
     if args.upload:
         log.debug(f"Operacao: upload | local: {args.upload[0]} | remoto: {args.upload[1]}")
