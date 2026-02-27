@@ -413,9 +413,7 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
                 sys.exit(1)
 
             offset    += chunk_len
-            progresso  = (offset / tamanho_total) * 100
-            print(f"  -> {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
-            log.debug(f"Chunk enviado: {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
+            log.debug(f"Chunk enviado: {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({(offset / tamanho_total) * 100:.1f}%)")
 
     log_ok(f"Arquivo enviado (session): {caminho_remoto}")
 
@@ -497,14 +495,7 @@ def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: d
                     throttle_estado["bytes"] += len(chunk)
                     aplicar_throttle(throttle_estado["bytes"], throttle_estado["inicio"])
 
-                    if tamanho_total:
-                        progresso = (throttle_estado["bytes"] / tamanho_total) * 100 if estado_local else 0
-                        if estado_local:
-                            print(f"  -> {formatar_tamanho(throttle_estado['bytes'])} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
-                        else:
-                            print(f"  -> {formatar_tamanho(throttle_estado['bytes'])} acumulado")
-                    else:
-                        print(f"  -> {formatar_tamanho(throttle_estado['bytes'])}")
+
 
     log_ok(f"Download concluido: {caminho_local} ({formatar_tamanho(tamanho_total)})")
 
