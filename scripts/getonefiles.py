@@ -812,9 +812,50 @@ def validar_env():
 
 
 def main():
+    epilog = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ CONFIGURACAO INICIAL — AZURE AD (Microsoft Entra)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Fase 1: Criacao do Aplicativo (App Registration)
+  1. Acesse https://entra.microsoft.com com uma conta de administrador global.
+  2. No menu lateral, va em Registros de aplicativo > Novo registro.
+  3. Em Nome, defina como getonefiles (ou o nome do seu projeto).
+  4. Em Tipos de conta com suporte, selecione Somente locatario unico (Single tenant).
+  5. Ignore a configuracao de "URI de redirecionamento" e clique em Registrar.
+
+Fase 2: Configuracao de Permissoes (Acesso em Background)
+  1. No menu lateral do novo aplicativo, acesse Permissoes de APIs.
+  2. Clique em Adicionar uma permissao > Microsoft Graph > Permissoes de aplicativo
+     (e fundamental NAO escolher o tipo "Delegado").
+  3. Encontre e marque as seguintes permissoes:
+       - User.Read.All
+       - Files.Read.All
+       - Files.ReadWrite.All
+  4. Clique em Adicionar permissoes no rodape da pagina.
+  5. ACAO OBRIGATORIA: Clique em Conceder consentimento do administrador para
+     [Sua Organizacao] e confirme. Verifique se um check verde apareceu na
+     coluna de status de todas as permissoes.
+
+Fase 3: Geracao e Coleta de Credenciais
+  1. Va em Certificados e segredos > Novo segredo do cliente.
+  2. Insira uma Descricao e defina o tempo de expiracao. Clique em Adicionar.
+  3. ATENCAO: Copie imediatamente a string da coluna Valor. Este e o seu
+     CLIENT_SECRET. Ele ficara permanentemente oculto ao sair desta tela.
+     (Ignore a coluna "ID Secreto", ela nao tem utilidade para a API.)
+  4. Va em Visao Geral (Overview) do aplicativo e copie:
+       - ID do aplicativo (cliente)  →  CLIENT_ID
+       - ID do diretorio (locatario) →  TENANT_ID
+
+Use o comando abaixo para gerar o arquivo .env pre-configurado:
+  python3 getonefiles.py --init
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
     parser = argparse.ArgumentParser(
         description="Gerencia arquivos no OneDrive via Microsoft Graph API",
         formatter_class=argparse.RawTextHelpFormatter,
+        epilog=epilog,
     )
 
     group = parser.add_mutually_exclusive_group(required=True)
