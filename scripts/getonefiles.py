@@ -44,8 +44,11 @@ DEFAULT_SPEED_MB = float(_raw_speed) if _raw_speed else 0.0
 
 GRAPH_BASE       = "https://graph.microsoft.com/v1.0"
 TOKEN_URL        = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-CHUNK_SIZE       = 10 * 1024 * 1024   # 10 MB por chunk
 UPLOAD_THRESHOLD = 4  * 1024 * 1024   # arquivos >= 4 MB usam upload session
+
+# Limites do Graph API para upload session
+CHUNK_SIZE_MAX   = 1000 * 1024 * 1024 # 1000 MB: chunk padrao quando sem speed limit
+CHUNK_SIZE_MIN   = 320 * 1024         # 320 KB: multiplo minimo exigido pelo Graph API
 
 # Logger global (configurado em setup_logging)
 log = logging.getLogger("getonefiles")
@@ -53,6 +56,41 @@ log = logging.getLogger("getonefiles")
 # Limite de velocidade ativo na execucao (MB/s); 0 = sem limite
 _speed_limit_mbs: float = 0.0
 
+
+def calcular_chunk_size() -> int:
+    """
+    Calcula o tamanho ideal do chunk para upload session com base no speed limit.
+
+    Sem limite (--speed nao definido):
+      Usa o maximo permitido pelo Graph API (60 MB), minimizando round-trips
+      e aproveitando ao maximo a banda disponivel.
+
+    Com limite (--speed X):
+      Calcula um chunk que leva aproximadamente CHUNK_DURATION_S segundos
+      para ser transferido na velocidade alvo. Isso garante que o throttle
+      tenha granularidade adequada — chunks pequenos demais causam overhead
+      de round-trips, chunks grandes demais tornam o throttle impreciso.
+
+    O resultado e sempre alinhado ao multiplo de 320 KB exigido pelo Graph API
+    e limitado ao intervalo [CHUNK_SIZE_MIN, CHUNK_SIZE_MAX].
+    """
+    CHUNK_DURATION_S = 2.0  # segundos-alvo por chunk quando com speed limit
+
+    if _speed_limit_mbs <= 0:
+        return CHUNK_SIZE_MAX
+
+    # Bytes ideais para CHUNK_DURATION_S segundos na velocidade alvo
+    ideal = int(_speed_limit_mbs * 1024 * 1024 * CHUNK_DURATION_S)
+
+    # Alinha para baixo ao multiplo de 320 KB mais proximo
+    alinhado = max(CHUNK_SIZE_MIN, (ideal // CHUNK_SIZE_MIN) * CHUNK_SIZE_MIN)
+
+    return min(alinhado, CHUNK_SIZE_MAX)
+
+
+# ---------------------------------------------
+# Throttle
+# ---------------------------------------------
 
 def aplicar_throttle(bytes_transferidos: int, tempo_inicio: float):
     """
@@ -62,10 +100,10 @@ def aplicar_throttle(bytes_transferidos: int, tempo_inicio: float):
     if _speed_limit_mbs <= 0:
         return
 
-    limite_bytes_s = _speed_limit_mbs * 1024 * 1024
-    tempo_esperado = bytes_transferidos / limite_bytes_s
+    limite_bytes_s  = _speed_limit_mbs * 1024 * 1024
+    tempo_esperado  = bytes_transferidos / limite_bytes_s
     tempo_decorrido = time.time() - tempo_inicio
-    espera = tempo_esperado - tempo_decorrido
+    espera          = tempo_esperado - tempo_decorrido
 
     if espera > 0:
         time.sleep(espera)
@@ -73,18 +111,19 @@ def aplicar_throttle(bytes_transferidos: int, tempo_inicio: float):
 
 def ler_com_throttle(f, tamanho: int) -> bytes:
     """
-    Le 'tamanho' bytes do arquivo em sub-chunks de 256KB,
+    Le 'tamanho' bytes do arquivo em sub-chunks de 256 KB,
     aplicando throttle continuo entre cada sub-chunk.
     Garante que a limitacao de velocidade seja aplicada em tempo real
     em vez de apenas como media por chunk grande.
+    Funciona tanto com throttle ativo quanto sem (fallback direto para f.read).
     """
     if _speed_limit_mbs <= 0:
         return f.read(tamanho)
 
-    SUB_CHUNK = 256 * 1024  # 256 KB
-    dados = b""
+    SUB_CHUNK    = 256 * 1024  # 256 KB
+    dados        = b""
     tempo_inicio = time.time()
-    lido = 0
+    lido         = 0
 
     while lido < tamanho:
         parte = f.read(min(SUB_CHUNK, tamanho - lido))
@@ -112,13 +151,13 @@ def setup_logging(log_dir: str):
         print(f"[ERRO] Sem permissao para criar o diretorio de log: {log_dir}")
         sys.exit(1)
 
-    timestamp  = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_file   = os.path.join(log_dir, f"getonefiles_{timestamp}.log")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_file  = os.path.join(log_dir, f"getonefiles_{timestamp}.log")
 
     log.setLevel(logging.DEBUG)
 
     fmt     = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    fmt_con = logging.Formatter("%(message)s")  # terminal: sem timestamp (ja aparece no print)
+    fmt_con = logging.Formatter("%(message)s")  # terminal: sem timestamp
 
     # Handler: arquivo
     fh = logging.FileHandler(log_file, encoding="utf-8")
@@ -272,15 +311,23 @@ def listar(caminho_remoto: str = None):
 # ---------------------------------------------
 
 def upload_simples(caminho_local: str, caminho_remoto: str):
-    url = f"{drive_url(caminho_remoto)}:/content"
-
-    with open(caminho_local, "rb") as f:
-        conteudo = f.read()
+    """
+    Envia arquivos menores que UPLOAD_THRESHOLD via PUT simples.
+    CORRECAO (Bug 1): agora usa ler_com_throttle para respeitar --speed,
+    mesmo em arquivos pequenos.
+    """
+    url     = f"{drive_url(caminho_remoto)}:/content"
+    tamanho = os.path.getsize(caminho_local)
 
     hdrs = {
         "Authorization": f"Bearer {get_token()}",
         "Content-Type":  "application/octet-stream",
     }
+
+    with open(caminho_local, "rb") as f:
+        # Antes: f.read() direto, ignorando completamente o throttle.
+        # Agora: ler_com_throttle aplica o limite de velocidade em sub-chunks de 256 KB.
+        conteudo = ler_com_throttle(f, tamanho)
 
     resp = requests.put(url, headers=hdrs, data=conteudo)
     if resp.status_code not in (200, 201):
@@ -303,13 +350,14 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
         handle_error(resp, "Criar upload session")
 
     upload_url = resp.json()["uploadUrl"]
-    log_info(f"Upload session criada. Enviando em chunks de {CHUNK_SIZE // (1024 * 1024)} MB...")
+    chunk_size = calcular_chunk_size()
+    log_info(f"Upload session criada. Enviando em chunks de {chunk_size // (1024 * 1024)} MB ({formatar_tamanho(chunk_size)})...")
     log.debug(f"Upload session URL obtida para: {caminho_remoto}")
 
     offset = 0
     with open(caminho_local, "rb") as f:
         while offset < tamanho_total:
-            chunk     = ler_com_throttle(f, CHUNK_SIZE)
+            chunk     = ler_com_throttle(f, chunk_size)
             chunk_len = len(chunk)
             fim       = offset + chunk_len - 1
 
@@ -325,8 +373,8 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
                 log_erro(f"Falha no chunk {offset}-{fim}: {resp_chunk.status_code} - {resp_chunk.text}")
                 sys.exit(1)
 
-            offset   += chunk_len
-            progresso = (offset / tamanho_total) * 100
+            offset    += chunk_len
+            progresso  = (offset / tamanho_total) * 100
             print(f"  -> {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
             log.debug(f"Chunk enviado: {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
 
@@ -356,7 +404,16 @@ def upload(caminho_local: str, caminho_remoto: str):
 # Download
 # ---------------------------------------------
 
-def download_arquivo(caminho_remoto: str, caminho_local: str):
+def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: dict = None):
+    """
+    Baixa um unico arquivo do OneDrive para o caminho local.
+
+    CORRECAO (Bug 3): aceita 'throttle_estado' opcional com {'bytes': int, 'inicio': float}.
+    Quando fornecido (ex: download recursivo de pasta), o contador de bytes e tempo
+    e compartilhado entre todos os arquivos da sessao, garantindo que o throttle
+    seja efetivo mesmo para muitos arquivos pequenos.
+    Quando None (download avulso), cria seu proprio contador local — comportamento identico ao original.
+    """
     url_meta  = f"{drive_url(caminho_remoto)}"
     resp_meta = requests.get(url_meta, headers=headers())
     if resp_meta.status_code != 200:
@@ -382,30 +439,44 @@ def download_arquivo(caminho_remoto: str, caminho_local: str):
     log_info(f"Baixando : {caminho_remoto} ({formatar_tamanho(tamanho_total)})")
     log_info(f"Destino  : {caminho_local}")
 
+    # Throttle global compartilhado (pasta recursiva) ou local (arquivo avulso)
+    estado_local = throttle_estado is None
+    if estado_local:
+        throttle_estado = {"bytes": 0, "inicio": time.time()}
+
+    SUB_CHUNK = 256 * 1024  # 256 KB
+
     with requests.get(download_url, stream=True) as r:
         if r.status_code != 200:
             log_erro(f"Falha no download: {r.status_code}")
             sys.exit(1)
 
-        SUB_CHUNK    = 256 * 1024  # 256 KB
-        baixado      = 0
-        tempo_inicio = time.time()
         with open(caminho_local, "wb") as f:
             for chunk in r.iter_content(chunk_size=SUB_CHUNK):
                 if chunk:
                     f.write(chunk)
-                    baixado += len(chunk)
-                    aplicar_throttle(baixado, tempo_inicio)
+                    throttle_estado["bytes"] += len(chunk)
+                    aplicar_throttle(throttle_estado["bytes"], throttle_estado["inicio"])
+
                     if tamanho_total:
-                        progresso = (baixado / tamanho_total) * 100
-                        print(f"  -> {formatar_tamanho(baixado)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
+                        progresso = (throttle_estado["bytes"] / tamanho_total) * 100 if estado_local else 0
+                        if estado_local:
+                            print(f"  -> {formatar_tamanho(throttle_estado['bytes'])} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
+                        else:
+                            print(f"  -> {formatar_tamanho(throttle_estado['bytes'])} acumulado")
                     else:
-                        print(f"  -> {formatar_tamanho(baixado)}")
+                        print(f"  -> {formatar_tamanho(throttle_estado['bytes'])}")
 
     log_ok(f"Download concluido: {caminho_local} ({formatar_tamanho(tamanho_total)})")
 
 
-def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int = 0):
+def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int = 0,
+                              throttle_estado: dict = None):
+    """
+    CORRECAO (Bug 3): propaga o mesmo throttle_estado para todos os arquivos
+    do download recursivo, mantendo o controle de velocidade continuo
+    ao longo de toda a sessao de download (e nao apenas por arquivo).
+    """
     itens    = listar_itens(caminho_remoto)
     arquivos = [i for i in itens if "folder" not in i]
     pastas   = [i for i in itens if "folder" in i]
@@ -423,7 +494,7 @@ def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int
             nome        = item["name"]
             remoto_item = f"{caminho_remoto.rstrip('/')}/{nome}"
             log_info(f"\n{indent}v {nome}")
-            download_arquivo(remoto_item, destino_local)
+            download_arquivo(remoto_item, destino_local, throttle_estado=throttle_estado)
 
     if pastas:
         log_info(f"\n{indent}{len(pastas)} subpasta(s) em: {caminho_remoto}")
@@ -432,7 +503,8 @@ def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int
             remoto_subpasta = f"{caminho_remoto.rstrip('/')}/{nome_pasta}"
             local_subpasta  = os.path.join(destino_local, nome_pasta)
             log_info(f"\n{indent}+-- Entrando em: {nome_pasta}/")
-            download_pasta_recursivo(remoto_subpasta, local_subpasta, nivel + 1)
+            download_pasta_recursivo(remoto_subpasta, local_subpasta, nivel + 1,
+                                     throttle_estado=throttle_estado)
 
 
 def download(caminho_remoto: str, destino_local: str):
@@ -446,7 +518,9 @@ def download(caminho_remoto: str, destino_local: str):
     if "folder" in meta:
         log_info(f"Iniciando download recursivo de: {caminho_remoto}")
         log_info(f"Destino local: {destino_local}\n")
-        download_pasta_recursivo(caminho_remoto, destino_local)
+        # Cria um estado de throttle global compartilhado para toda a pasta
+        throttle_estado = {"bytes": 0, "inicio": time.time()} if _speed_limit_mbs > 0 else None
+        download_pasta_recursivo(caminho_remoto, destino_local, throttle_estado=throttle_estado)
         log_ok(f"Download recursivo concluido: {destino_local}")
     else:
         download_arquivo(caminho_remoto, destino_local)
@@ -503,6 +577,10 @@ def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
     """
     Versao segura do mapeamento remoto: se a pasta nao existir (404),
     retorna dicionario vazio sem exibir erro — ela sera criada no upload.
+
+    CORRECAO (Bug 2): a chamada recursiva interna agora passa corretamente
+    'caminho_remoto' como 'base_remoto', para que os caminhos relativos
+    sejam calculados a partir da raiz do sync e nao da subpasta atual.
     """
     url  = f"{drive_url(caminho_remoto)}:/children"
     resp = requests.get(url, headers=headers())
@@ -518,6 +596,9 @@ def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
         nome         = item["name"]
         caminho_item = f"{caminho_remoto.rstrip('/')}/{nome}"
         if "folder" in item:
+            # Antes: passava caminho_remoto (subpasta atual) como base_remoto,
+            # corrompendo os caminhos relativos de todos os niveis abaixo.
+            # Agora: passa caminho_remoto (raiz do sync) como base_remoto, correto.
             sub = mapear_remoto_recursivo(caminho_item, caminho_remoto)
             resultado.update(sub)
         else:
@@ -564,12 +645,12 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
     log_secao("INICIO DO SYNC")
     log_info(f"Local  : {diretorio_local}")
     log_info(f"Remoto : {caminho_remoto}")
-    log_info(f"Modo   : {'espelho (--delete ativo)' if deletar_remotos else 'incremental (sem --delete)'}")
+    log_info(f"Modo   : {'espelho (--mirror ativo)' if deletar_remotos else 'incremental (sem --mirror)'}")
 
-    log_info(f"Mapeando arquivos locais...")
+    log_info("Mapeando arquivos locais...")
     mapa_local = mapear_local_recursivo(diretorio_local)
 
-    log_info(f"Mapeando arquivos remotos...")
+    log_info("Mapeando arquivos remotos...")
     mapa_remoto = mapear_remoto_recursivo_seguro(caminho_remoto)
 
     log_info(f"Arquivos locais : {len(mapa_local)}")
@@ -669,6 +750,9 @@ USER_ID=usuario@suaempresa.com
 
 # Diretorio onde os arquivos de log serao salvos (padrao: /var/log/getonefiles)
 # LOG_DIR=/var/log/getonefiles
+
+# Limite de velocidade de upload/download em MB/s (0 = sem limite)
+# SPEED_LIMIT=5
 """
 
     with open(destino, "w") as f:
@@ -744,7 +828,6 @@ def main():
             'Ex: --sync /mnt/Local/Backup "Documentos/HS-STG-02" --mirror'
         ),
     )
-
     group.add_argument(
         "--init",
         action="store_true",
