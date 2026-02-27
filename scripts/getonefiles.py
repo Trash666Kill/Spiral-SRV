@@ -19,10 +19,13 @@ Uso:
 import os
 import sys
 import time
+import socket
 import logging
 import argparse
 from datetime import datetime
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.connection import allowed_gai_family
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -55,6 +58,42 @@ log = logging.getLogger("getonefiles")
 
 # Limite de velocidade ativo na execucao (MB/s); 0 = sem limite
 _speed_limit_mbs: float = 0.0
+
+# Permitir conexoes via IPv6 (padrao: somente IPv4)
+_force_ipv6: bool = False
+
+
+class IPv4Adapter(HTTPAdapter):
+    """
+    HTTPAdapter que restringe conexoes a IPv4 (AF_INET).
+    Ativo por padrao; desativado apenas quando --ipv6 ou IPV6=true no .env.
+    """
+    def send(self, *args, **kwargs):
+        _orig = allowed_gai_family
+
+        def _force():
+            return socket.AF_INET
+
+        import urllib3.util.connection as _conn
+        _conn.allowed_gai_family = _force
+        try:
+            return super().send(*args, **kwargs)
+        finally:
+            _conn.allowed_gai_family = _orig
+
+
+def criar_session() -> requests.Session:
+    """Cria uma requests.Session com o adapter IPv4 montado se necessario."""
+    s = requests.Session()
+    if not _force_ipv6:
+        adapter = IPv4Adapter()
+        s.mount("https://", adapter)
+        s.mount("http://",  adapter)
+    return s
+
+
+# Session HTTP global reutilizada em todas as requisicoes
+_session: requests.Session = requests.Session()
 
 
 def calcular_chunk_size() -> int:
@@ -214,7 +253,7 @@ def get_token() -> str:
         "grant_type":    "client_credentials",
     }
 
-    resp = requests.post(TOKEN_URL, data=payload)
+    resp = _session.post(TOKEN_URL, data=payload)
     if resp.status_code != 200:
         log_erro(f"Falha ao obter token: {resp.status_code} - {resp.text}")
         sys.exit(1)
@@ -273,7 +312,7 @@ def listar_itens(caminho_remoto: str = None) -> list:
     else:
         url = f"{drive_url()}/children"
 
-    resp = requests.get(url, headers=headers())
+    resp = _session.get(url, headers=headers())
     if resp.status_code != 200:
         handle_error(resp, f"Listar '{caminho_remoto or 'raiz'}'")
 
@@ -329,7 +368,7 @@ def upload_simples(caminho_local: str, caminho_remoto: str):
         # Agora: ler_com_throttle aplica o limite de velocidade em sub-chunks de 256 KB.
         conteudo = ler_com_throttle(f, tamanho)
 
-    resp = requests.put(url, headers=hdrs, data=conteudo)
+    resp = _session.put(url, headers=hdrs, data=conteudo)
     if resp.status_code not in (200, 201):
         handle_error(resp, "Upload simples")
 
@@ -345,7 +384,7 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
         }
     }
 
-    resp = requests.post(url_criar_sessao, headers=headers(), json=body)
+    resp = _session.post(url_criar_sessao, headers=headers(), json=body)
     if resp.status_code != 200:
         handle_error(resp, "Criar upload session")
 
@@ -367,7 +406,7 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
                 "Content-Type":   "application/octet-stream",
             }
 
-            resp_chunk = requests.put(upload_url, headers=hdrs_chunk, data=chunk)
+            resp_chunk = _session.put(upload_url, headers=hdrs_chunk, data=chunk)
 
             if resp_chunk.status_code not in (200, 201, 202):
                 log_erro(f"Falha no chunk {offset}-{fim}: {resp_chunk.status_code} - {resp_chunk.text}")
@@ -415,7 +454,7 @@ def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: d
     Quando None (download avulso), cria seu proprio contador local — comportamento identico ao original.
     """
     url_meta  = f"{drive_url(caminho_remoto)}"
-    resp_meta = requests.get(url_meta, headers=headers())
+    resp_meta = _session.get(url_meta, headers=headers())
     if resp_meta.status_code != 200:
         handle_error(resp_meta, "Obter metadados para download")
 
@@ -446,7 +485,7 @@ def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: d
 
     SUB_CHUNK = 256 * 1024  # 256 KB
 
-    with requests.get(download_url, stream=True) as r:
+    with _session.get(download_url, stream=True) as r:
         if r.status_code != 200:
             log_erro(f"Falha no download: {r.status_code}")
             sys.exit(1)
@@ -509,7 +548,7 @@ def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int
 
 def download(caminho_remoto: str, destino_local: str):
     url_meta  = f"{drive_url(caminho_remoto)}"
-    resp_meta = requests.get(url_meta, headers=headers())
+    resp_meta = _session.get(url_meta, headers=headers())
     if resp_meta.status_code != 200:
         handle_error(resp_meta, "Download")
 
@@ -532,7 +571,7 @@ def download(caminho_remoto: str, destino_local: str):
 
 def deletar(caminho_remoto: str):
     url  = f"{drive_url(caminho_remoto)}"
-    resp = requests.delete(url, headers=headers())
+    resp = _session.delete(url, headers=headers())
 
     if resp.status_code == 204:
         log_ok(f"Item deletado: {caminho_remoto}")
@@ -555,7 +594,7 @@ def deletar_conteudo(caminho_remoto: str):
         remoto_item = f"{caminho_remoto.rstrip('/')}/{nome}"
         tipo        = "pasta" if "folder" in item else "arquivo"
 
-        resp = requests.delete(f"{drive_url(remoto_item)}", headers=headers())
+        resp = _session.delete(f"{drive_url(remoto_item)}", headers=headers())
 
         if resp.status_code == 204:
             log_ok(f"[{idx}/{len(itens)}] {tipo} deletado: {nome}")
@@ -583,7 +622,7 @@ def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
     sejam calculados a partir da raiz do sync e nao da subpasta atual.
     """
     url  = f"{drive_url(caminho_remoto)}:/children"
-    resp = requests.get(url, headers=headers())
+    resp = _session.get(url, headers=headers())
 
     if resp.status_code == 404:
         log_info(f"Pasta remota ainda nao existe, sera criada no primeiro upload: {caminho_remoto}")
@@ -753,6 +792,9 @@ USER_ID=usuario@suaempresa.com
 
 # Limite de velocidade de upload/download em MB/s (0 = sem limite)
 # SPEED_LIMIT=5
+
+# Permitir conexoes via IPv6 (padrao: somente IPv4)
+# IPV6=false
 """
 
     with open(destino, "w") as f:
@@ -856,6 +898,15 @@ def main():
         ),
     )
 
+    # Permitir IPv6 (desativa o padrao IPv4-only)
+    parser.add_argument(
+        "--ipv6",
+        dest="force_ipv6",
+        action="store_true",
+        default=False,
+        help="Permite conexoes via IPv6 (por padrao somente IPv4 e usado).",
+    )
+
     # Diretorio de log: CLI sobrescreve o .env
     parser.add_argument(
         "--log-dir",
@@ -877,7 +928,7 @@ def main():
         return
 
     # Configura limite de velocidade (CLI tem prioridade sobre .env)
-    global _speed_limit_mbs
+    global _speed_limit_mbs, _force_ipv6, _session
     if args.speed is not None:
         raw = args.speed.lower().replace("mb", "").strip()
         try:
@@ -887,6 +938,14 @@ def main():
             sys.exit(1)
     else:
         _speed_limit_mbs = DEFAULT_SPEED_MB
+
+    # Configura stack de rede e reinicializa a session HTTP global
+    _force_ipv6 = args.force_ipv6 or os.getenv("IPV6", "").lower() in ("1", "true", "yes")
+    _session    = criar_session()
+    if _force_ipv6:
+        print("[INFO] Modo IPv6 ativado: conexoes podem usar AF_INET6.")
+    else:
+        print("[INFO] Modo IPv4 (padrao): conexoes restritas a AF_INET.")
 
     # --list nao gera log: executa e retorna imediatamente
     if args.list is not None:
