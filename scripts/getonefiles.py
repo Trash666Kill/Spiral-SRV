@@ -225,22 +225,21 @@ def listar(caminho_remoto: str = None):
     local = caminho_remoto or "(raiz)"
 
     if not itens:
-        log_info("Pasta vazia.")
+        print("Pasta vazia.")
         return
 
-    log_info(f"\nConteudo de: {local}\n")
-    log_info(f"{'NOME':<45} {'TIPO':<10} {'TAMANHO':>10}  {'MODIFICADO'}")
-    log_info("-" * 85)
+    print(f"\nConteudo de: {local}\n")
+    print(f"{'NOME':<45} {'TIPO':<10} {'TAMANHO':>10}  {'MODIFICADO'}")
+    print("-" * 85)
 
     for item in itens:
         nome       = item.get("name", "")
         tamanho    = item.get("size", 0)
         modificado = item.get("lastModifiedDateTime", "")[:10]
         tipo       = "[pasta]  " if "folder" in item else "[arquivo]"
-        log_info(f"{nome:<45} {tipo:<10} {formatar_tamanho(tamanho):>10}  {modificado}")
+        print(f"{nome:<45} {tipo:<10} {formatar_tamanho(tamanho):>10}  {modificado}")
 
-    log_info(f"\nTotal: {len(itens)} item(s)")
-    log.debug(f"Listagem de '{local}' concluida: {len(itens)} item(s).")
+    print(f"\nTotal: {len(itens)} item(s)")
 
 
 # ---------------------------------------------
@@ -477,6 +476,33 @@ def deletar_conteudo(caminho_remoto: str):
 # Sync
 # ---------------------------------------------
 
+def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
+    """
+    Versao segura do mapeamento remoto: se a pasta nao existir (404),
+    retorna dicionario vazio sem exibir erro — ela sera criada no upload.
+    """
+    url  = f"{drive_url(caminho_remoto)}:/children"
+    resp = requests.get(url, headers=headers())
+
+    if resp.status_code == 404:
+        log_info(f"[INFO] Pasta remota ainda nao existe, sera criada no primeiro upload: {caminho_remoto}")
+        return {}
+    elif resp.status_code != 200:
+        handle_error(resp, f"Mapear remoto '{caminho_remoto}'")
+
+    resultado = {}
+    for item in resp.json().get("value", []):
+        nome         = item["name"]
+        caminho_item = f"{caminho_remoto.rstrip('/')}/{nome}"
+        if "folder" in item:
+            sub = mapear_remoto_recursivo(caminho_item, caminho_remoto)
+            resultado.update(sub)
+        else:
+            resultado[nome] = item.get("size", 0)
+
+    return resultado
+
+
 def mapear_remoto_recursivo(caminho_remoto: str, base_remoto: str) -> dict:
     resultado = {}
     itens     = listar_itens(caminho_remoto)
@@ -521,10 +547,7 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
     mapa_local = mapear_local_recursivo(diretorio_local)
 
     log_info(f"[INFO] Mapeando arquivos remotos...")
-    try:
-        mapa_remoto = mapear_remoto_recursivo(caminho_remoto, caminho_remoto)
-    except SystemExit:
-        mapa_remoto = {}
+    mapa_remoto = mapear_remoto_recursivo_seguro(caminho_remoto)
 
     log_info(f"\n[INFO] Arquivos locais : {len(mapa_local)}")
     log_info(f"[INFO] Arquivos remotos: {len(mapa_remoto)}")
@@ -759,19 +782,19 @@ def main():
     else:
         _speed_limit_mbs = DEFAULT_SPEED_MB
 
+    # --list nao gera log: executa e retorna imediatamente
+    if args.list is not None:
+        listar(args.list or None)
+        return
+
+    # Para todas as outras operacoes, valida .env e inicializa log
+    validar_env()
+    log_file = setup_logging(args.log_dir)
+
     if _speed_limit_mbs > 0:
         log_info(f"[INFO] Limite de velocidade: {_speed_limit_mbs:.1f} MB/s")
 
-    # Para todas as outras operacoes, valida o .env
-    validar_env()
-
-    # Inicializa logging antes de qualquer operacao
-    log_file = setup_logging(args.log_dir)
-
-    if args.list is not None:
-        log.debug(f"Operacao: list | caminho: {args.list or 'raiz'}")
-        listar(args.list or None)
-    elif args.upload:
+    if args.upload:
         log.debug(f"Operacao: upload | local: {args.upload[0]} | remoto: {args.upload[1]}")
         upload(args.upload[0], args.upload[1])
     elif args.download:
@@ -791,4 +814,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[AVISO] Execucao interrompida pelo usuario.")
+        log.warning("Execucao interrompida pelo usuario (Ctrl+C).")
+        sys.exit(0)
