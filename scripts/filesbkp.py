@@ -17,25 +17,420 @@ from datetime import datetime
 
 # --- Texto de Ajuda Detalhado ---
 HELP_TEXT = textwrap.dedent("""
-    \033[1mLÓGICA DE FUNCIONAMENTO:\033[0m
-    Este script utiliza uma estrutura de diretórios centrada no cliente (Client-Centric).
-    A estrutura de pastas local é automaticamente derivada do campo 'remote_share' 
-    (Ex: //192.168.0.100/Share -> 192_168_0_100/Share).
+    ════════════════════════════════════════════════════════════════════
+    \033[1mfilesbkp.py  —  Gerenciador de Backup Corporativo (CIFS → Local)\033[0m
+    ════════════════════════════════════════════════════════════════════
 
-    \033[1m1. Estrutura de Diretórios:\033[0m
-       - O nome da pasta local é definido pelo endereço IP do servidor (sanitizado).
-       - Estrutura: [Backup Root] / [IP_sanitizado/Share] / {Incremental, Differential, Full}
+    \033[1mVISÃO GERAL\033[0m
+    ─────────────────────────────────────────────────────────────────
+    Faz backup de compartilhamentos de rede Windows/CIFS para disco
+    local usando a seguinte estratégia em três camadas:
 
-    \033[1m2. Backup Full (Snapshot + Compressão):\033[0m
-       - Utiliza 'Reflink' (Copy-on-Write) para cópia instantânea.
-       - Se já existir um Full válido (conforme retenção), a criação é PULADA.
+      1. \033[1mIncremental contínuo\033[0m  — rsync mantém um espelho atualizado dos
+         arquivos remotos na pasta Incremental. Arquivos modificados ou
+         excluídos são movidos automaticamente para a pasta Differential
+         (mecanismo --backup / --backup-dir do rsync), preservando
+         histórico de alterações sem duplicar dados inalterados.
 
-    \033[1m3. Limpeza Automática:\033[0m
-       - Logs antigos, arquivos diferenciais e arquivos Full expirados são removidos com base na política.
+      2. \033[1mDifferential\033[0m          — cada execução do rsync deposita aqui os
+         arquivos que foram substituídos ou apagados na origem, datados
+         pelo rsync. Funcionam como ponto de recuperação de versões
+         anteriores.
 
-    \033[1mEXEMPLOS:\033[0m
-       $ python3 filesbkp.py --init
-       $ python3 filesbkp.py clientes/sugisawa.json --debug
+      3. \033[1mFull (snapshot + .tar.zst)\033[0m — periodicamente (conforme a política
+         de retenção), o espelho Incremental é copiado via Reflink
+         (Copy-on-Write, instantâneo em filesystems como BTRFS/XFS) e
+         depois comprimido com tar + zstd, gerando um arquivo portátil
+         Full_AAAA-MM-DD_HH-MM-SS.tar.zst. Se já existir um Full
+         dentro do prazo de retenção, a etapa é pulada sem erro.
+
+    \033[1mESTRUTURA DE DIRETÓRIOS GERADA\033[0m
+    ─────────────────────────────────────────────────────────────────
+    A estrutura é derivada automaticamente de "remote_share".
+    Pontos (.) são substituídos por (_).
+
+    Exemplo  →  remote_share = "//192.168.0.100/Dados/Share"
+                backup_root  = "/mnt/Backup"
+
+    /mnt/Backup/
+    └── 192_168_0_100/
+        └── Dados/
+            └── Share/
+                ├── Incremental/   ← espelho rsync (fonte para recuperação)
+                ├── Differential/  ← arquivos alterados / deletados
+                └── Full/
+                    ├── Full/                        ← snapshot (reflink)
+                    ├── Full_2025-07-01_02-00-00.tar.zst
+                    └── splitted/                    ← fragmentos (se split habilitado)
+                        ├── Full_2025-07-01_02-00-00.tar.zst.part_001
+                        └── Full_2025-07-01_02-00-00.tar.zst.part_002
+
+    \033[1mFLUXO DE EXECUÇÃO\033[0m
+    ─────────────────────────────────────────────────────────────────
+    check_pre_flight()       → verifica dependências, espaço em disco
+                               e permissões do arquivo JSON
+    mount_share()            → monta o compartilhamento CIFS
+    run_rsync()              → sincroniza origem → Incremental
+                               (arquivos substituídos vão para Differential)
+    cleanup_differential()   → remove arquivos Differential expirados
+    run_full_backup()        → cria Full .tar.zst se necessário
+    cleanup_logs()           → mantém apenas os N logs mais recentes
+    cleanup()                → desmonta o compartilhamento
+
+    \033[1mARGUMENTOS DA LINHA DE COMANDO\033[0m
+    ─────────────────────────────────────────────────────────────────
+    \033[1mfilesbkp.py [config.json] [--init] [--debug]\033[0m
+
+      config.json   Caminho para o arquivo JSON de configuração do job.
+                    Obrigatório para executar um backup. Se o arquivo não
+                    existir, um modelo padrão é criado automaticamente com
+                    chmod 600 e o script encerra (edite e re-execute).
+
+      --init        Cria um arquivo JSON modelo (config_modelo.json) com
+                    todos os campos preenchidos com valores de exemplo.
+                    Combine com um nome personalizado:
+                      $ python3 filesbkp.py clientes/novo.json --init
+                    → cria clientes/novo.json com chmod 600.
+                    Aborta se o arquivo já existir (nunca sobrescreve).
+
+      --debug       Imprime no log cada comando externo executado
+                    (rsync, mount, tar, zstd, ionice, nice, pv, split…)
+                    antes de rodá-lo. Útil para diagnosticar falhas.
+                    Credenciais de mount são automaticamente ocultadas
+                    (username=***, password=***) mesmo em modo debug.
+
+    \033[1mEXEMPLOS RÁPIDOS\033[0m
+    ─────────────────────────────────────────────────────────────────
+      # Criar modelo de configuração
+      $ python3 filesbkp.py --init
+      $ python3 filesbkp.py clientes/empresa_xyz.json --init
+
+      # Executar backup (modo normal)
+      $ python3 filesbkp.py clientes/empresa_xyz.json
+
+      # Executar com saída de diagnóstico detalhada
+      $ python3 filesbkp.py clientes/empresa_xyz.json --debug
+
+      # Agendar via cron (diariamente às 02:00)
+      0 2 * * * /usr/bin/python3 /opt/scripts/filesbkp.py /etc/backup/empresa_xyz.json
+
+    ════════════════════════════════════════════════════════════════════
+    \033[1mREFERÊNCIA COMPLETA DO ARQUIVO JSON DE CONFIGURAÇÃO\033[0m
+    ════════════════════════════════════════════════════════════════════
+
+    \033[1m┌─ SEÇÃO: "credentials"\033[0m
+    │  Credenciais usadas pelo mount.cifs para autenticar no servidor.
+    │  O arquivo JSON deve ter permissão 600 (o script avisa se não tiver).
+    │
+    │  "username"  : string  — login da conta com acesso ao compartilhamento.
+    │                          Pode ser conta local ou de domínio.
+    │                          Exemplo: "username": "svc_backup"
+    │
+    │  "password"  : string  — senha da conta.
+    │                          Exemplo: "password": "S3nh@Fort3!"
+    │
+    │  "domain"    : string  — domínio Active Directory (opcional).
+    │                          Se omitido ou vazio, o mount usa autenticação
+    │                          de workgroup local.
+    │                          Exemplo: "domain": "CORP"
+    │                          Sem domínio: "domain": ""
+    └──────────────────────────────────────────────────────────────────
+
+    \033[1m┌─ SEÇÃO: "paths"\033[0m
+    │
+    │  "remote_share"  : string — Caminho UNC do compartilhamento CIFS a ser
+    │                             montado e copiado.
+    │                             Formato: "//IP_ou_HOSTNAME/Share/Subpasta"
+    │                             O caminho (sem as barras iniciais) é usado
+    │                             para derivar a estrutura de pastas local.
+    │                             Pontos são trocados por underscores.
+    │                             Exemplo: "//192.168.10.5/Vendas"
+    │                             → pasta local: 192_168_10_5/Vendas/
+    │
+    │  "mount_point"   : string — Diretório local onde o compartilhamento
+    │                             será montado temporariamente durante o job.
+    │                             Deve existir ou ser criável. O script NÃO
+    │                             cria este diretório; crie manualmente.
+    │                             Exemplo: "/mnt/Remote/Vendas"
+    │
+    │  "backup_root"   : string — Raiz onde toda a estrutura de backup será
+    │                             armazenada. O script cria as subpastas
+    │                             necessárias automaticamente.
+    │                             Exemplo: "/mnt/Backup"
+    │                             → dados em: /mnt/Backup/192_168_10_5/Vendas/
+    │
+    │  "log_dir"       : string — Diretório onde os arquivos de log diários
+    │                             serão gravados. O nome do log inclui o
+    │                             identificador do job e o timestamp:
+    │                             backup_<safe_name>_AAAA-MM-DD_HH-MM-SS.log
+    │                             Exemplo: "/var/log/rsync"
+    └──────────────────────────────────────────────────────────────────
+
+    \033[1m┌─ SEÇÃO: "settings"\033[0m
+    │
+    │  "mount_options"       : string — Opções extras passadas ao mount.cifs
+    │                                   via flag -o, ANTES das credenciais.
+    │                                   As credenciais (username/password/domain)
+    │                                   são adicionadas automaticamente.
+    │                                   Valor recomendado: "ro" (somente leitura)
+    │                                   para evitar alterações acidentais na
+    │                                   origem durante o backup.
+    │                                   Para leitura/escrita: "rw"
+    │                                   Com versão SMB explícita: "ro,vers=2.1"
+    │                                   Exemplo: "mount_options": "ro,vers=3.0"
+    │
+    │  "min_space_mb"        : inteiro — Espaço livre mínimo exigido no volume
+    │                                   do backup_root antes de iniciar o job.
+    │                                   Se o espaço livre for menor, o script
+    │                                   aborta imediatamente com erro.
+    │                                   Valor em megabytes.
+    │                                   Exemplo: 1024  → exige pelo menos 1 GB livre
+    │                                            51200 → exige pelo menos 50 GB livre
+    │
+    │  "bandwidth_limit_mb"  : número  — Limite de banda para o rsync,
+    │                                   em MEGABYTES por segundo.
+    │                                   Convertido internamente para KB/s e
+    │                                   passado ao rsync via --bwlimit.
+    │                                   Use para não saturar o link de rede.
+    │                                   0 = sem limite.
+    │                                   Exemplo: 10   → limita a 10 MB/s
+    │                                            0.5  → limita a 512 KB/s
+    │
+    │  "transfer_rate_pv"    : string  — Taxa máxima de leitura aplicada pela
+    │                                   ferramenta 'pv' no pipeline de compressão
+    │                                   do Full (tar | pv | zstd).
+    │                                   Controla a velocidade de leitura dos dados
+    │                                   do disco durante a compressão, evitando
+    │                                   que o processo consuma toda a I/O do servidor.
+    │                                   Formato aceito pelo pv: número + unidade.
+    │                                   Exemplos: "10m" → 10 MB/s
+    │                                             "50m" → 50 MB/s
+    │                                             "500k" → 500 KB/s
+    │
+    │  "ionice_class"        : inteiro — Classe de prioridade de I/O atribuída
+    │                                   ao processo de compressão (tar + zstd)
+    │                                   via ionice(1). Reduz o impacto do backup
+    │                                   em outros processos que usam o disco.
+    │                                   Valores possíveis:
+    │                                     1 = Real-time  (alta prioridade, use
+    │                                         com cautela — pode travar o sistema)
+    │                                     2 = Best-effort (padrão do kernel)
+    │                                     3 = Idle       (só usa I/O quando ninguém
+    │                                         mais precisa — recomendado para backup)
+    │                                   Exemplo: "ionice_class": 3  ← recomendado
+    │                                   Equivale a executar:
+    │                                     ionice -c 3 tar -cvf - ...
+    │
+    │  "nice_priority"       : inteiro — Prioridade de CPU (niceness) atribuída
+    │                                   ao processo de compressão via nice(1).
+    │                                   Valores de -20 (máxima prioridade de CPU)
+    │                                   a 19 (mínima prioridade — "educado").
+    │                                   Use 19 para que o backup não dispute
+    │                                   CPU com aplicações em produção.
+    │                                   Exemplo: "nice_priority": 19  ← recomendado
+    │                                   Equivale a executar:
+    │                                     nice -n 19 tar -cvf - ...
+    │
+    │  ATENÇÃO: ionice_class e nice_priority afetam SOMENTE a etapa de
+    │  compressão do Full (tar | pv | zstd). O rsync roda sem ajuste de
+    │  prioridade (use bandwidth_limit_mb para controlar seu impacto).
+    │
+    │  "rsync_user"          : string  — Usuário do sistema operacional sob o
+    │                                   qual o rsync será executado (via su -c).
+    │                                   Útil quando o usuário que roda o script
+    │                                   é diferente do usuário com acesso ao
+    │                                   diretório de destino.
+    │                                   Se igual ao usuário atual, su não é usado.
+    │                                   Exemplo: "rsync_user": "root"
+    │                                            "rsync_user": "backup_svc"
+    │
+    │  "rsync_flags"         : lista   — Flags passadas diretamente ao rsync.
+    │                                   Substitui o conjunto padrão inteiramente.
+    │                                   Flags obrigatórias já adicionadas pelo
+    │                                   script (não precisam estar aqui):
+    │                                     --bwlimit, --backup, --backup-dir,
+    │                                     --log-file, --exclude-from
+    │                                   Flags padrão recomendadas:
+    │                                     "-ahx"           → archive + human-readable
+    │                                                        + não cruzar filesystems
+    │                                     "--acls"         → preserva ACLs
+    │                                     "--xattrs"       → preserva atributos estendidos
+    │                                     "--numeric-ids"  → não mapeia UID/GID por nome
+    │                                     "--chmod=ugo+r"  → garante leitura nos arquivos
+    │                                     "--ignore-errors"→ não aborta em erros de leitura
+    │                                     "--force"        → força substituição de dirs
+    │                                     "--delete"       → remove no destino o que foi
+    │                                                        excluído na origem
+    │                                     "--info=del,name,stats2" → log detalhado
+    │
+    │  ┌─ SUBSEÇÃO: "retention_policy"\033[0m
+    │  │
+    │  │  "keep_logs_count"              : inteiro — Quantidade máxima de arquivos
+    │  │                                             de log a manter para este job.
+    │  │                                             Os logs são ordenados por data de
+    │  │                                             modificação; os mais antigos além
+    │  │                                             deste limite são excluídos.
+    │  │                                             Exemplo: 31  → guarda os 31 logs
+    │  │                                             mais recentes (≈ 1 mês diário)
+    │  │
+    │  │  "keep_full_backups_days"       : inteiro — Quantos dias um arquivo Full
+    │  │                                             .tar.zst é considerado válido.
+    │  │                                             Arquivos Full mais antigos que
+    │  │                                             este valor são excluídos.
+    │  │                                             Se não existir nenhum Full dentro
+    │  │                                             deste prazo, um novo é gerado.
+    │  │                                             Exemplo: 30 → mantém Fulls dos
+    │  │                                             últimos 30 dias; gera novo Full
+    │  │                                             se o mais recente tiver > 30 dias.
+    │  │
+    │  │  "keep_differential_files_days" : inteiro — Tempo máximo de retenção dos
+    │  │                                             arquivos na pasta Differential.
+    │  │                                             Arquivos com mtime maior que este
+    │  │                                             valor (em dias) são apagados.
+    │  │                                             Exemplo: 240 → mantém histórico
+    │  │                                             de versões anteriores por 8 meses.
+    │  │
+    │  │  "cleanup_empty_dirs"           : bool    — Se true, subdiretórios vazios
+    │  │                                             que ficaram em Differential após
+    │  │                                             a limpeza de arquivos expirados
+    │  │                                             são removidos automaticamente.
+    │  │                                             Recomendado: true
+    │  └──────────────────────────────────────────────────────────────
+
+    │  ┌─ SUBSEÇÃO: "split"\033[0m
+    │  │  Divide o arquivo Full .tar.zst em partes menores após a compressão.
+    │  │  Útil para armazenamento em mídias com limite de tamanho de arquivo
+    │  │  (FAT32: 4 GB, alguns backups em nuvem, fitas, etc.).
+    │  │
+    │  │  "enabled"                  : bool   — Ativa ou desativa o split.
+    │  │                                        false → o .tar.zst não é fragmentado.
+    │  │                                        true  → fragmenta imediatamente após
+    │  │                                        a compressão bem-sucedida.
+    │  │                                        Exemplo: "enabled": false
+    │  │
+    │  │  "chunk_size"               : string — Tamanho máximo de cada fragmento.
+    │  │                                        Unidades aceitas (case-insensitive):
+    │  │                                          "mb" → megabytes
+    │  │                                          "gb" → gigabytes
+    │  │                                          "tb" → terabytes
+    │  │                                        Exemplos:
+    │  │                                          "4gb"   → fragmentos de até 4 GB
+    │  │                                          "500mb" → fragmentos de até 500 MB
+    │  │                                          "1tb"   → fragmentos de até 1 TB
+    │  │                                        Os fragmentos são nomeados:
+    │  │                                          Full_<timestamp>.tar.zst.part_001
+    │  │                                          Full_<timestamp>.tar.zst.part_002
+    │  │                                          …
+    │  │                                        O número de dígitos no sufixo é
+    │  │                                        calculado automaticamente (mínimo 3).
+    │  │                                        O split tem até 3 tentativas com
+    │  │                                        validação de integridade (soma dos
+    │  │                                        fragmentos deve igualar o original).
+    │  │
+    │  │  "keep_original_after_split" : bool   — Define se o .tar.zst original é
+    │  │                                         mantido ou removido após a criação
+    │  │                                         bem-sucedida dos fragmentos.
+    │  │                                         true  → mantém o .tar.zst intacto
+    │  │                                                  (ocupa mais espaço, mas
+    │  │                                                  permite restaurar diretamente
+    │  │                                                  sem concatenar fragmentos).
+    │  │                                         false → remove o .tar.zst após o
+    │  │                                                  split (economiza espaço).
+    │  │                                         Exemplo: "keep_original_after_split": true
+    │  └──────────────────────────────────────────────────────────────
+
+    \033[1m┌─ SEÇÃO: "excludes"\033[0m
+    │  Lista de padrões de arquivos/diretórios que devem ser ignorados pelo
+    │  rsync. Usa a sintaxe de padrões do rsync (--exclude-from).
+    │  Útil para evitar arquivos temporários, caches e lixo do Windows.
+    │
+    │  Exemplos de padrões comuns:
+    │    "*.tmp"          → arquivos temporários de qualquer nome
+    │    "Thumbs.db"      → cache de miniaturas do Windows Explorer
+    │    "desktop.ini"    → arquivo de configuração de pasta do Windows
+    │    "~$*"            → arquivos abertos/travados do Office
+    │    "*.log"          → arquivos de log da aplicação remota
+    │    ".Trash*"        → lixeira do sistema
+    │    "pagefile.sys"   → memória virtual do Windows (enorme, inútil no backup)
+    │    "hiberfil.sys"   → arquivo de hibernação do Windows
+    │
+    │  Exemplo completo:
+    │    "excludes": ["*.tmp", "Thumbs.db", "desktop.ini", "~$*", "*.log"]
+    └──────────────────────────────────────────────────────────────────
+
+    ════════════════════════════════════════════════════════════════════
+    \033[1mEXEMPLO COMPLETO DE ARQUIVO JSON\033[0m
+    ════════════════════════════════════════════════════════════════════
+
+    {
+        "description": "Backup do servidor de arquivos Vendas — sede SP",
+
+        "credentials": {
+            "username": "svc_backup",
+            "password": "S3nh@Fort3!",
+            "domain":   "CORP"
+        },
+
+        "paths": {
+            "remote_share": "//192.168.10.5/Vendas",
+            "mount_point":  "/mnt/Remote/Vendas",
+            "backup_root":  "/mnt/Backup",
+            "log_dir":      "/var/log/rsync"
+        },
+
+        "settings": {
+            "mount_options":        "ro,vers=3.0",
+            "min_space_mb":         51200,
+            "bandwidth_limit_mb":   50,
+            "transfer_rate_pv":     "50m",
+            "ionice_class":         3,
+            "nice_priority":        19,
+            "rsync_user":           "root",
+            "rsync_flags": [
+                "-ahx", "--acls", "--xattrs", "--numeric-ids",
+                "--chmod=ugo+r", "--ignore-errors", "--force", "--delete",
+                "--info=del,name,stats2"
+            ],
+            "retention_policy": {
+                "keep_logs_count":               31,
+                "keep_full_backups_days":        30,
+                "keep_differential_files_days":  240,
+                "cleanup_empty_dirs":            true
+            },
+            "split": {
+                "enabled":                    true,
+                "chunk_size":                 "4gb",
+                "keep_original_after_split":  false
+            }
+        },
+
+        "excludes": ["*.tmp", "Thumbs.db", "desktop.ini", "~$*"]
+    }
+
+    ════════════════════════════════════════════════════════════════════
+    \033[1mDEPENDÊNCIAS DO SISTEMA\033[0m
+    ════════════════════════════════════════════════════════════════════
+    Ferramentas obrigatórias (verificadas automaticamente no pré-voo):
+      rsync, mount, umount, find, du, df, cp, tar, zstd, pv, ionice,
+      nice, su
+
+    Ferramenta opcional (exigida somente se split.enabled = true):
+      split
+
+    Instalação em Debian/Ubuntu:
+      apt install rsync cifs-utils tar zstd pv util-linux
+
+    ════════════════════════════════════════════════════════════════════
+    \033[1mSEGURANÇA\033[0m
+    ════════════════════════════════════════════════════════════════════
+    • O arquivo JSON contém credenciais — mantenha-o com chmod 600.
+      O script exibe um AVISO DE SEGURANÇA se as permissões estiverem
+      abertas para grupo ou outros usuários.
+    • Credenciais nunca aparecem nos logs, mesmo com --debug.
+      O valor de username, password e domain é substituído por "***"
+      em qualquer saída de diagnóstico.
+    • Use "mount_options": "ro" para montar a origem somente-leitura,
+      protegendo os dados originais de modificações acidentais.
 """)
 
 # --- Configuração Padrão ---
