@@ -37,6 +37,11 @@ TENANT_ID        = os.getenv("TENANT_ID")
 USER_ID          = os.getenv("USER_ID")
 DEFAULT_LOG_DIR  = os.getenv("LOG_DIR", "/var/log/getonefiles")
 
+# Limite de velocidade em MB/s (0 = sem limite)
+# Pode ser definido no .env como SPEED_LIMIT=5mb ou SPEED_LIMIT=5
+_raw_speed = os.getenv("SPEED_LIMIT", "0").lower().replace("mb", "").strip()
+DEFAULT_SPEED_MB = float(_raw_speed) if _raw_speed else 0.0
+
 GRAPH_BASE       = "https://graph.microsoft.com/v1.0"
 TOKEN_URL        = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 CHUNK_SIZE       = 10 * 1024 * 1024   # 10 MB por chunk
@@ -44,6 +49,27 @@ UPLOAD_THRESHOLD = 4  * 1024 * 1024   # arquivos >= 4 MB usam upload session
 
 # Logger global (configurado em setup_logging)
 log = logging.getLogger("getonefiles")
+
+# Limite de velocidade ativo na execucao (MB/s); 0 = sem limite
+_speed_limit_mbs: float = 0.0
+
+
+def aplicar_throttle(bytes_transferidos: int, tempo_inicio: float):
+    """
+    Pausa o tempo necessario para respeitar o limite de velocidade.
+    bytes_transferidos: total de bytes ja transferidos nesta sessao
+    tempo_inicio: timestamp do inicio da transferencia
+    """
+    if _speed_limit_mbs <= 0:
+        return
+
+    limite_bytes_s = _speed_limit_mbs * 1024 * 1024
+    tempo_esperado = bytes_transferidos / limite_bytes_s
+    tempo_decorrido = time.time() - tempo_inicio
+    espera = tempo_esperado - tempo_decorrido
+
+    if espera > 0:
+        time.sleep(espera)
 
 
 # ---------------------------------------------
@@ -256,7 +282,8 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
     log_info(f"[INFO] Upload session criada. Enviando em chunks de {CHUNK_SIZE // (1024 * 1024)} MB...")
     log.debug(f"Upload session URL obtida para: {caminho_remoto}")
 
-    offset = 0
+    offset      = 0
+    tempo_inicio = time.time()
     with open(caminho_local, "rb") as f:
         while offset < tamanho_total:
             chunk     = f.read(CHUNK_SIZE)
@@ -275,9 +302,10 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
                 log_erro(f"Falha no chunk {offset}-{fim}: {resp_chunk.status_code} - {resp_chunk.text}")
                 sys.exit(1)
 
-            offset    += chunk_len
-            progresso  = (offset / tamanho_total) * 100
-            # Progresso apenas no terminal (nao polui o log com dezenas de linhas)
+            offset += chunk_len
+            aplicar_throttle(offset, tempo_inicio)
+
+            progresso = (offset / tamanho_total) * 100
             print(f"  -> {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
             log.debug(f"Chunk enviado: {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
 
@@ -338,12 +366,14 @@ def download_arquivo(caminho_remoto: str, caminho_local: str):
             log_erro(f"Falha no download: {r.status_code}")
             sys.exit(1)
 
-        baixado = 0
+        baixado      = 0
+        tempo_inicio = time.time()
         with open(caminho_local, "wb") as f:
             for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                 if chunk:
                     f.write(chunk)
                     baixado += len(chunk)
+                    aplicar_throttle(baixado, tempo_inicio)
                     if tamanho_total:
                         progresso = (baixado / tamanho_total) * 100
                         print(f"  -> {formatar_tamanho(baixado)} / {formatar_tamanho(tamanho_total)} ({progresso:.1f}%)")
@@ -684,6 +714,19 @@ def main():
         help=argparse.SUPPRESS,
     )
 
+    # Limite de velocidade: CLI sobrescreve o .env
+    parser.add_argument(
+        "--speed",
+        dest="speed",
+        metavar="VELOCIDADE",
+        default=None,
+        help=(
+            "Limita a velocidade de upload/download.\n"
+            "Formato: --speed 5mb ou --speed 5\n"
+            "Padrao: sem limite (ou SPEED_LIMIT no .env)"
+        ),
+    )
+
     # Diretorio de log: CLI sobrescreve o .env
     parser.add_argument(
         "--log-dir",
@@ -703,6 +746,21 @@ def main():
     if args.init:
         gerar_env()
         return
+
+    # Configura limite de velocidade (CLI tem prioridade sobre .env)
+    global _speed_limit_mbs
+    if args.speed is not None:
+        raw = args.speed.lower().replace("mb", "").strip()
+        try:
+            _speed_limit_mbs = float(raw)
+        except ValueError:
+            print(f"[ERRO] Valor invalido para --speed: {args.speed}. Use ex: --speed 5mb")
+            sys.exit(1)
+    else:
+        _speed_limit_mbs = DEFAULT_SPEED_MB
+
+    if _speed_limit_mbs > 0:
+        log_info(f"[INFO] Limite de velocidade: {_speed_limit_mbs:.1f} MB/s")
 
     # Para todas as outras operacoes, valida o .env
     validar_env()
