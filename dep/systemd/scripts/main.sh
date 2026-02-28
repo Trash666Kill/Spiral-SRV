@@ -160,6 +160,7 @@ main() {
     firewall
     dns
     ntp
+    nfs
     mount
     virtual_machine
     container
