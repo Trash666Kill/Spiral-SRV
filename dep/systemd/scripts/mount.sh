@@ -266,8 +266,8 @@ smb_mount_unit() {
 main() {
     #swap
     mount_unit
-    nfs_mount_unit
-    smb_mount_unit
+    lxc_0
+    virt_0
 }
 
 # Execute main function
