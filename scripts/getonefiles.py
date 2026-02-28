@@ -2,30 +2,33 @@
 """
 OneDrive CLI via Microsoft Graph API
 Uso:
-  python onedrive.py --list
-  python onedrive.py --list "Documentos/HS-STG-02"
-  python onedrive.py --upload /caminho/local/arquivo.txt "Documentos/HS-STG-02/arquivo.txt"
-  python onedrive.py --upload /caminho/local/arquivo.txt "Documentos/HS-STG-02/"
-  python onedrive.py --download "Documentos/HS-STG-02/Full/arquivo.tar" /mnt/Local/destino/
-  python onedrive.py --download "Documentos/HS-STG-02/Full" /mnt/Local/destino/
-  python onedrive.py --delete "Documentos/HS-STG-02/Full/arquivo.txt"
-  python onedrive.py --delete "Documentos/HS-STG-02/Full"
-  python onedrive.py --delete-contents "Documentos/HS-STG-02/Full"
-  python onedrive.py --sync /mnt/Local/Backup "Documentos/HS-STG-02"
-  python onedrive.py --sync /mnt/Local/Backup "Documentos/HS-STG-02" --delete
-  python onedrive.py --sync /mnt/Local/Backup "Documentos/HS-STG-02" --log-dir /tmp/logs
+  python getonefiles.py --list
+  python getonefiles.py --list "Documentos/HS-STG-02"
+  python getonefiles.py --upload /caminho/local/arquivo.txt "Documentos/HS-STG-02/arquivo.txt"
+  python getonefiles.py --upload /caminho/local/arquivo.txt "Documentos/HS-STG-02/"
+  python getonefiles.py --download "Documentos/HS-STG-02/Full/arquivo.tar" /mnt/Local/destino/
+  python getonefiles.py --download "Documentos/HS-STG-02/Full" /mnt/Local/destino/
+  python getonefiles.py --delete "Documentos/HS-STG-02/Full/arquivo.txt"
+  python getonefiles.py --delete "Documentos/HS-STG-02/Full"
+  python getonefiles.py --delete-contents "Documentos/HS-STG-02/Full"
+  python getonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02"
+  python getonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02" --mirror
+  python getonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02" --log-dir /tmp/logs
 """
 
 import os
 import sys
 import time
 import socket
+import threading
 import logging
 import argparse
 from datetime import datetime
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.connection import allowed_gai_family
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -34,24 +37,24 @@ load_dotenv()
 # Configuracao
 # ---------------------------------------------
 
-CLIENT_ID        = os.getenv("CLIENT_ID")
-CLIENT_SECRET    = os.getenv("CLIENT_SECRET")
-TENANT_ID        = os.getenv("TENANT_ID")
-USER_ID          = os.getenv("USER_ID")
-DEFAULT_LOG_DIR  = os.getenv("LOG_DIR", "/var/log/getonefiles")
+CLIENT_ID       = os.getenv("CLIENT_ID")
+CLIENT_SECRET   = os.getenv("CLIENT_SECRET")
+TENANT_ID       = os.getenv("TENANT_ID")
+USER_ID         = os.getenv("USER_ID")
+DEFAULT_LOG_DIR = os.getenv("LOG_DIR", "/var/log/getonefiles")
 
 # Limite de velocidade em MB/s (0 = sem limite)
 # Pode ser definido no .env como SPEED_LIMIT=5mb ou SPEED_LIMIT=5
-_raw_speed = os.getenv("SPEED_LIMIT", "0").lower().replace("mb", "").strip()
+_raw_speed       = os.getenv("SPEED_LIMIT", "0").lower().replace("mb", "").strip()
 DEFAULT_SPEED_MB = float(_raw_speed) if _raw_speed else 0.0
 
 GRAPH_BASE       = "https://graph.microsoft.com/v1.0"
 TOKEN_URL        = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-UPLOAD_THRESHOLD = 4  * 1024 * 1024   # arquivos >= 4 MB usam upload session
+UPLOAD_THRESHOLD = 4 * 1024 * 1024    # arquivos >= 4 MB usam upload session
 
-# Limites do Graph API para upload session
-CHUNK_SIZE_MAX   = 1000 * 1024 * 1024 # 1000 MB: chunk padrao quando sem speed limit
-CHUNK_SIZE_MIN   = 320 * 1024         # 320 KB: multiplo minimo exigido pelo Graph API
+# Limites de chunk para upload session
+CHUNK_SIZE_MAX = 1000 * 1024 * 1024   # 1000 MB: padrao sem speed limit
+CHUNK_SIZE_MIN = 320 * 1024           # 320 KB: multiplo minimo exigido pelo Graph API
 
 # Logger global (configurado em setup_logging)
 log = logging.getLogger("getonefiles")
@@ -59,41 +62,8 @@ log = logging.getLogger("getonefiles")
 # Limite de velocidade ativo na execucao (MB/s); 0 = sem limite
 _speed_limit_mbs: float = 0.0
 
-# Permitir conexoes via IPv6 (padrao: somente IPv4)
+# Forcar IPv6 (padrao: somente IPv4)
 _force_ipv6: bool = False
-
-
-class IPv4Adapter(HTTPAdapter):
-    """
-    HTTPAdapter que restringe conexoes a IPv4 (AF_INET).
-    Ativo por padrao; desativado apenas quando --ipv6 ou IPV6=true no .env.
-    """
-    def send(self, *args, **kwargs):
-        _orig = allowed_gai_family
-
-        def _force():
-            return socket.AF_INET
-
-        import urllib3.util.connection as _conn
-        _conn.allowed_gai_family = _force
-        try:
-            return super().send(*args, **kwargs)
-        finally:
-            _conn.allowed_gai_family = _orig
-
-
-def criar_session() -> requests.Session:
-    """Cria uma requests.Session com o adapter IPv4 montado se necessario."""
-    s = requests.Session()
-    if not _force_ipv6:
-        adapter = IPv4Adapter()
-        s.mount("https://", adapter)
-        s.mount("http://",  adapter)
-    return s
-
-
-# Session HTTP global reutilizada em todas as requisicoes
-_session: requests.Session = requests.Session()
 
 
 def calcular_chunk_size() -> int:
@@ -101,14 +71,15 @@ def calcular_chunk_size() -> int:
     Calcula o tamanho ideal do chunk para upload session com base no speed limit.
 
     Sem limite (--speed nao definido):
-      Usa o maximo permitido pelo Graph API (60 MB), minimizando round-trips
-      e aproveitando ao maximo a banda disponivel.
+      Usa CHUNK_SIZE_MAX (1000 MB), minimizando round-trips e aproveitando
+      ao maximo a banda disponivel. Para a maioria dos arquivos, o upload
+      ocorre em um unico chunk sem interrupcoes.
 
     Com limite (--speed X):
       Calcula um chunk que leva aproximadamente CHUNK_DURATION_S segundos
       para ser transferido na velocidade alvo. Isso garante que o throttle
       tenha granularidade adequada — chunks pequenos demais causam overhead
-      de round-trips, chunks grandes demais tornam o throttle impreciso.
+      de round-trips; chunks grandes demais tornam o throttle impreciso.
 
     O resultado e sempre alinhado ao multiplo de 320 KB exigido pelo Graph API
     e limitado ao intervalo [CHUNK_SIZE_MIN, CHUNK_SIZE_MAX].
@@ -154,7 +125,7 @@ def ler_com_throttle(f, tamanho: int) -> bytes:
     aplicando throttle continuo entre cada sub-chunk.
     Garante que a limitacao de velocidade seja aplicada em tempo real
     em vez de apenas como media por chunk grande.
-    Funciona tanto com throttle ativo quanto sem (fallback direto para f.read).
+    Sem speed limit: faz f.read() direto, sem nenhum overhead.
     """
     if _speed_limit_mbs <= 0:
         return f.read(tamanho)
@@ -173,6 +144,40 @@ def ler_com_throttle(f, tamanho: int) -> bytes:
         aplicar_throttle(lido, tempo_inicio)
 
     return dados
+
+
+# ---------------------------------------------
+# Networking - IPv4 por padrao
+# ---------------------------------------------
+
+class IPv4Adapter(HTTPAdapter):
+    """
+    HTTPAdapter que restringe conexoes a IPv4 (AF_INET).
+    Ativo por padrao; desativado apenas quando --ipv6 ou IPV6=true no .env.
+    """
+    def send(self, *args, **kwargs):
+        import urllib3.util.connection as _conn
+        _orig = _conn.allowed_gai_family
+
+        _conn.allowed_gai_family = lambda: socket.AF_INET
+        try:
+            return super().send(*args, **kwargs)
+        finally:
+            _conn.allowed_gai_family = _orig
+
+
+def criar_session() -> requests.Session:
+    """Cria uma requests.Session com IPv4Adapter montado, salvo se IPv6 ativo."""
+    s = requests.Session()
+    if not _force_ipv6:
+        adapter = IPv4Adapter()
+        s.mount("https://", adapter)
+        s.mount("http://",  adapter)
+    return s
+
+
+# Session HTTP global reutilizada em todas as requisicoes
+_session: requests.Session = requests.Session()
 
 
 # ---------------------------------------------
@@ -352,8 +357,7 @@ def listar(caminho_remoto: str = None):
 def upload_simples(caminho_local: str, caminho_remoto: str):
     """
     Envia arquivos menores que UPLOAD_THRESHOLD via PUT simples.
-    CORRECAO (Bug 1): agora usa ler_com_throttle para respeitar --speed,
-    mesmo em arquivos pequenos.
+    Usa ler_com_throttle para respeitar --speed mesmo em arquivos pequenos.
     """
     url     = f"{drive_url(caminho_remoto)}:/content"
     tamanho = os.path.getsize(caminho_local)
@@ -364,8 +368,6 @@ def upload_simples(caminho_local: str, caminho_remoto: str):
     }
 
     with open(caminho_local, "rb") as f:
-        # Antes: f.read() direto, ignorando completamente o throttle.
-        # Agora: ler_com_throttle aplica o limite de velocidade em sub-chunks de 256 KB.
         conteudo = ler_com_throttle(f, tamanho)
 
     resp = _session.put(url, headers=hdrs, data=conteudo)
@@ -390,7 +392,7 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
 
     upload_url = resp.json()["uploadUrl"]
     chunk_size = calcular_chunk_size()
-    log_info(f"Upload session criada. Enviando em chunks de {chunk_size // (1024 * 1024)} MB ({formatar_tamanho(chunk_size)})...")
+    log_info(f"Upload session criada. Enviando em chunks de {formatar_tamanho(chunk_size)}...")
     log.debug(f"Upload session URL obtida para: {caminho_remoto}")
 
     offset = 0
@@ -412,7 +414,7 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
                 log_erro(f"Falha no chunk {offset}-{fim}: {resp_chunk.status_code} - {resp_chunk.text}")
                 sys.exit(1)
 
-            offset    += chunk_len
+            offset += chunk_len
             log.debug(f"Chunk enviado: {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({(offset / tamanho_total) * 100:.1f}%)")
 
     log_ok(f"Arquivo enviado (session): {caminho_remoto}")
@@ -445,11 +447,12 @@ def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: d
     """
     Baixa um unico arquivo do OneDrive para o caminho local.
 
-    CORRECAO (Bug 3): aceita 'throttle_estado' opcional com {'bytes': int, 'inicio': float}.
-    Quando fornecido (ex: download recursivo de pasta), o contador de bytes e tempo
-    e compartilhado entre todos os arquivos da sessao, garantindo que o throttle
-    seja efetivo mesmo para muitos arquivos pequenos.
-    Quando None (download avulso), cria seu proprio contador local — comportamento identico ao original.
+    throttle_estado: dict compartilhado {'bytes': int, 'inicio': float} para
+    manter controle de velocidade continuo em downloads recursivos de pastas.
+    Quando fornecido, o contador de bytes e tempo e compartilhado entre todos
+    os arquivos da sessao, garantindo que o throttle seja efetivo mesmo para
+    muitos arquivos pequenos.
+    Quando None (download avulso), cria seu proprio estado local.
     """
     url_meta  = f"{drive_url(caminho_remoto)}"
     resp_meta = _session.get(url_meta, headers=headers())
@@ -495,17 +498,14 @@ def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: d
                     throttle_estado["bytes"] += len(chunk)
                     aplicar_throttle(throttle_estado["bytes"], throttle_estado["inicio"])
 
-
-
     log_ok(f"Download concluido: {caminho_local} ({formatar_tamanho(tamanho_total)})")
 
 
 def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int = 0,
                               throttle_estado: dict = None):
     """
-    CORRECAO (Bug 3): propaga o mesmo throttle_estado para todos os arquivos
-    do download recursivo, mantendo o controle de velocidade continuo
-    ao longo de toda a sessao de download (e nao apenas por arquivo).
+    Download recursivo de pasta. Propaga throttle_estado para manter controle
+    de velocidade continuo ao longo de toda a sessao de download.
     """
     itens    = listar_itens(caminho_remoto)
     arquivos = [i for i in itens if "folder" not in i]
@@ -600,17 +600,14 @@ def deletar_conteudo(caminho_remoto: str):
 
 
 # ---------------------------------------------
-# Sync
+# Sync - mapeamento
 # ---------------------------------------------
 
 def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
     """
     Versao segura do mapeamento remoto: se a pasta nao existir (404),
     retorna dicionario vazio sem exibir erro — ela sera criada no upload.
-
-    CORRECAO (Bug 2): a chamada recursiva interna agora passa corretamente
-    'caminho_remoto' como 'base_remoto', para que os caminhos relativos
-    sejam calculados a partir da raiz do sync e nao da subpasta atual.
+    Passa caminho_remoto como base_remoto para garantir caminhos relativos corretos.
     """
     url  = f"{drive_url(caminho_remoto)}:/children"
     resp = _session.get(url, headers=headers())
@@ -626,9 +623,6 @@ def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
         nome         = item["name"]
         caminho_item = f"{caminho_remoto.rstrip('/')}/{nome}"
         if "folder" in item:
-            # Antes: passava caminho_remoto (subpasta atual) como base_remoto,
-            # corrompendo os caminhos relativos de todos os niveis abaixo.
-            # Agora: passa caminho_remoto (raiz do sync) como base_remoto, correto.
             sub = mapear_remoto_recursivo(caminho_item, caminho_remoto)
             resultado.update(sub)
         else:
@@ -667,6 +661,107 @@ def mapear_local_recursivo(diretorio_local: str) -> dict:
     return resultado
 
 
+# ---------------------------------------------
+# Watchdog - deteccao de arquivos em escrita
+# ---------------------------------------------
+
+class _ModificacaoHandler(FileSystemEventHandler):
+    """
+    Handler do watchdog que registra via inotify o timestamp da ultima
+    modificacao de cada arquivo monitorado.
+    Usado por aguardar_arquivo_estavel() para deteccao em tempo real.
+    """
+    def __init__(self):
+        self._ultima_modificacao: dict = {}
+        self._lock = threading.Lock()
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            with self._lock:
+                self._ultima_modificacao[os.path.abspath(event.src_path)] = time.time()
+
+    def on_created(self, event):
+        self.on_modified(event)
+
+    def ultima_modificacao(self, caminho: str) -> float:
+        with self._lock:
+            return self._ultima_modificacao.get(os.path.abspath(caminho), 0.0)
+
+
+# Observer global do watchdog (iniciado uma vez por execucao de sync)
+_observer: Observer = None
+_handler:  _ModificacaoHandler = None
+
+
+def iniciar_watchdog(diretorio: str):
+    """Inicia o observer do watchdog monitorando diretorio recursivamente."""
+    global _observer, _handler
+    _handler  = _ModificacaoHandler()
+    _observer = Observer()
+    _observer.schedule(_handler, diretorio, recursive=True)
+    _observer.start()
+    log.debug(f"Watchdog iniciado em: {diretorio}")
+
+
+def parar_watchdog():
+    """Para o observer do watchdog se estiver ativo."""
+    global _observer
+    if _observer and _observer.is_alive():
+        _observer.stop()
+        _observer.join()
+        log.debug("Watchdog encerrado.")
+
+
+def aguardar_arquivo_estavel(caminho: str, janela: float = 5.0, intervalo: float = 1.0) -> bool:
+    """
+    Aguarda ate que o arquivo nao tenha sido modificado por pelo menos
+    'janela' segundos consecutivos, verificando a cada 'intervalo' segundos.
+
+    Combina duas fontes de informacao:
+      1. Watchdog (eventos inotify em tempo real via _ModificacaoHandler)
+      2. mtime do filesystem (fallback e verificacao extra de integridade)
+
+    Retorna True quando o arquivo esta estavel e seguro para upload.
+    Retorna False se o arquivo desaparecer durante a espera.
+
+    Parametros:
+      janela   : segundos sem modificacao para considerar estavel (padrao: 5s)
+      intervalo: frequencia de verificacao em segundos (padrao: 1s)
+    """
+    caminho_abs = os.path.abspath(caminho)
+
+    while True:
+        if not os.path.exists(caminho_abs):
+            return False
+
+        agora        = time.time()
+        mtime        = os.path.getmtime(caminho_abs)
+        wtime        = _handler.ultima_modificacao(caminho_abs) if _handler else 0.0
+        ultima_modif = max(mtime, wtime)
+
+        if agora - ultima_modif >= janela:
+            # Confirmacao final: tamanho identico apos mais um intervalo
+            tam_antes = os.path.getsize(caminho_abs)
+            time.sleep(intervalo)
+            if not os.path.exists(caminho_abs):
+                return False
+            tam_depois = os.path.getsize(caminho_abs)
+            if tam_antes == tam_depois:
+                return True
+            # Tamanho mudou: resetar espera
+        else:
+            restante = janela - (agora - ultima_modif)
+            log.debug(
+                f"Aguardando estabilidade: {os.path.basename(caminho_abs)} "
+                f"(ultima modif ha {agora - ultima_modif:.1f}s, aguardando {restante:.1f}s mais)"
+            )
+            time.sleep(intervalo)
+
+
+# ---------------------------------------------
+# Sync
+# ---------------------------------------------
+
 def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = False):
     if not os.path.isdir(diretorio_local):
         log_erro(f"Diretorio local nao encontrado: {diretorio_local}")
@@ -676,6 +771,9 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
     log_info(f"Local  : {diretorio_local}")
     log_info(f"Remoto : {caminho_remoto}")
     log_info(f"Modo   : {'espelho (--mirror ativo)' if deletar_remotos else 'incremental (sem --mirror)'}")
+
+    # Inicia o watchdog antes do mapeamento para capturar eventos durante o sync
+    iniciar_watchdog(diretorio_local)
 
     log_info("Mapeando arquivos locais...")
     mapa_local = mapear_local_recursivo(diretorio_local)
@@ -711,36 +809,54 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
 
     if not a_enviar and not a_deletar:
         log_ok("Tudo sincronizado. Nenhuma acao necessaria.")
+        parar_watchdog()
         return
 
-    # Uploads
-    if a_enviar:
-        log_secao(f"UPLOADS ({len(a_enviar)} arquivo(s))")
-        for idx, (rel, motivo) in enumerate(a_enviar, start=1):
-            local_abs      = os.path.join(diretorio_local, rel.replace("/", os.sep))
-            remoto_destino = f"{caminho_remoto.rstrip('/')}/{rel}"
-            tamanho        = os.path.getsize(local_abs)
+    ignorados_instavel = []
 
-            log_info(f"\n[{idx}/{len(a_enviar)}] [{motivo.upper()}] {rel} ({formatar_tamanho(tamanho)})")
+    try:
+        # Uploads
+        if a_enviar:
+            log_secao(f"UPLOADS ({len(a_enviar)} arquivo(s))")
+            for idx, (rel, motivo) in enumerate(a_enviar, start=1):
+                local_abs      = os.path.join(diretorio_local, rel.replace("/", os.sep))
+                remoto_destino = f"{caminho_remoto.rstrip('/')}/{rel}"
 
-            if tamanho >= UPLOAD_THRESHOLD:
-                upload_session(local_abs, remoto_destino, tamanho)
-            else:
-                upload_simples(local_abs, remoto_destino)
+                log_info(f"\n[{idx}/{len(a_enviar)}] [{motivo.upper()}] {rel}")
 
-    # Delecoes remotas
-    if a_deletar:
-        log_secao(f"DELECOES REMOTAS ({len(a_deletar)} arquivo(s))")
-        for idx, rel in enumerate(a_deletar, start=1):
-            remoto_item = f"{caminho_remoto.rstrip('/')}/{rel}"
-            log_info(f"[{idx}/{len(a_deletar)}] Deletando: {rel}")
-            deletar(remoto_item)
+                # Aguarda o arquivo parar de ser modificado antes de enviar
+                log.debug(f"Verificando estabilidade: {rel}")
+                if not aguardar_arquivo_estavel(local_abs):
+                    log_aviso(f"Arquivo desapareceu durante a espera, ignorando: {rel}")
+                    ignorados_instavel.append(rel)
+                    continue
+
+                tamanho = os.path.getsize(local_abs)
+                log_info(f"  Tamanho : {formatar_tamanho(tamanho)} - arquivo estavel, iniciando upload.")
+
+                if tamanho >= UPLOAD_THRESHOLD:
+                    upload_session(local_abs, remoto_destino, tamanho)
+                else:
+                    upload_simples(local_abs, remoto_destino)
+
+        # Delecoes remotas
+        if a_deletar:
+            log_secao(f"DELECOES REMOTAS ({len(a_deletar)} arquivo(s))")
+            for idx, rel in enumerate(a_deletar, start=1):
+                remoto_item = f"{caminho_remoto.rstrip('/')}/{rel}"
+                log_info(f"[{idx}/{len(a_deletar)}] Deletando: {rel}")
+                deletar(remoto_item)
+
+    finally:
+        parar_watchdog()
 
     # Resumo final
     log_secao("RESUMO SYNC")
-    log_info(f"  Enviados  : {len(a_enviar)}")
-    log_info(f"  Deletados : {len(a_deletar)}")
-    log_info(f"  Ignorados : {len(identicos)}")
+    log_info(f"  Enviados        : {len(a_enviar) - len(ignorados_instavel)}")
+    log_info(f"  Deletados       : {len(a_deletar)}")
+    log_info(f"  Ignorados       : {len(identicos)}")
+    if ignorados_instavel:
+        log_aviso(f"  Instaveis (skip): {len(ignorados_instavel)} - execute novamente apos a geracao concluir.")
     log_ok("Sync concluido.")
 
 
@@ -758,38 +874,39 @@ def gerar_env():
             print("[INFO] Operacao cancelada. Nenhum arquivo foi alterado.")
             return
 
-    conteudo = """# -------------------------------------------------------
-# Credenciais do aplicativo registrado no Azure AD
-# -------------------------------------------------------
-
-# ID do aplicativo (cliente) - Azure AD > App registrations > seu app > Application (client) ID
-CLIENT_ID=seu-client-id-aqui
-
-# Valor do segredo do cliente - Azure AD > App registrations > seu app > Certificates & secrets
-CLIENT_SECRET=seu-client-secret-aqui
-
-# ID do diretorio (locatario) - Azure AD > App registrations > seu app > Directory (tenant) ID
-TENANT_ID=seu-tenant-id-aqui
-
-# E-mail ou ID do usuario cujo OneDrive sera acessado
-USER_ID=usuario@suaempresa.com
-
-# -------------------------------------------------------
-# Configuracoes opcionais
-# -------------------------------------------------------
-
-# Diretorio onde os arquivos de log serao salvos (padrao: /var/log/getonefiles)
-# LOG_DIR=/var/log/getonefiles
-
-# Limite de velocidade de upload/download em MB/s (0 = sem limite)
-# SPEED_LIMIT=5
-
-# Permitir conexoes via IPv6 (padrao: somente IPv4)
-# IPV6=false
-"""
+    linhas = [
+        "# -------------------------------------------------------",
+        "# Credenciais do aplicativo registrado no Azure AD",
+        "# -------------------------------------------------------",
+        "",
+        "# ID do aplicativo (cliente) - Azure AD > App registrations > seu app > Application (client) ID",
+        "CLIENT_ID=seu-client-id-aqui",
+        "",
+        "# Valor do segredo do cliente - Azure AD > App registrations > seu app > Certificates & secrets",
+        "CLIENT_SECRET=seu-client-secret-aqui",
+        "",
+        "# ID do diretorio (locatario) - Azure AD > App registrations > seu app > Directory (tenant) ID",
+        "TENANT_ID=seu-tenant-id-aqui",
+        "",
+        "# E-mail ou ID do usuario cujo OneDrive sera acessado",
+        "USER_ID=usuario@suaempresa.com",
+        "",
+        "# -------------------------------------------------------",
+        "# Configuracoes opcionais",
+        "# -------------------------------------------------------",
+        "",
+        "# Diretorio onde os arquivos de log serao salvos (padrao: /var/log/getonefiles)",
+        "# LOG_DIR=/var/log/getonefiles",
+        "",
+        "# Limite de velocidade de upload/download em MB/s (0 = sem limite)",
+        "# SPEED_LIMIT=5",
+        "",
+        "# Permitir conexoes via IPv6 (padrao: somente IPv4)",
+        "# IPV6=false",
+    ]
 
     with open(destino, "w") as f:
-        f.write(conteudo)
+        f.write("\n".join(linhas) + "\n")
 
     print(f"[OK] Arquivo .env criado em: {destino}")
     print("[INFO] Edite o arquivo e preencha com suas credenciais antes de usar o script.")
@@ -803,45 +920,47 @@ def validar_env():
 
 
 def main():
-    epilog = """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- CONFIGURACAO INICIAL — AZURE AD (Microsoft Entra)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Fase 1: Criacao do Aplicativo (App Registration)
-  1. Acesse https://entra.microsoft.com com uma conta de administrador global.
-  2. No menu lateral, va em Registros de aplicativo > Novo registro.
-  3. Em Nome, defina como getonefiles (ou o nome do seu projeto).
-  4. Em Tipos de conta com suporte, selecione Somente locatario unico (Single tenant).
-  5. Ignore a configuracao de "URI de redirecionamento" e clique em Registrar.
-
-Fase 2: Configuracao de Permissoes (Acesso em Background)
-  1. No menu lateral do novo aplicativo, acesse Permissoes de APIs.
-  2. Clique em Adicionar uma permissao > Microsoft Graph > Permissoes de aplicativo
-     (e fundamental NAO escolher o tipo "Delegado").
-  3. Encontre e marque as seguintes permissoes:
-       - User.Read.All
-       - Files.Read.All
-       - Files.ReadWrite.All
-  4. Clique em Adicionar permissoes no rodape da pagina.
-  5. ACAO OBRIGATORIA: Clique em Conceder consentimento do administrador para
-     [Sua Organizacao] e confirme. Verifique se um check verde apareceu na
-     coluna de status de todas as permissoes.
-
-Fase 3: Geracao e Coleta de Credenciais
-  1. Va em Certificados e segredos > Novo segredo do cliente.
-  2. Insira uma Descricao e defina o tempo de expiracao. Clique em Adicionar.
-  3. ATENCAO: Copie imediatamente a string da coluna Valor. Este e o seu
-     CLIENT_SECRET. Ele ficara permanentemente oculto ao sair desta tela.
-     (Ignore a coluna "ID Secreto", ela nao tem utilidade para a API.)
-  4. Va em Visao Geral (Overview) do aplicativo e copie:
-       - ID do aplicativo (cliente)  →  CLIENT_ID
-       - ID do diretorio (locatario) →  TENANT_ID
-
-Use o comando abaixo para gerar o arquivo .env pre-configurado:
-  python3 getonefiles.py --init
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
+    sep    = "=" * 62
+    epilog = "\n".join([
+        "",
+        sep,
+        " CONFIGURACAO INICIAL - AZURE AD (Microsoft Entra)",
+        sep,
+        "",
+        "Fase 1: Criacao do Aplicativo (App Registration)",
+        "  1. Acesse https://entra.microsoft.com com uma conta de administrador global.",
+        "  2. No menu lateral, va em Registros de aplicativo > Novo registro.",
+        "  3. Em Nome, defina como getonefiles (ou o nome do seu projeto).",
+        "  4. Em Tipos de conta com suporte, selecione Somente locatario unico (Single tenant).",
+        "  5. Ignore a configuracao de URI de redirecionamento e clique em Registrar.",
+        "",
+        "Fase 2: Configuracao de Permissoes (Acesso em Background)",
+        "  1. No menu lateral do novo aplicativo, acesse Permissoes de APIs.",
+        "  2. Clique em Adicionar uma permissao > Microsoft Graph >",
+        "     Permissoes de aplicativo (NAO escolha o tipo Delegado).",
+        "  3. Encontre e marque as seguintes permissoes:",
+        "       - User.Read.All",
+        "       - Files.Read.All",
+        "       - Files.ReadWrite.All",
+        "  4. Clique em Adicionar permissoes no rodape da pagina.",
+        "  5. ACAO OBRIGATORIA: Clique em Conceder consentimento do administrador",
+        "     para [Sua Organizacao] e confirme. Verifique se um check verde",
+        "     apareceu na coluna de status de todas as permissoes.",
+        "",
+        "Fase 3: Geracao e Coleta de Credenciais",
+        "  1. Va em Certificados e segredos > Novo segredo do cliente.",
+        "  2. Insira uma Descricao e defina o tempo de expiracao. Clique em Adicionar.",
+        "  3. ATENCAO: Copie imediatamente a string da coluna Valor. Este e o seu",
+        "     CLIENT_SECRET. Ele ficara permanentemente oculto ao sair desta tela.",
+        "     (Ignore a coluna ID Secreto, ela nao tem utilidade para a API.)",
+        "  4. Va em Visao Geral (Overview) do aplicativo e copie:",
+        "       - ID do aplicativo (cliente)  ->  CLIENT_ID",
+        "       - ID do diretorio (locatario) ->  TENANT_ID",
+        "",
+        "Use o comando abaixo para gerar o arquivo .env pre-configurado:",
+        "  python3 getonefiles.py --init",
+        sep,
+    ])
 
     parser = argparse.ArgumentParser(
         description="Gerencia arquivos no OneDrive via Microsoft Graph API",
@@ -855,39 +974,39 @@ Use o comando abaixo para gerar o arquivo .env pre-configurado:
         nargs="?",
         const="",
         metavar="CAMINHO_REMOTO",
-        help='Lista arquivos. Sem argumento, lista a raiz.\nEx: --list "Documentos/Backup"',
+        help="Lista arquivos. Sem argumento, lista a raiz.\nEx: --list \"Documentos/Backup\"",
     )
     group.add_argument(
         "--upload",
         nargs=2,
         metavar=("ARQUIVO_LOCAL", "CAMINHO_REMOTO"),
-        help='Faz upload de um arquivo.\nEx: --upload /tmp/log.txt "Documentos/HS-STG-02/"',
+        help="Faz upload de um arquivo.\nEx: --upload /tmp/log.txt \"Documentos/HS-STG-02/\"",
     )
     group.add_argument(
         "--download",
         nargs=2,
         metavar=("CAMINHO_REMOTO", "DESTINO_LOCAL"),
         help=(
-            'Baixa um arquivo ou pasta inteira (recursivo).\n'
-            'Ex (arquivo): --download "Documentos/HS-STG-02/Full/arquivo.tar" /mnt/Local/\n'
-            'Ex (pasta)  : --download "Documentos/HS-STG-02/Full" /mnt/Local/'
+            "Baixa um arquivo ou pasta inteira (recursivo).\n"
+            "Ex (arquivo): --download \"Documentos/HS-STG-02/Full/arquivo.tar\" /mnt/Local/\n"
+            "Ex (pasta)  : --download \"Documentos/HS-STG-02/Full\" /mnt/Local/"
         ),
     )
     group.add_argument(
         "--delete",
         metavar="CAMINHO_REMOTO",
         help=(
-            'Deleta um arquivo ou uma pasta inteira (com todo o conteudo).\n'
-            'Ex: --delete "Documentos/HS-STG-02/Full/arquivo.txt"\n'
-            'Ex: --delete "Documentos/HS-STG-02/Full"'
+            "Deleta um arquivo ou uma pasta inteira (com todo o conteudo).\n"
+            "Ex: --delete \"Documentos/HS-STG-02/Full/arquivo.txt\"\n"
+            "Ex: --delete \"Documentos/HS-STG-02/Full\""
         ),
     )
     group.add_argument(
         "--delete-contents",
         metavar="CAMINHO_REMOTO",
         help=(
-            'Deleta apenas o conteudo de uma pasta, mantendo a pasta em si.\n'
-            'Ex: --delete-contents "Documentos/HS-STG-02/Full"'
+            "Deleta apenas o conteudo de uma pasta, mantendo a pasta em si.\n"
+            "Ex: --delete-contents \"Documentos/HS-STG-02/Full\""
         ),
     )
     group.add_argument(
@@ -895,11 +1014,11 @@ Use o comando abaixo para gerar o arquivo .env pre-configurado:
         nargs=2,
         metavar=("DIR_LOCAL", "CAMINHO_REMOTO"),
         help=(
-            'Sincroniza um diretorio local com o OneDrive (local -> remoto).\n'
-            'Envia arquivos novos ou com tamanho diferente. Ignora identicos.\n'
-            'Use --mirror para remover do OneDrive arquivos ausentes localmente.\n'
-            'Ex: --sync /mnt/Local/Backup "Documentos/HS-STG-02"\n'
-            'Ex: --sync /mnt/Local/Backup "Documentos/HS-STG-02" --mirror'
+            "Sincroniza um diretorio local com o OneDrive (local -> remoto).\n"
+            "Envia arquivos novos ou com tamanho diferente. Ignora identicos.\n"
+            "Use --mirror para remover do OneDrive arquivos ausentes localmente.\n"
+            "Ex: --sync /mnt/Local/Backup \"Documentos/HS-STG-02\"\n"
+            "Ex: --sync /mnt/Local/Backup \"Documentos/HS-STG-02\" --mirror"
         ),
     )
     group.add_argument(
@@ -946,9 +1065,9 @@ Use o comando abaixo para gerar o arquivo .env pre-configurado:
         metavar="DIR",
         default=DEFAULT_LOG_DIR,
         help=(
-            f'Diretorio para salvar os arquivos de log.\n'
-            f'Padrao: {DEFAULT_LOG_DIR} (ou LOG_DIR no .env)\n'
-            f'Ex: --log-dir /tmp/logs'
+            "Diretorio para salvar os arquivos de log.\n"
+            f"Padrao: {DEFAULT_LOG_DIR} (ou LOG_DIR no .env)\n"
+            "Ex: --log-dir /tmp/logs"
         ),
     )
 
@@ -986,7 +1105,7 @@ Use o comando abaixo para gerar o arquivo .env pre-configurado:
 
     # Para todas as outras operacoes, valida .env e inicializa log
     validar_env()
-    log_file = setup_logging(args.log_dir)
+    setup_logging(args.log_dir)
 
     if _speed_limit_mbs > 0:
         log_info(f"Limite de velocidade: {_speed_limit_mbs:.1f} MB/s")
@@ -1004,7 +1123,7 @@ Use o comando abaixo para gerar o arquivo .env pre-configurado:
         log.debug(f"Operacao: delete-contents | caminho: {args.delete_contents}")
         deletar_conteudo(args.delete_contents)
     elif args.sync:
-        log.debug(f"Operacao: sync | local: {args.sync[0]} | remoto: {args.sync[1]} | delete: {args.sync_delete}")
+        log.debug(f"Operacao: sync | local: {args.sync[0]} | remoto: {args.sync[1]} | mirror: {args.sync_delete}")
         sync(args.sync[0], args.sync[1], deletar_remotos=args.sync_delete)
 
     log.info("=== Fim da execucao ===")
@@ -1016,4 +1135,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n[AVISO] Execucao interrompida pelo usuario.")
         log.warning("Execucao interrompida pelo usuario (Ctrl+C).")
+        parar_watchdog()
         sys.exit(0)
