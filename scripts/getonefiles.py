@@ -825,14 +825,14 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
                 log_info(f"\n[{idx}/{len(a_enviar)}] [{motivo.upper()}] {rel}")
 
                 # Aguarda o arquivo parar de ser modificado antes de enviar
-                log.debug(f"Verificando estabilidade: {rel}")
+                log_info(f"  Verificando estabilidade...")
                 if not aguardar_arquivo_estavel(local_abs):
-                    log_aviso(f"Arquivo desapareceu durante a espera, ignorando: {rel}")
+                    log_aviso(f"  Arquivo desapareceu durante a espera, ignorando: {rel}")
                     ignorados_instavel.append(rel)
                     continue
 
                 tamanho = os.path.getsize(local_abs)
-                log_info(f"  Tamanho : {formatar_tamanho(tamanho)} - arquivo estavel, iniciando upload.")
+                log_ok(f"  Arquivo estavel ({formatar_tamanho(tamanho)}) — iniciando upload.")
 
                 if tamanho >= UPLOAD_THRESHOLD:
                     upload_session(local_abs, remoto_destino, tamanho)
