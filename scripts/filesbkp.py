@@ -358,6 +358,39 @@ HELP_TEXT = textwrap.dedent("""
     │    "excludes": ["*.tmp", "Thumbs.db", "desktop.ini", "~$*", "*.log"]
     └──────────────────────────────────────────────────────────────────
 
+    \033[1m┌─ SEÇÃO: "hooks"\033[0m
+    │  Comandos shell opcionais executados automaticamente ao término de
+    │  etapas específicas do job. Cada campo aceita qualquer comando
+    │  válido em bash (incluindo pipes, redirecionamentos e variáveis
+    │  de ambiente). Campos ausentes ou com string vazia são ignorados.
+    │
+    │  Os hooks são disparados via "bash -c '<comando>'" de forma
+    │  assíncrona (fire-and-forget): o script não aguarda conclusão,
+    │  não verifica o código de retorno e não trata erros. O job
+    │  prossegue normalmente independente do resultado do hook.
+    │
+    │  "after_rsync"  : string — Executado após o rsync (incremental)
+    │                            concluir, com sucesso ou aviso (code 23).
+    │                            Exemplo: "after_rsync": "touch ~/rsync_done.sh"
+    │
+    │  "after_full"   : string — Executado após run_full_backup() concluir,
+    │                            independente de ter gerado um novo Full ou
+    │                            pulado por já existir um válido.
+    │                            Exemplo: "after_full": "touch ~/full_done.sh"
+    │
+    │  "after_split"  : string — Executado após o split concluir com sucesso.
+    │                            Só disparado quando split.enabled = true e
+    │                            o split foi realizado nesta execução.
+    │                            Exemplo: "after_split": "touch ~/split_done.sh"
+    │
+    │  Exemplo completo:
+    │    "hooks": {
+    │        "after_rsync": "echo 'rsync ok' >> /var/log/hooks.log",
+    │        "after_full":  "touch ~/full_done.sh",
+    │        "after_split": ""
+    │    }
+    └──────────────────────────────────────────────────────────────────
+
     ════════════════════════════════════════════════════════════════════
     \033[1mEXEMPLO COMPLETO DE ARQUIVO JSON\033[0m
     ════════════════════════════════════════════════════════════════════
@@ -404,7 +437,13 @@ HELP_TEXT = textwrap.dedent("""
             }
         },
 
-        "excludes": ["*.tmp", "Thumbs.db", "desktop.ini", "~$*"]
+        "excludes": ["*.tmp", "Thumbs.db", "desktop.ini", "~$*"],
+
+        "hooks": {
+            "after_rsync": "touch ~/rsync_done.sh",
+            "after_full":  "touch ~/full_done.sh",
+            "after_split": ""
+        }
     }
 
     ════════════════════════════════════════════════════════════════════
@@ -472,7 +511,12 @@ DEFAULT_JSON_CONFIG = {
             "keep_original_after_split": True
         }
     },
-    "excludes": ["*.tmp", "Thumbs.db"]
+    "excludes": ["*.tmp", "Thumbs.db"],
+    "hooks": {
+        "after_rsync": "",
+        "after_full":  "",
+        "after_split": ""
+    }
 }
 
 
@@ -711,6 +755,21 @@ class BackupJob:
             raise Exception(f"Erro no mount (Exit Code {e.returncode})")
 
     # ------------------------------------------------------------------
+    # Hooks
+    # ------------------------------------------------------------------
+
+    def _run_hook(self, name: str):
+        """
+        Executa o comando shell associado ao hook 'name', se definido no JSON.
+        Fire-and-forget: nenhum erro é capturado ou propagado.
+        """
+        cmd = self.config.get('hooks', {}).get(name, '').strip()
+        if not cmd:
+            return
+        self.logger.info(f"Hook '{name}': {cmd}")
+        subprocess.Popen(["bash", "-c", cmd])
+
+    # ------------------------------------------------------------------
     # Rsync
     # ------------------------------------------------------------------
 
@@ -817,11 +876,13 @@ class BackupJob:
                 raise KeyboardInterrupt
             elif returncode == 0:
                 self.logger.info("Rsync: Sucesso.")
+                self._run_hook("after_rsync")
             elif returncode == 23:
                 self.logger.warning(
                     "Rsync: Aviso (Code 23) — transferência parcial "
                     "(ex: permissão negada). Continuando."
                 )
+                self._run_hook("after_rsync")
             else:
                 raise subprocess.CalledProcessError(returncode, cmd)
 
@@ -887,6 +948,7 @@ class BackupJob:
             self.logger.info(
                 f"Backup Full válido encontrado ({recent_file}). Mantendo estrutura atual."
             )
+            self._run_hook("after_full")
             return
 
         # ------------------------------------------------------------------
@@ -1009,6 +1071,9 @@ class BackupJob:
         split_cfg = self.config['settings'].get('split', {})
         if split_cfg.get('enabled', False):
             self._run_split(zst_path, split_cfg)
+            self._run_hook("after_split")
+
+        self._run_hook("after_full")
 
     # ------------------------------------------------------------------
     # Split do arquivo Full compactado
