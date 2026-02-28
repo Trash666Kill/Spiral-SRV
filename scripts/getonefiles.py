@@ -127,12 +127,14 @@ def ler_com_throttle(f, tamanho: int) -> bytes:
     Garante que a limitacao de velocidade seja aplicada em tempo real
     em vez de apenas como media por chunk grande.
     Sem speed limit: faz f.read() direto, sem nenhum overhead.
+
+    Usa lista + b"".join() para evitar concatenacao O(n^2) de bytes.
     """
     if _speed_limit_mbs <= 0:
         return f.read(tamanho)
 
     SUB_CHUNK    = 256 * 1024  # 256 KB
-    dados        = b""
+    partes       = []
     tempo_inicio = time.time()
     lido         = 0
 
@@ -140,31 +142,37 @@ def ler_com_throttle(f, tamanho: int) -> bytes:
         parte = f.read(min(SUB_CHUNK, tamanho - lido))
         if not parte:
             break
-        dados += parte
-        lido  += len(parte)
+        partes.append(parte)
+        lido += len(parte)
         aplicar_throttle(lido, tempo_inicio)
 
-    return dados
+    return b"".join(partes)
 
 
 # ---------------------------------------------
 # Networking - IPv4 por padrao
 # ---------------------------------------------
 
+_ipv4_lock = threading.Lock()
+
+
 class IPv4Adapter(HTTPAdapter):
     """
     HTTPAdapter que restringe conexoes a IPv4 (AF_INET).
     Ativo por padrao; desativado apenas quando --ipv6 ou IPV6=true no .env.
+
+    Usa lock global para proteger a substituicao de allowed_gai_family,
+    evitando race condition caso multiplas threads usem a session simultaneamente.
     """
     def send(self, *args, **kwargs):
         import urllib3.util.connection as _conn
-        _orig = _conn.allowed_gai_family
-
-        _conn.allowed_gai_family = lambda: socket.AF_INET
-        try:
-            return super().send(*args, **kwargs)
-        finally:
-            _conn.allowed_gai_family = _orig
+        with _ipv4_lock:
+            _orig = _conn.allowed_gai_family
+            _conn.allowed_gai_family = lambda: socket.AF_INET
+            try:
+                return super().send(*args, **kwargs)
+            finally:
+                _conn.allowed_gai_family = _orig
 
 
 def criar_session() -> requests.Session:
@@ -177,8 +185,10 @@ def criar_session() -> requests.Session:
     return s
 
 
-# Session HTTP global reutilizada em todas as requisicoes
-_session: requests.Session = requests.Session()
+# Session HTTP global reutilizada em todas as requisicoes.
+# Inicializada como None; substituida por criar_session() em main()
+# antes de qualquer operacao de rede.
+_session: requests.Session = None
 
 
 # ---------------------------------------------
@@ -313,16 +323,26 @@ def formatar_tamanho(bytes_: int) -> str:
 
 
 def listar_itens(caminho_remoto: str = None) -> list:
+    """
+    Lista todos os itens de uma pasta, seguindo paginacao via @odata.nextLink.
+    A Graph API retorna ate 200 itens por pagina por padrao; sem paginacao,
+    pastas grandes seriam retornadas de forma incompleta e silenciosa.
+    """
     if caminho_remoto:
         url = f"{drive_url(caminho_remoto)}:/children"
     else:
         url = f"{drive_url()}/children"
 
-    resp = _session.get(url, headers=headers())
-    if resp.status_code != 200:
-        handle_error(resp, f"Listar '{caminho_remoto or 'raiz'}'")
+    todos = []
+    while url:
+        resp = _session.get(url, headers=headers())
+        if resp.status_code != 200:
+            handle_error(resp, f"Listar '{caminho_remoto or 'raiz'}'")
+        data = resp.json()
+        todos.extend(data.get("value", []))
+        url = data.get("@odata.nextLink")  # None encerra o loop
 
-    return resp.json().get("value", [])
+    return todos
 
 
 # ---------------------------------------------
@@ -358,7 +378,11 @@ def listar(caminho_remoto: str = None):
 def upload_simples(caminho_local: str, caminho_remoto: str):
     """
     Envia arquivos menores que UPLOAD_THRESHOLD via PUT simples.
-    Usa ler_com_throttle para respeitar --speed mesmo em arquivos pequenos.
+
+    Sem speed limit: passa o file object diretamente como stream para o requests,
+    evitando carregar o arquivo inteiro na memoria antes do envio.
+    Com speed limit: usa ler_com_throttle (necessita do conteudo em bytes para
+    aplicar o throttle por sub-chunks antes de enviar).
     """
     url     = f"{drive_url(caminho_remoto)}:/content"
     tamanho = os.path.getsize(caminho_local)
@@ -369,9 +393,14 @@ def upload_simples(caminho_local: str, caminho_remoto: str):
     }
 
     with open(caminho_local, "rb") as f:
-        conteudo = ler_com_throttle(f, tamanho)
+        if _speed_limit_mbs > 0:
+            # Throttle requer leitura em sub-chunks antes do envio
+            conteudo = ler_com_throttle(f, tamanho)
+            resp = _session.put(url, headers=hdrs, data=conteudo)
+        else:
+            # Streaming direto: sem carga desnecessaria em RAM
+            resp = _session.put(url, headers=hdrs, data=f)
 
-    resp = _session.put(url, headers=hdrs, data=conteudo)
     if resp.status_code not in (200, 201):
         handle_error(resp, "Upload simples")
 
@@ -392,6 +421,10 @@ def _criar_upload_session(url_criar_sessao: str, caminho_remoto: str) -> str:
     return resp.json()["uploadUrl"]
 
 
+class OneDriveError(RuntimeError):
+    """Excecao base para erros de operacao no OneDrive."""
+
+
 def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
     """
     Envia o arquivo via upload session em chunks.
@@ -399,7 +432,7 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
     Em caso de erro 5xx em qualquer chunk, o arquivo e reenviado do zero
     com uma nova session (ate FILE_MAX_RETRIES tentativas). O backoff
     exponencial e aplicado entre cada tentativa de reenvio completo.
-    Erros 4xx encerram imediatamente pois nao sao recuperaveis.
+    Erros 4xx lancam OneDriveError imediatamente pois nao sao recuperaveis.
     """
     url_criar_sessao = f"{drive_url(caminho_remoto)}:/createUploadSession"
     chunk_size       = calcular_chunk_size()
@@ -452,22 +485,20 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
                     falha_5xx = True
                     break
                 else:
-                    # Erro nao recuperavel (4xx): falha imediata
-                    log_erro(
+                    # Erro nao recuperavel (4xx): lanca excecao
+                    raise OneDriveError(
                         f"Falha no chunk {offset}-{fim}: "
                         f"{resp_chunk.status_code} - {resp_chunk.text}"
                     )
-                    sys.exit(1)
 
         if not falha_5xx:
             log_ok(f"Arquivo enviado (session): {caminho_remoto}")
             return
 
-    log_erro(
+    raise OneDriveError(
         f"Falha ao enviar '{caminho_remoto}' apos "
         f"{FILE_MAX_RETRIES} tentativas de reenvio completo."
     )
-    sys.exit(1)
 
 
 def upload(caminho_local: str, caminho_remoto: str):
@@ -483,15 +514,22 @@ def upload(caminho_local: str, caminho_remoto: str):
     tamanho = os.path.getsize(caminho_local)
     log_info(f"Upload: {caminho_local} ({formatar_tamanho(tamanho)}) -> {caminho_remoto}")
 
-    if tamanho >= UPLOAD_THRESHOLD:
-        upload_session(caminho_local, caminho_remoto, tamanho)
-    else:
-        upload_simples(caminho_local, caminho_remoto)
+    try:
+        if tamanho >= UPLOAD_THRESHOLD:
+            upload_session(caminho_local, caminho_remoto, tamanho)
+        else:
+            upload_simples(caminho_local, caminho_remoto)
+    except OneDriveError as exc:
+        log_erro(str(exc))
+        sys.exit(1)
 
 
 # ---------------------------------------------
 # Download
 # ---------------------------------------------
+
+DOWNLOAD_MAX_RETRIES = 5  # tentativas de retomada de download em caso de erro de rede
+
 
 def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: dict = None):
     """
@@ -503,6 +541,9 @@ def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: d
     os arquivos da sessao, garantindo que o throttle seja efetivo mesmo para
     muitos arquivos pequenos.
     Quando None (download avulso), cria seu proprio estado local.
+
+    Suporta retomada de download parcial via Range header em caso de falha
+    de rede (ate DOWNLOAD_MAX_RETRIES tentativas com backoff exponencial).
     """
     url_meta  = f"{drive_url(caminho_remoto)}"
     resp_meta = _session.get(url_meta, headers=headers())
@@ -536,19 +577,53 @@ def download_arquivo(caminho_remoto: str, caminho_local: str, throttle_estado: d
 
     SUB_CHUNK = 256 * 1024  # 256 KB
 
-    with _session.get(download_url, stream=True) as r:
-        if r.status_code != 200:
-            log_erro(f"Falha no download: {r.status_code}")
-            sys.exit(1)
+    for tentativa in range(1, DOWNLOAD_MAX_RETRIES + 1):
+        # Verifica quantos bytes ja foram baixados para retomar do ponto correto
+        bytes_ja_baixados = os.path.getsize(caminho_local) if os.path.exists(caminho_local) else 0
 
-        with open(caminho_local, "wb") as f:
-            for chunk in r.iter_content(chunk_size=SUB_CHUNK):
-                if chunk:
-                    f.write(chunk)
-                    throttle_estado["bytes"] += len(chunk)
-                    aplicar_throttle(throttle_estado["bytes"], throttle_estado["inicio"])
+        if bytes_ja_baixados >= tamanho_total:
+            log_ok(f"Download ja completo (sem necessidade de reenvio): {caminho_local}")
+            return
 
-    log_ok(f"Download concluido: {caminho_local} ({formatar_tamanho(tamanho_total)})")
+        if bytes_ja_baixados > 0 and tentativa > 1:
+            log_aviso(
+                f"Retomando download a partir de {formatar_tamanho(bytes_ja_baixados)} "
+                f"(tentativa {tentativa}/{DOWNLOAD_MAX_RETRIES})..."
+            )
+
+        hdrs_download = {"Range": f"bytes={bytes_ja_baixados}-"} if bytes_ja_baixados > 0 else {}
+
+        try:
+            modo_escrita = "ab" if bytes_ja_baixados > 0 else "wb"
+            with _session.get(download_url, stream=True, headers=hdrs_download) as r:
+                if r.status_code not in (200, 206):
+                    if tentativa == DOWNLOAD_MAX_RETRIES:
+                        log_erro(f"Falha no download apos {DOWNLOAD_MAX_RETRIES} tentativas: HTTP {r.status_code}")
+                        sys.exit(1)
+                    espera = 2 ** tentativa
+                    log_aviso(f"Erro HTTP {r.status_code} no download. Aguardando {espera}s...")
+                    time.sleep(espera)
+                    continue
+
+                with open(caminho_local, modo_escrita) as f:
+                    for chunk in r.iter_content(chunk_size=SUB_CHUNK):
+                        if chunk:
+                            f.write(chunk)
+                            throttle_estado["bytes"] += len(chunk)
+                            aplicar_throttle(throttle_estado["bytes"], throttle_estado["inicio"])
+
+            log_ok(f"Download concluido: {caminho_local} ({formatar_tamanho(tamanho_total)})")
+            return
+
+        except (requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as exc:
+            if tentativa == DOWNLOAD_MAX_RETRIES:
+                log_erro(f"Falha no download apos {DOWNLOAD_MAX_RETRIES} tentativas: {exc}")
+                sys.exit(1)
+            espera = 2 ** tentativa
+            log_aviso(f"Erro de rede no download ({exc}). Aguardando {espera}s para retomar...")
+            time.sleep(espera)
 
 
 def download_pasta_recursivo(caminho_remoto: str, destino_local: str, nivel: int = 0,
@@ -657,7 +732,15 @@ def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
     """
     Versao segura do mapeamento remoto: se a pasta nao existir (404),
     retorna dicionario vazio sem exibir erro - ela sera criada no upload.
-    Passa caminho_remoto como base_remoto para garantir caminhos relativos corretos.
+
+    Delega inteiramente para mapear_remoto_recursivo passando caminho_remoto
+    como base_remoto, garantindo que TODOS os arquivos (inclusive os da raiz)
+    usem caminhos relativos consistentes no formato "subdir/arquivo.txt".
+
+    Corrige bug anterior onde arquivos na raiz remota eram inseridos apenas
+    com o nome simples (ex: "arquivo.txt") enquanto arquivos em subpastas
+    usavam caminhos relativos (ex: "sub/arquivo.txt"), causando assimetria
+    com o mapa local e uploads/delecoes incorretos no modo --mirror.
     """
     url  = f"{drive_url(caminho_remoto)}:/children"
     resp = _session.get(url, headers=headers())
@@ -668,17 +751,9 @@ def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
     elif resp.status_code != 200:
         handle_error(resp, f"Mapear remoto '{caminho_remoto}'")
 
-    resultado = {}
-    for item in resp.json().get("value", []):
-        nome         = item["name"]
-        caminho_item = f"{caminho_remoto.rstrip('/')}/{nome}"
-        if "folder" in item:
-            sub = mapear_remoto_recursivo(caminho_item, caminho_remoto)
-            resultado.update(sub)
-        else:
-            resultado[nome] = item.get("size", 0)
-
-    return resultado
+    # Reutiliza mapear_remoto_recursivo com base_remoto correto para consistencia
+    # de chaves em todos os niveis (raiz e subpastas)
+    return mapear_remoto_recursivo(caminho_remoto, caminho_remoto)
 
 
 def mapear_remoto_recursivo(caminho_remoto: str, base_remoto: str) -> dict:
@@ -863,6 +938,7 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
         return
 
     ignorados_instavel = []
+    erros_upload       = []
 
     try:
         # Uploads
@@ -884,10 +960,14 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
                 tamanho = os.path.getsize(local_abs)
                 log_ok(f"  Arquivo estavel ({formatar_tamanho(tamanho)}) - iniciando upload.")
 
-                if tamanho >= UPLOAD_THRESHOLD:
-                    upload_session(local_abs, remoto_destino, tamanho)
-                else:
-                    upload_simples(local_abs, remoto_destino)
+                try:
+                    if tamanho >= UPLOAD_THRESHOLD:
+                        upload_session(local_abs, remoto_destino, tamanho)
+                    else:
+                        upload_simples(local_abs, remoto_destino)
+                except OneDriveError as exc:
+                    log_erro(f"  Falha ao enviar '{rel}': {exc}")
+                    erros_upload.append(rel)
 
         # Delecoes remotas
         if a_deletar:
@@ -901,21 +981,49 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
         parar_watchdog()
 
     # Resumo final
+    enviados_ok = len(a_enviar) - len(ignorados_instavel) - len(erros_upload)
     log_secao("RESUMO SYNC")
-    log_info(f"  Enviados        : {len(a_enviar) - len(ignorados_instavel)}")
-    log_info(f"  Deletados       : {len(a_deletar)}")
-    log_info(f"  Ignorados       : {len(identicos)}")
+    log_info(f"  Enviados com sucesso : {enviados_ok}")
+    log_info(f"  Deletados            : {len(a_deletar)}")
+    log_info(f"  Ignorados (identicos): {len(identicos)}")
+    if erros_upload:
+        log_aviso(
+            f"  Falhas de upload     : {len(erros_upload)} "
+            f"- execute novamente para tentar reenviar."
+        )
+        for rel in erros_upload:
+            log_aviso(f"    - {rel}")
     if ignorados_instavel:
         log_aviso(
-            f"  Instaveis (skip): {len(ignorados_instavel)} "
+            f"  Instaveis (skip)     : {len(ignorados_instavel)} "
             f"- execute novamente apos a geracao concluir."
         )
-    log_ok("Sync concluido.")
+    if erros_upload:
+        log_aviso("Sync concluido com erros.")
+    else:
+        log_ok("Sync concluido.")
 
 
 # ---------------------------------------------
 # CLI
 # ---------------------------------------------
+
+def confirmar_operacao_destrutiva(descricao: str, auto_confirm: bool) -> bool:
+    """
+    Solicita confirmacao do usuario antes de operacoes destrutivas.
+    Se auto_confirm=True (--yes), pula a pergunta e retorna True diretamente.
+    Retorna False se o usuario recusar, encerrando a operacao sem erro.
+    """
+    if auto_confirm:
+        log_aviso(f"[--yes] Confirmacao automatica: {descricao}")
+        return True
+    print(f"\n[AVISO] Operacao destrutiva: {descricao}")
+    resposta = input("Confirmar? [s/N] ").strip().lower()
+    if resposta != "s":
+        print("[INFO] Operacao cancelada pelo usuario.")
+        return False
+    return True
+
 
 def gerar_env():
     """Gera um arquivo .env de exemplo no diretorio atual."""
@@ -1091,6 +1199,19 @@ def main():
         help=argparse.SUPPRESS,
     )
 
+    # Confirmacao automatica para operacoes destrutivas (--delete, --delete-contents, --mirror)
+    parser.add_argument(
+        "--yes", "-y",
+        dest="auto_confirm",
+        action="store_true",
+        default=False,
+        help=(
+            "Pula a confirmacao interativa em operacoes destrutivas\n"
+            "(--delete, --delete-contents, --sync --mirror).\n"
+            "Util para uso em scripts automatizados."
+        ),
+    )
+
     # Limite de velocidade: CLI sobrescreve o .env
     parser.add_argument(
         "--speed",
@@ -1154,7 +1275,9 @@ def main():
         print("[INFO] Modo IPv4 (padrao): conexoes restritas a AF_INET.")
 
     # --list nao gera log: executa e retorna imediatamente
+    # Valida credenciais antes mesmo de --list para garantir erro claro
     if args.list is not None:
+        validar_env()
         listar(args.list or None)
         return
 
@@ -1173,16 +1296,30 @@ def main():
         download(args.download[0], args.download[1])
     elif args.delete:
         log.debug(f"Operacao: delete | caminho: {args.delete}")
-        deletar(args.delete)
+        if confirmar_operacao_destrutiva(
+            f"deletar permanentemente '{args.delete}' e todo seu conteudo",
+            args.auto_confirm,
+        ):
+            deletar(args.delete)
     elif args.delete_contents:
         log.debug(f"Operacao: delete-contents | caminho: {args.delete_contents}")
-        deletar_conteudo(args.delete_contents)
+        if confirmar_operacao_destrutiva(
+            f"deletar todo o conteudo de '{args.delete_contents}' (mantendo a pasta)",
+            args.auto_confirm,
+        ):
+            deletar_conteudo(args.delete_contents)
     elif args.sync:
         log.debug(
             f"Operacao: sync | local: {args.sync[0]} | "
             f"remoto: {args.sync[1]} | mirror: {args.sync_delete}"
         )
-        sync(args.sync[0], args.sync[1], deletar_remotos=args.sync_delete)
+        if args.sync_delete and not confirmar_operacao_destrutiva(
+            f"sync --mirror: arquivos ausentes localmente serao deletados de '{args.sync[1]}'",
+            args.auto_confirm,
+        ):
+            pass  # usuario cancelou
+        else:
+            sync(args.sync[0], args.sync[1], deletar_remotos=args.sync_delete)
 
     log.info("=== Fim da execucao ===")
 
