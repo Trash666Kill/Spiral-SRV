@@ -53,8 +53,9 @@ TOKEN_URL        = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/t
 UPLOAD_THRESHOLD = 4 * 1024 * 1024    # arquivos >= 4 MB usam upload session
 
 # Limites de chunk para upload session
-CHUNK_SIZE_MAX = 1000 * 1024 * 1024   # 1000 MB: padrao sem speed limit
-CHUNK_SIZE_MIN = 320 * 1024           # 320 KB: multiplo minimo exigido pelo Graph API
+CHUNK_SIZE_MAX  = 1000 * 1024 * 1024  # 1000 MB: padrao sem speed limit
+CHUNK_SIZE_MIN  = 320 * 1024          # 320 KB: multiplo minimo exigido pelo Graph API
+FILE_MAX_RETRIES = 5                   # tentativas de reenvio completo do arquivo em caso de erro 5xx
 
 # Logger global (configurado em setup_logging)
 log = logging.getLogger("getonefiles")
@@ -78,7 +79,7 @@ def calcular_chunk_size() -> int:
     Com limite (--speed X):
       Calcula um chunk que leva aproximadamente CHUNK_DURATION_S segundos
       para ser transferido na velocidade alvo. Isso garante que o throttle
-      tenha granularidade adequada — chunks pequenos demais causam overhead
+      tenha granularidade adequada - chunks pequenos demais causam overhead
       de round-trips; chunks grandes demais tornam o throttle impreciso.
 
     O resultado e sempre alinhado ao multiplo de 320 KB exigido pelo Graph API
@@ -377,47 +378,96 @@ def upload_simples(caminho_local: str, caminho_remoto: str):
     log_ok(f"Arquivo enviado (simples): {caminho_remoto}")
 
 
-def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
-    url_criar_sessao = f"{drive_url(caminho_remoto)}:/createUploadSession"
+def _criar_upload_session(url_criar_sessao: str, caminho_remoto: str) -> str:
+    """Cria uma nova upload session e retorna a uploadUrl."""
     body = {
         "item": {
             "@microsoft.graph.conflictBehavior": "replace",
             "name": os.path.basename(caminho_remoto),
         }
     }
-
     resp = _session.post(url_criar_sessao, headers=headers(), json=body)
     if resp.status_code != 200:
         handle_error(resp, "Criar upload session")
+    return resp.json()["uploadUrl"]
 
-    upload_url = resp.json()["uploadUrl"]
-    chunk_size = calcular_chunk_size()
-    log_info(f"Upload session criada. Enviando em chunks de {formatar_tamanho(chunk_size)}...")
-    log.debug(f"Upload session URL obtida para: {caminho_remoto}")
 
-    offset = 0
-    with open(caminho_local, "rb") as f:
-        while offset < tamanho_total:
-            chunk     = ler_com_throttle(f, chunk_size)
-            chunk_len = len(chunk)
-            fim       = offset + chunk_len - 1
+def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
+    """
+    Envia o arquivo via upload session em chunks.
 
-            hdrs_chunk = {
-                "Content-Length": str(chunk_len),
-                "Content-Range":  f"bytes {offset}-{fim}/{tamanho_total}",
-                "Content-Type":   "application/octet-stream",
-            }
+    Em caso de erro 5xx em qualquer chunk, o arquivo e reenviado do zero
+    com uma nova session (ate FILE_MAX_RETRIES tentativas). O backoff
+    exponencial e aplicado entre cada tentativa de reenvio completo.
+    Erros 4xx encerram imediatamente pois nao sao recuperaveis.
+    """
+    url_criar_sessao = f"{drive_url(caminho_remoto)}:/createUploadSession"
+    chunk_size       = calcular_chunk_size()
 
-            resp_chunk = _session.put(upload_url, headers=hdrs_chunk, data=chunk)
+    for tentativa_arquivo in range(1, FILE_MAX_RETRIES + 1):
 
-            if resp_chunk.status_code not in (200, 201, 202):
-                log_erro(f"Falha no chunk {offset}-{fim}: {resp_chunk.status_code} - {resp_chunk.text}")
-                sys.exit(1)
+        if tentativa_arquivo > 1:
+            espera = 2 ** (tentativa_arquivo - 1)  # 2s, 4s, 8s, 16s, 32s
+            log_aviso(
+                f"Reiniciando envio do arquivo do zero "
+                f"(tentativa {tentativa_arquivo}/{FILE_MAX_RETRIES}). "
+                f"Aguardando {espera}s..."
+            )
+            time.sleep(espera)
 
-            offset += chunk_len
-            log.debug(f"Chunk enviado: {formatar_tamanho(offset)} / {formatar_tamanho(tamanho_total)} ({(offset / tamanho_total) * 100:.1f}%)")
+        upload_url = _criar_upload_session(url_criar_sessao, caminho_remoto)
+        log_info(f"Upload session criada. Enviando em chunks de {formatar_tamanho(chunk_size)}...")
+        log.debug(f"Upload session URL obtida para: {caminho_remoto}")
 
-    log_ok(f"Arquivo enviado (session): {caminho_remoto}")
+        falha_5xx = False
+        offset    = 0
+
+        with open(caminho_local, "rb") as f:
+            while offset < tamanho_total:
+                chunk     = ler_com_throttle(f, chunk_size)
+                chunk_len = len(chunk)
+                fim       = offset + chunk_len - 1
+
+                hdrs_chunk = {
+                    "Content-Length": str(chunk_len),
+                    "Content-Range":  f"bytes {offset}-{fim}/{tamanho_total}",
+                    "Content-Type":   "application/octet-stream",
+                }
+
+                resp_chunk = _session.put(upload_url, headers=hdrs_chunk, data=chunk)
+
+                if resp_chunk.status_code in (200, 201, 202):
+                    offset += chunk_len
+                    log.debug(
+                        f"Chunk enviado: {formatar_tamanho(offset)} / "
+                        f"{formatar_tamanho(tamanho_total)} "
+                        f"({(offset / tamanho_total) * 100:.1f}%)"
+                    )
+                elif resp_chunk.status_code >= 500:
+                    log_aviso(
+                        f"Erro {resp_chunk.status_code} no chunk "
+                        f"{formatar_tamanho(offset)}-{formatar_tamanho(fim)}. "
+                        f"O arquivo sera reenviado do zero."
+                    )
+                    falha_5xx = True
+                    break
+                else:
+                    # Erro nao recuperavel (4xx): falha imediata
+                    log_erro(
+                        f"Falha no chunk {offset}-{fim}: "
+                        f"{resp_chunk.status_code} - {resp_chunk.text}"
+                    )
+                    sys.exit(1)
+
+        if not falha_5xx:
+            log_ok(f"Arquivo enviado (session): {caminho_remoto}")
+            return
+
+    log_erro(
+        f"Falha ao enviar '{caminho_remoto}' apos "
+        f"{FILE_MAX_RETRIES} tentativas de reenvio completo."
+    )
+    sys.exit(1)
 
 
 def upload(caminho_local: str, caminho_remoto: str):
@@ -606,7 +656,7 @@ def deletar_conteudo(caminho_remoto: str):
 def mapear_remoto_recursivo_seguro(caminho_remoto: str) -> dict:
     """
     Versao segura do mapeamento remoto: se a pasta nao existir (404),
-    retorna dicionario vazio sem exibir erro — ela sera criada no upload.
+    retorna dicionario vazio sem exibir erro - ela sera criada no upload.
     Passa caminho_remoto como base_remoto para garantir caminhos relativos corretos.
     """
     url  = f"{drive_url(caminho_remoto)}:/children"
@@ -825,14 +875,14 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
                 log_info(f"\n[{idx}/{len(a_enviar)}] [{motivo.upper()}] {rel}")
 
                 # Aguarda o arquivo parar de ser modificado antes de enviar
-                log_info(f"  Verificando estabilidade...")
+                log_info("  Verificando estabilidade...")
                 if not aguardar_arquivo_estavel(local_abs):
                     log_aviso(f"  Arquivo desapareceu durante a espera, ignorando: {rel}")
                     ignorados_instavel.append(rel)
                     continue
 
                 tamanho = os.path.getsize(local_abs)
-                log_ok(f"  Arquivo estavel ({formatar_tamanho(tamanho)}) — iniciando upload.")
+                log_ok(f"  Arquivo estavel ({formatar_tamanho(tamanho)}) - iniciando upload.")
 
                 if tamanho >= UPLOAD_THRESHOLD:
                     upload_session(local_abs, remoto_destino, tamanho)
@@ -856,7 +906,10 @@ def sync(diretorio_local: str, caminho_remoto: str, deletar_remotos: bool = Fals
     log_info(f"  Deletados       : {len(a_deletar)}")
     log_info(f"  Ignorados       : {len(identicos)}")
     if ignorados_instavel:
-        log_aviso(f"  Instaveis (skip): {len(ignorados_instavel)} - execute novamente apos a geracao concluir.")
+        log_aviso(
+            f"  Instaveis (skip): {len(ignorados_instavel)} "
+            f"- execute novamente apos a geracao concluir."
+        )
     log_ok("Sync concluido.")
 
 
@@ -869,7 +922,9 @@ def gerar_env():
     destino = os.path.join(os.getcwd(), ".env")
 
     if os.path.exists(destino):
-        resposta = input(f"[AVISO] O arquivo '{destino}' ja existe. Sobrescrever? [s/N] ").strip().lower()
+        resposta = input(
+            f"[AVISO] O arquivo '{destino}' ja existe. Sobrescrever? [s/N] "
+        ).strip().lower()
         if resposta != "s":
             print("[INFO] Operacao cancelada. Nenhum arquivo foi alterado.")
             return
@@ -1123,7 +1178,10 @@ def main():
         log.debug(f"Operacao: delete-contents | caminho: {args.delete_contents}")
         deletar_conteudo(args.delete_contents)
     elif args.sync:
-        log.debug(f"Operacao: sync | local: {args.sync[0]} | remoto: {args.sync[1]} | mirror: {args.sync_delete}")
+        log.debug(
+            f"Operacao: sync | local: {args.sync[0]} | "
+            f"remoto: {args.sync[1]} | mirror: {args.sync_delete}"
+        )
         sync(args.sync[0], args.sync[1], deletar_remotos=args.sync_delete)
 
     log.info("=== Fim da execucao ===")
