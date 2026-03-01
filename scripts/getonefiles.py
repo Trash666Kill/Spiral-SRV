@@ -471,11 +471,6 @@ def upload_session(caminho_local: str, caminho_remoto: str, tamanho_total: int):
 
                 if resp_chunk.status_code in (200, 201, 202):
                     offset += chunk_len
-                    log.debug(
-                        f"Chunk enviado: {formatar_tamanho(offset)} / "
-                        f"{formatar_tamanho(tamanho_total)} "
-                        f"({(offset / tamanho_total) * 100:.1f}%)"
-                    )
                 elif resp_chunk.status_code >= 500:
                     log_aviso(
                         f"Erro {resp_chunk.status_code} no chunk "
