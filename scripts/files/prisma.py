@@ -18,7 +18,7 @@ from datetime import datetime
 # --- Texto de Ajuda Detalhado ---
 HELP_TEXT = textwrap.dedent("""
     ════════════════════════════════════════════════════════════════════
-    \033[1mfilesbkp.py  —  Gerenciador de Backup Corporativo (CIFS → Local)\033[0m
+    \033[1mprisma.py  —  Gerenciador de Backup Corporativo (CIFS → Local)\033[0m
     ════════════════════════════════════════════════════════════════════
 
     \033[1mVISÃO GERAL\033[0m
@@ -79,7 +79,7 @@ HELP_TEXT = textwrap.dedent("""
 
     \033[1mARGUMENTOS DA LINHA DE COMANDO\033[0m
     ─────────────────────────────────────────────────────────────────
-    \033[1mfilesbkp.py [config.json] [--init] [--debug]\033[0m
+    \033[1mprisma.py [config.json] [--init] [--debug]\033[0m
 
       config.json   Caminho para o arquivo JSON de configuração do job.
                     Obrigatório para executar um backup. Se o arquivo não
@@ -89,7 +89,7 @@ HELP_TEXT = textwrap.dedent("""
       --init        Cria um arquivo JSON modelo (config_modelo.json) com
                     todos os campos preenchidos com valores de exemplo.
                     Combine com um nome personalizado:
-                      $ python3 filesbkp.py clientes/novo.json --init
+                      $ python3 prisma.py clientes/novo.json --init
                     → cria clientes/novo.json com chmod 600.
                     Aborta se o arquivo já existir (nunca sobrescreve).
 
@@ -102,17 +102,17 @@ HELP_TEXT = textwrap.dedent("""
     \033[1mEXEMPLOS RÁPIDOS\033[0m
     ─────────────────────────────────────────────────────────────────
       # Criar modelo de configuração
-      $ python3 filesbkp.py --init
-      $ python3 filesbkp.py clientes/empresa_xyz.json --init
+      $ python3 prisma.py --init
+      $ python3 prisma.py clientes/empresa_xyz.json --init
 
       # Executar backup (modo normal)
-      $ python3 filesbkp.py clientes/empresa_xyz.json
+      $ python3 prisma.py clientes/empresa_xyz.json
 
       # Executar com saída de diagnóstico detalhada
-      $ python3 filesbkp.py clientes/empresa_xyz.json --debug
+      $ python3 prisma.py clientes/empresa_xyz.json --debug
 
       # Agendar via cron (diariamente às 02:00)
-      0 2 * * * /usr/bin/python3 /opt/scripts/filesbkp.py /etc/backup/empresa_xyz.json
+      0 2 * * * /usr/bin/python3 /opt/scripts/prisma.py /etc/backup/empresa_xyz.json
 
     ════════════════════════════════════════════════════════════════════
     \033[1mREFERÊNCIA COMPLETA DO ARQUIVO JSON DE CONFIGURAÇÃO\033[0m

@@ -1,18 +1,18 @@
-# 🔄 filesbkp + sendonefiles — Sincronização Local → OneDrive
+# 🔄 Prisma + Zenite — Sincronização Local → OneDrive
 
-Script de integração entre o **filesbkp** e o **sendonefiles** para sincronizar automaticamente backups fatiados (`.part_*`) com o OneDrive após a conclusão do split.
+Script de integração entre o **Prisma** e o **Zenite** para sincronizar automaticamente backups fatiados (`.part_*`) com o OneDrive após a conclusão do split.
 
 ---
 
 ## 📋 Visão Geral
 
-Após o **filesbkp** concluir o processo de split de um backup, o hook `after_split` dispara o script `post_split.sh`, que:
+Após o **Prisma** concluir o processo de split de um backup, o hook `after_split` dispara o script `post_split.sh`, que:
 
 1. Gera um arquivo `reconstruir.txt` com o comando necessário para reconstruir o backup localmente.
-2. Inicia em background (via `screen`) a sincronização do diretório fatiado com o OneDrive usando o **sendonefiles**.
+2. Inicia em background (via `screen`) a sincronização do diretório fatiado com o OneDrive usando o **Zenite**.
 
 ```
-filesbkp (split) ──► post_split.sh ──► sendonefiles (OneDrive sync)
+Prisma (split) ──► post_split.sh ──► Zenite (OneDrive sync)
                           │
                           └──► reconstruir.txt (instruções de rebuild)
 ```
@@ -42,7 +42,7 @@ cat > /root/.services/scheduled/post_split.sh << 'EOF'
 echo 'screen -d -m -S rebuilding_backup bash -c "cat *.part_* | pv -L 50M | ionice -c 3 nice -n 19 tar -I zstd -xvf - > happy.log 2>&1"' \
     > /mnt/Local/Container/A/Backup/172_30_100_22/hsugisawa/Full/splitted/reconstruir.txt
 
-screen -d -m -S backup_hsugisawa_cloud /usr/bin/python3 /root/.services/scheduled/sendonefiles.py \
+screen -d -m -S backup_hsugisawa_cloud /usr/bin/python3 /root/.services/scheduled/Zenite.py \
     --sync /mnt/Local/Container/A/Backup/172_30_100_22/hsugisawa/Full/splitted \
     "Backup/HS-STG-02/Full/hsugisawa/splitted" \
     --mirror --speed 8mb --yes
@@ -51,9 +51,9 @@ EOF
 chmod 700 /root/.services/scheduled/post_split.sh
 ```
 
-### 2. Configurar o hook no filesbkp
+### 2. Configurar o hook no Prisma
 
-No arquivo de configuração do **filesbkp**, adicione o campo `after_split` apontando para o script:
+No arquivo de configuração do **Prisma**, adicione o campo `after_split` apontando para o script:
 
 ```json
 "after_split": "/root/.services/scheduled/post_split.sh"
@@ -77,8 +77,8 @@ cat *.part_* | pv -L 50M | ionice -c 3 nice -n 19 tar -I zstd -xvf - > happy.log
 
 | Ferramenta | Função |
 |---|---|
-| [`filesbkp`](https://github.com/) | Geração e split de backups |
-| [`sendonefiles`](https://github.com/) | Sincronização com OneDrive |
+| [`Prisma`](https://github.com/) | Geração e split de backups |
+| [`Zenite`](https://github.com/) | Sincronização com OneDrive |
 | `screen` | Execução em background desanexada |
 | `pv` | Monitoramento de progresso no pipe |
 | `zstd` | Compressão/descompressão do tar |
