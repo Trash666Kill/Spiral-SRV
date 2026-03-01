@@ -2,18 +2,18 @@
 """
 OneDrive CLI via Microsoft Graph API
 Uso:
-  python getonefiles.py --list
-  python getonefiles.py --list "Documentos/HS-STG-02"
-  python getonefiles.py --upload /caminho/local/arquivo.txt "Documentos/HS-STG-02/arquivo.txt"
-  python getonefiles.py --upload /caminho/local/arquivo.txt "Documentos/HS-STG-02/"
-  python getonefiles.py --download "Documentos/HS-STG-02/Full/arquivo.tar" /mnt/Local/destino/
-  python getonefiles.py --download "Documentos/HS-STG-02/Full" /mnt/Local/destino/
-  python getonefiles.py --delete "Documentos/HS-STG-02/Full/arquivo.txt"
-  python getonefiles.py --delete "Documentos/HS-STG-02/Full"
-  python getonefiles.py --delete-contents "Documentos/HS-STG-02/Full"
-  python getonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02"
-  python getonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02" --mirror
-  python getonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02" --log-dir /tmp/logs
+  python sendonefiles.py --list
+  python sendonefiles.py --list "Documentos/HS-STG-02"
+  python sendonefiles.py --upload /caminho/local/arquivo.txt "Documentos/HS-STG-02/arquivo.txt"
+  python sendonefiles.py --upload /caminho/local/arquivo.txt "Documentos/HS-STG-02/"
+  python sendonefiles.py --download "Documentos/HS-STG-02/Full/arquivo.tar" /mnt/Local/destino/
+  python sendonefiles.py --download "Documentos/HS-STG-02/Full" /mnt/Local/destino/
+  python sendonefiles.py --delete "Documentos/HS-STG-02/Full/arquivo.txt"
+  python sendonefiles.py --delete "Documentos/HS-STG-02/Full"
+  python sendonefiles.py --delete-contents "Documentos/HS-STG-02/Full"
+  python sendonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02"
+  python sendonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02" --mirror
+  python sendonefiles.py --sync /mnt/Local/Backup "Documentos/HS-STG-02" --log-dir /tmp/logs
 """
 
 import os
@@ -41,7 +41,7 @@ CLIENT_ID       = os.getenv("CLIENT_ID")
 CLIENT_SECRET   = os.getenv("CLIENT_SECRET")
 TENANT_ID       = os.getenv("TENANT_ID")
 USER_ID         = os.getenv("USER_ID")
-DEFAULT_LOG_DIR = os.getenv("LOG_DIR", "/var/log/getonefiles")
+DEFAULT_LOG_DIR = os.getenv("LOG_DIR", "/var/log/sendonefiles")
 
 # Limite de velocidade em MB/s (0 = sem limite)
 # Pode ser definido no .env como SPEED_LIMIT=5mb ou SPEED_LIMIT=5
@@ -58,7 +58,7 @@ CHUNK_SIZE_MIN  = 320 * 1024          # 320 KB: multiplo minimo exigido pelo Gra
 FILE_MAX_RETRIES = 5                   # tentativas de reenvio completo do arquivo em caso de erro 5xx
 
 # Logger global (configurado em setup_logging)
-log = logging.getLogger("getonefiles")
+log = logging.getLogger("sendonefiles")
 
 # Limite de velocidade ativo na execucao (MB/s); 0 = sem limite
 _speed_limit_mbs: float = 0.0
@@ -198,7 +198,7 @@ _session: requests.Session = None
 def setup_logging(log_dir: str):
     """
     Configura o logger para gravar simultaneamente no terminal e em arquivo.
-    Nome do arquivo: getonefiles_YYYY-MM-DD_HH-MM-SS.log
+    Nome do arquivo: sendonefiles_YYYY-MM-DD_HH-MM-SS.log
     """
     try:
         os.makedirs(log_dir, exist_ok=True)
@@ -207,7 +207,7 @@ def setup_logging(log_dir: str):
         sys.exit(1)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_file  = os.path.join(log_dir, f"getonefiles_{timestamp}.log")
+    log_file  = os.path.join(log_dir, f"sendonefiles_{timestamp}.log")
 
     log.setLevel(logging.DEBUG)
 
@@ -1123,8 +1123,8 @@ def gerar_env():
         "# Configuracoes opcionais",
         "# -------------------------------------------------------",
         "",
-        "# Diretorio onde os arquivos de log serao salvos (padrao: /var/log/getonefiles)",
-        "# LOG_DIR=/var/log/getonefiles",
+        "# Diretorio onde os arquivos de log serao salvos (padrao: /var/log/sendonefiles)",
+        "# LOG_DIR=/var/log/sendonefiles",
         "",
         "# Limite de velocidade de upload/download em MB/s (0 = sem limite)",
         "# SPEED_LIMIT=5",
@@ -1158,7 +1158,7 @@ def main():
         "Fase 1: Criacao do Aplicativo (App Registration)",
         "  1. Acesse https://entra.microsoft.com com uma conta de administrador global.",
         "  2. No menu lateral, va em Registros de aplicativo > Novo registro.",
-        "  3. Em Nome, defina como getonefiles (ou o nome do seu projeto).",
+        "  3. Em Nome, defina como sendonefiles (ou o nome do seu projeto).",
         "  4. Em Tipos de conta com suporte, selecione Somente locatario unico (Single tenant).",
         "  5. Ignore a configuracao de URI de redirecionamento e clique em Registrar.",
         "",
@@ -1186,7 +1186,7 @@ def main():
         "       - ID do diretorio (locatario) ->  TENANT_ID",
         "",
         "Use o comando abaixo para gerar o arquivo .env pre-configurado:",
-        "  python3 getonefiles.py --init",
+        "  python3 sendonefiles.py --init",
         sep,
     ])
 
