@@ -257,6 +257,76 @@ def log_secao(titulo: str):
 
 _token_cache = {"access_token": None, "expires_at": 0}
 
+# Traducao dos codigos de erro AAD mais comuns para mensagens humanas.
+# Referencia: https://login.microsoftonline.com/error
+_AAD_ERROS = {
+    90002: (
+        "TENANT_ID nao encontrado ou invalido.\n"
+        "  -> Verifique o valor de TENANT_ID no .env.\n"
+        "  -> Confirme o 'ID do diretorio (locatario)' em:\n"
+        "     Azure > App registrations > seu app > Overview."
+    ),
+    700016: (
+        "CLIENT_ID nao encontrado no tenant.\n"
+        "  -> Verifique o valor de CLIENT_ID no .env.\n"
+        "  -> Confirme o 'ID do aplicativo (cliente)' em:\n"
+        "     Azure > App registrations > seu app > Overview."
+    ),
+    7000215: (
+        "CLIENT_SECRET invalido ou expirado.\n"
+        "  -> Verifique o valor de CLIENT_SECRET no .env.\n"
+        "  -> Se expirou, gere um novo em:\n"
+        "     Azure > App registrations > seu app > Certificates & secrets."
+    ),
+    7000222: (
+        "CLIENT_SECRET expirado.\n"
+        "  -> Gere um novo segredo em:\n"
+        "     Azure > App registrations > seu app > Certificates & secrets.\n"
+        "  -> Atualize CLIENT_SECRET no .env com o novo valor."
+    ),
+    65001: (
+        "Consentimento do administrador nao concedido para as permissoes do app.\n"
+        "  -> Acesse Azure > App registrations > seu app > API permissions\n"
+        "  -> Clique em 'Grant admin consent for [sua organizacao]'."
+    ),
+    90014: (
+        "Campo obrigatorio ausente na requisicao de token.\n"
+        "  -> Verifique se CLIENT_ID, CLIENT_SECRET e TENANT_ID estao preenchidos no .env."
+    ),
+}
+
+
+def _tratar_erro_token(resp: requests.Response):
+    """Exibe mensagem de erro legivel para falhas de autenticacao AAD."""
+    try:
+        corpo      = resp.json()
+        descricao  = corpo.get("error_description", "")
+        codigos    = corpo.get("error_codes", [])
+        trace_id   = corpo.get("trace_id", "")
+
+        # Procura o primeiro codigo conhecido na lista de codigos retornados
+        mensagem_humana = None
+        for codigo in codigos:
+            if codigo in _AAD_ERROS:
+                mensagem_humana = _AAD_ERROS[codigo]
+                break
+
+        if mensagem_humana:
+            log_erro(f"Falha de autenticacao no Azure AD:\n  {mensagem_humana}")
+            if trace_id:
+                log.debug(f"Trace ID para suporte Microsoft: {trace_id}")
+        else:
+            # Codigo desconhecido: exibe descricao bruta do AAD (mais legivel que o JSON completo)
+            log_erro(
+                f"Falha de autenticacao no Azure AD (HTTP {resp.status_code}).\n"
+                f"  Descricao: {descricao or resp.text}"
+            )
+            if trace_id:
+                log.debug(f"Trace ID para suporte Microsoft: {trace_id}")
+    except Exception:
+        # Resposta nao e JSON (erro de rede, proxy, etc.)
+        log_erro(f"Falha ao obter token (HTTP {resp.status_code}): {resp.text}")
+
 
 def get_token() -> str:
     if _token_cache["access_token"] and time.time() < _token_cache["expires_at"] - 60:
@@ -271,7 +341,7 @@ def get_token() -> str:
 
     resp = _session.post(TOKEN_URL, data=payload)
     if resp.status_code != 200:
-        log_erro(f"Falha ao obter token: {resp.status_code} - {resp.text}")
+        _tratar_erro_token(resp)
         sys.exit(1)
 
     data = resp.json()
