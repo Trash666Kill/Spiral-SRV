@@ -5,11 +5,9 @@ import os
 import sys
 import json
 import math
-import shlex
 import shutil
 import stat
 import signal
-import fcntl
 import logging
 import subprocess
 import argparse
@@ -17,384 +15,400 @@ import tempfile
 import textwrap
 from datetime import datetime
 
-# ---------------------------------------------------------------------------
-# Detailed Help Text
-# ---------------------------------------------------------------------------
+# --- Texto de Ajuda Detalhado ---
 HELP_TEXT = textwrap.dedent("""
     ════════════════════════════════════════════════════════════════════
-    \033[1mprisma.py  —  Corporate Backup Manager (CIFS → Local)\033[0m
+    \033[1mprisma.py  —  Gerenciador de Backup Corporativo (CIFS → Local)\033[0m
     ════════════════════════════════════════════════════════════════════
 
-    \033[1mOVERVIEW\033[0m
+    \033[1mVISÃO GERAL\033[0m
     ─────────────────────────────────────────────────────────────────
-    Backs up Windows/CIFS network shares to local disk using a
-    three-layer strategy:
+    Faz backup de compartilhamentos de rede Windows/CIFS para disco
+    local usando a seguinte estratégia em três camadas:
 
-      1. \033[1mContinuous Incremental\033[0m — rsync maintains an up-to-date mirror
-         of remote files in the Incremental folder. Modified or deleted
-         files are automatically moved to the Differential folder
-         (rsync --backup / --backup-dir mechanism), preserving change
-         history without duplicating unchanged data.
+      1. \033[1mIncremental contínuo\033[0m  — rsync mantém um espelho atualizado dos
+         arquivos remotos na pasta Incremental. Arquivos modificados ou
+         excluídos são movidos automaticamente para a pasta Differential
+         (mecanismo --backup / --backup-dir do rsync), preservando
+         histórico de alterações sem duplicar dados inalterados.
 
-      2. \033[1mDifferential\033[0m           — each rsync run deposits here the files
-         that were replaced or deleted at the source, timestamped by
-         rsync. They serve as recovery points for previous versions.
+      2. \033[1mDifferential\033[0m          — cada execução do rsync deposita aqui os
+         arquivos que foram substituídos ou apagados na origem, datados
+         pelo rsync. Funcionam como ponto de recuperação de versões
+         anteriores.
 
-      3. \033[1mFull (snapshot + .tar.zst)\033[0m — periodically (per retention policy),
-         the Incremental mirror is copied via Reflink (Copy-on-Write,
-         instant on BTRFS/XFS filesystems) and then compressed with
-         tar + zstd, producing a portable Full_YYYY-MM-DD_HH-MM-SS.tar.zst
-         file. If a Full already exists within the retention window,
-         this step is skipped without error.
+      3. \033[1mFull (snapshot + .tar.zst)\033[0m — periodicamente (conforme a política
+         de retenção), o espelho Incremental é copiado via Reflink
+         (Copy-on-Write, instantâneo em filesystems como BTRFS/XFS) e
+         depois comprimido com tar + zstd, gerando um arquivo portátil
+         Full_AAAA-MM-DD_HH-MM-SS.tar.zst. Se já existir um Full
+         dentro do prazo de retenção, a etapa é pulada sem erro.
 
-    \033[1mGENERATED DIRECTORY STRUCTURE\033[0m
+    \033[1mESTRUTURA DE DIRETÓRIOS GERADA\033[0m
     ─────────────────────────────────────────────────────────────────
-    The structure is derived automatically from "remote_share".
-    Dots (.) are replaced by underscores (_).
+    A estrutura é derivada automaticamente de "remote_share".
+    Pontos (.) são substituídos por (_).
 
-    Example  →  remote_share = "//192.168.0.100/Data/Share"
+    Exemplo  →  remote_share = "//192.168.0.100/Dados/Share"
                 backup_root  = "/mnt/Backup"
 
     /mnt/Backup/
     └── 192_168_0_100/
-        └── Data/
+        └── Dados/
             └── Share/
-                ├── Incremental/   ← rsync mirror (source for recovery)
-                ├── Differential/  ← changed / deleted files
+                ├── Incremental/   ← espelho rsync (fonte para recuperação)
+                ├── Differential/  ← arquivos alterados / deletados
                 └── Full/
-                    ├── Full/                         ← snapshot (reflink)
+                    ├── Full/                        ← snapshot (reflink)
                     ├── Full_2025-07-01_02-00-00.tar.zst
-                    └── splitted/                     ← parts (if split enabled)
+                    └── splitted/                    ← fragmentos (se split habilitado)
                         ├── Full_2025-07-01_02-00-00.tar.zst.part_001
                         └── Full_2025-07-01_02-00-00.tar.zst.part_002
 
-    \033[1mEXECUTION FLOW\033[0m
+    \033[1mFLUXO DE EXECUÇÃO\033[0m
     ─────────────────────────────────────────────────────────────────
-    check_pre_flight()       → checks dependencies, disk space,
-                               config file permissions, and acquires
-                               an exclusive lock to prevent concurrent runs
-    mount_share()            → mounts the CIFS share
-    run_rsync()              → syncs source → Incremental
-                               (replaced files go to Differential)
-    cleanup_differential()   → removes expired Differential files
-    run_full_backup()        → creates Full .tar.zst if needed
-    cleanup_logs()           → keeps only the N most recent logs
-    cleanup()                → unmounts the share and releases the lock
+    check_pre_flight()       → verifica dependências, espaço em disco
+                               e permissões do arquivo JSON
+    mount_share()            → monta o compartilhamento CIFS
+    run_rsync()              → sincroniza origem → Incremental
+                               (arquivos substituídos vão para Differential)
+    cleanup_differential()   → remove arquivos Differential expirados
+    run_full_backup()        → cria Full .tar.zst se necessário
+    cleanup_logs()           → mantém apenas os N logs mais recentes
+    cleanup()                → desmonta o compartilhamento
 
-    \033[1mCOMMAND-LINE ARGUMENTS\033[0m
+    \033[1mARGUMENTOS DA LINHA DE COMANDO\033[0m
     ─────────────────────────────────────────────────────────────────
     \033[1mprisma.py [config.json] [--init] [--debug]\033[0m
 
-      config.json   Path to the JSON configuration file for the job.
-                    Required to run a backup. If the file does not exist,
-                    a default template is created automatically with
-                    chmod 600 and the script exits (edit and re-run).
+      config.json   Caminho para o arquivo JSON de configuração do job.
+                    Obrigatório para executar um backup. Se o arquivo não
+                    existir, um modelo padrão é criado automaticamente com
+                    chmod 600 e o script encerra (edite e re-execute).
 
-      --init        Creates a template JSON file (config_template.json)
-                    with all fields filled with example values.
-                    Combine with a custom name:
-                      $ python3 prisma.py clients/new.json --init
-                    → creates clients/new.json with chmod 600.
-                    Aborts if the file already exists (never overwrites).
+      --init        Cria um arquivo JSON modelo (config_modelo.json) com
+                    todos os campos preenchidos com valores de exemplo.
+                    Combine com um nome personalizado:
+                      $ python3 prisma.py clientes/novo.json --init
+                    → cria clientes/novo.json com chmod 600.
+                    Aborta se o arquivo já existir (nunca sobrescreve).
 
-      --debug       Prints each external command executed to the log
+      --debug       Imprime no log cada comando externo executado
                     (rsync, mount, tar, zstd, ionice, nice, pv, split…)
-                    before running it. Useful for diagnosing failures.
-                    Mount credentials are automatically redacted
-                    (username=***, password=***) even in debug mode.
+                    antes de rodá-lo. Útil para diagnosticar falhas.
+                    Credenciais de mount são automaticamente ocultadas
+                    (username=***, password=***) mesmo em modo debug.
 
-    \033[1mQUICK EXAMPLES\033[0m
+    \033[1mEXEMPLOS RÁPIDOS\033[0m
     ─────────────────────────────────────────────────────────────────
-      # Create a configuration template
+      # Criar modelo de configuração
       $ python3 prisma.py --init
-      $ python3 prisma.py clients/company_xyz.json --init
+      $ python3 prisma.py clientes/empresa_xyz.json --init
 
-      # Run backup (normal mode)
-      $ python3 prisma.py clients/company_xyz.json
+      # Executar backup (modo normal)
+      $ python3 prisma.py clientes/empresa_xyz.json
 
-      # Run with detailed diagnostic output
-      $ python3 prisma.py clients/company_xyz.json --debug
+      # Executar com saída de diagnóstico detalhada
+      $ python3 prisma.py clientes/empresa_xyz.json --debug
 
-      # Schedule via cron (daily at 02:00)
-      0 2 * * * /usr/bin/python3 /opt/scripts/prisma.py /etc/backup/company_xyz.json
+      # Agendar via cron (diariamente às 02:00)
+      0 2 * * * /usr/bin/python3 /opt/scripts/prisma.py /etc/backup/empresa_xyz.json
 
     ════════════════════════════════════════════════════════════════════
-    \033[1mFULL JSON CONFIGURATION FILE REFERENCE\033[0m
+    \033[1mREFERÊNCIA COMPLETA DO ARQUIVO JSON DE CONFIGURAÇÃO\033[0m
     ════════════════════════════════════════════════════════════════════
 
-    \033[1m┌─ SECTION: "credentials"\033[0m
-    │  Credentials used by mount.cifs to authenticate on the server.
-    │  The JSON file must have permission 600 (the script warns if not).
+    \033[1m┌─ SEÇÃO: "credentials"\033[0m
+    │  Credenciais usadas pelo mount.cifs para autenticar no servidor.
+    │  O arquivo JSON deve ter permissão 600 (o script avisa se não tiver).
     │
-    │  "username"  : string  — login for the account with share access.
-    │                          Can be a local or domain account.
-    │                          Example: "username": "svc_backup"
+    │  "username"  : string  — login da conta com acesso ao compartilhamento.
+    │                          Pode ser conta local ou de domínio.
+    │                          Exemplo: "username": "svc_backup"
     │
-    │  "password"  : string  — account password.
-    │                          Example: "password": "Str0ngP@ss!"
+    │  "password"  : string  — senha da conta.
+    │                          Exemplo: "password": "S3nh@Fort3!"
     │
-    │  "domain"    : string  — Active Directory domain (optional).
-    │                          If omitted or empty, mount uses local
-    │                          workgroup authentication.
-    │                          Example: "domain": "CORP"
-    │                          No domain: "domain": ""
+    │  "domain"    : string  — domínio Active Directory (opcional).
+    │                          Se omitido ou vazio, o mount usa autenticação
+    │                          de workgroup local.
+    │                          Exemplo: "domain": "CORP"
+    │                          Sem domínio: "domain": ""
     └──────────────────────────────────────────────────────────────────
 
-    \033[1m┌─ SECTION: "paths"\033[0m
+    \033[1m┌─ SEÇÃO: "paths"\033[0m
     │
-    │  "remote_share"  : string — UNC path of the CIFS share to be
-    │                             mounted and copied.
-    │                             Format: "//IP_or_HOSTNAME/Share/Subfolder"
-    │                             The path (without leading slashes) is used
-    │                             to derive the local folder structure.
-    │                             Dots are replaced by underscores.
-    │                             Example: "//192.168.10.5/Sales"
-    │                             → local folder: 192_168_10_5/Sales/
+    │  "remote_share"  : string — Caminho UNC do compartilhamento CIFS a ser
+    │                             montado e copiado.
+    │                             Formato: "//IP_ou_HOSTNAME/Share/Subpasta"
+    │                             O caminho (sem as barras iniciais) é usado
+    │                             para derivar a estrutura de pastas local.
+    │                             Pontos são trocados por underscores.
+    │                             Exemplo: "//192.168.10.5/Vendas"
+    │                             → pasta local: 192_168_10_5/Vendas/
     │
-    │  "mount_point"   : string — Local directory where the share will be
-    │                             temporarily mounted during the job.
-    │                             Must exist or be creatable. The script does
-    │                             NOT create this directory; create it manually.
-    │                             Example: "/mnt/Remote/Sales"
+    │  "mount_point"   : string — Diretório local onde o compartilhamento
+    │                             será montado temporariamente durante o job.
+    │                             Deve existir ou ser criável. O script NÃO
+    │                             cria este diretório; crie manualmente.
+    │                             Exemplo: "/mnt/Remote/Vendas"
     │
-    │  "backup_root"   : string — Root where the entire backup structure will
-    │                             be stored. The script creates the necessary
-    │                             subdirectories automatically.
-    │                             Example: "/mnt/Backup"
-    │                             → data in: /mnt/Backup/192_168_10_5/Sales/
+    │  "backup_root"   : string — Raiz onde toda a estrutura de backup será
+    │                             armazenada. O script cria as subpastas
+    │                             necessárias automaticamente.
+    │                             Exemplo: "/mnt/Backup"
+    │                             → dados em: /mnt/Backup/192_168_10_5/Vendas/
     │
-    │  "log_dir"       : string — Directory where daily log files will be
-    │                             written. The log name includes the job
-    │                             identifier and timestamp:
-    │                             backup_<safe_name>_YYYY-MM-DD_HH-MM-SS.log
-    │                             Example: "/var/log/prisma"
+    │  "log_dir"       : string — Diretório onde os arquivos de log diários
+    │                             serão gravados. O nome do log inclui o
+    │                             identificador do job e o timestamp:
+    │                             backup_<safe_name>_AAAA-MM-DD_HH-MM-SS.log
+    │                             Exemplo: "/var/log/rsync"
     └──────────────────────────────────────────────────────────────────
 
-    \033[1m┌─ SECTION: "settings"\033[0m
+    \033[1m┌─ SEÇÃO: "settings"\033[0m
     │
-    │  "mount_options"       : string — Extra options passed to mount.cifs
-    │                                   via -o flag, BEFORE credentials.
-    │                                   Credentials (username/password/domain)
-    │                                   are added automatically.
-    │                                   Recommended value: "ro" (read-only)
-    │                                   to prevent accidental changes to the
-    │                                   source during backup.
-    │                                   For read/write: "rw"
-    │                                   With explicit SMB version: "ro,vers=2.1"
-    │                                   Example: "mount_options": "ro,vers=3.0"
+    │  "mount_options"       : string — Opções extras passadas ao mount.cifs
+    │                                   via flag -o, ANTES das credenciais.
+    │                                   As credenciais (username/password/domain)
+    │                                   são adicionadas automaticamente.
+    │                                   Valor recomendado: "ro" (somente leitura)
+    │                                   para evitar alterações acidentais na
+    │                                   origem durante o backup.
+    │                                   Para leitura/escrita: "rw"
+    │                                   Com versão SMB explícita: "ro,vers=2.1"
+    │                                   Exemplo: "mount_options": "ro,vers=3.0"
     │
-    │  "min_space_mb"        : integer — Minimum free space required on the
-    │                                   backup_root volume before starting.
-    │                                   If free space is lower, the script
-    │                                   aborts immediately with an error.
-    │                                   Value in megabytes.
-    │                                   Example: 1024  → requires at least 1 GB
-    │                                            51200 → requires at least 50 GB
+    │  "min_space_mb"        : inteiro — Espaço livre mínimo exigido no volume
+    │                                   do backup_root antes de iniciar o job.
+    │                                   Se o espaço livre for menor, o script
+    │                                   aborta imediatamente com erro.
+    │                                   Valor em megabytes.
+    │                                   Exemplo: 1024  → exige pelo menos 1 GB livre
+    │                                            51200 → exige pelo menos 50 GB livre
     │
-    │  "bandwidth_limit_mb"  : number  — Bandwidth limit for rsync,
-    │                                   in MEGABYTES per second.
-    │                                   Internally converted to KB/s and
-    │                                   passed to rsync via --bwlimit.
-    │                                   Use to avoid saturating the network link.
-    │                                   0 = no limit.
-    │                                   Example: 10   → limit to 10 MB/s
-    │                                            0.5  → limit to 512 KB/s
+    │  "bandwidth_limit_mb"  : número  — Limite de banda para o rsync,
+    │                                   em MEGABYTES por segundo.
+    │                                   Convertido internamente para KB/s e
+    │                                   passado ao rsync via --bwlimit.
+    │                                   Use para não saturar o link de rede.
+    │                                   0 = sem limite.
+    │                                   Exemplo: 10   → limita a 10 MB/s
+    │                                            0.5  → limita a 512 KB/s
     │
-    │  "transfer_rate_pv"    : string  — Maximum read rate applied by 'pv'
-    │                                   in the Full compression pipeline
-    │                                   (tar | pv | zstd).
-    │                                   Controls disk read speed during
-    │                                   compression to prevent the process
-    │                                   from consuming all server I/O.
-    │                                   Format accepted by pv: number + unit.
-    │                                   Examples: "10m" → 10 MB/s
+    │  "transfer_rate_pv"    : string  — Taxa máxima de leitura aplicada pela
+    │                                   ferramenta 'pv' no pipeline de compressão
+    │                                   do Full (tar | pv | zstd).
+    │                                   Controla a velocidade de leitura dos dados
+    │                                   do disco durante a compressão, evitando
+    │                                   que o processo consuma toda a I/O do servidor.
+    │                                   Formato aceito pelo pv: número + unidade.
+    │                                   Exemplos: "10m" → 10 MB/s
     │                                             "50m" → 50 MB/s
     │                                             "500k" → 500 KB/s
     │
-    │  "ionice_class"        : integer — I/O priority class assigned to the
-    │                                   compression process (tar + zstd)
-    │                                   via ionice(1). Reduces backup impact
-    │                                   on other disk-using processes.
-    │                                   Possible values:
-    │                                     1 = Real-time  (high priority, use
-    │                                         with caution — may stall system)
-    │                                     2 = Best-effort (kernel default)
-    │                                     3 = Idle       (only uses I/O when
-    │                                         nobody else needs it — recommended)
-    │                                   Example: "ionice_class": 3  ← recommended
+    │  "ionice_class"        : inteiro — Classe de prioridade de I/O atribuída
+    │                                   ao processo de compressão (tar + zstd)
+    │                                   via ionice(1). Reduz o impacto do backup
+    │                                   em outros processos que usam o disco.
+    │                                   Valores possíveis:
+    │                                     1 = Real-time  (alta prioridade, use
+    │                                         com cautela — pode travar o sistema)
+    │                                     2 = Best-effort (padrão do kernel)
+    │                                     3 = Idle       (só usa I/O quando ninguém
+    │                                         mais precisa — recomendado para backup)
+    │                                   Exemplo: "ionice_class": 3  ← recomendado
+    │                                   Equivale a executar:
+    │                                     ionice -c 3 tar -cvf - ...
     │
-    │  "nice_priority"       : integer — CPU priority (niceness) assigned to
-    │                                   the compression process via nice(1).
-    │                                   Values from -20 (highest CPU priority)
-    │                                   to 19 (lowest — "polite").
-    │                                   Use 19 so backup does not compete with
-    │                                   production applications for CPU.
-    │                                   Example: "nice_priority": 19  ← recommended
+    │  "nice_priority"       : inteiro — Prioridade de CPU (niceness) atribuída
+    │                                   ao processo de compressão via nice(1).
+    │                                   Valores de -20 (máxima prioridade de CPU)
+    │                                   a 19 (mínima prioridade — "educado").
+    │                                   Use 19 para que o backup não dispute
+    │                                   CPU com aplicações em produção.
+    │                                   Exemplo: "nice_priority": 19  ← recomendado
+    │                                   Equivale a executar:
+    │                                     nice -n 19 tar -cvf - ...
     │
-    │  NOTE: ionice_class and nice_priority affect ONLY the Full compression
-    │  step (tar | pv | zstd). rsync runs without priority adjustment
-    │  (use bandwidth_limit_mb to control its impact).
+    │  ATENÇÃO: ionice_class e nice_priority afetam SOMENTE a etapa de
+    │  compressão do Full (tar | pv | zstd). O rsync roda sem ajuste de
+    │  prioridade (use bandwidth_limit_mb para controlar seu impacto).
     │
-    │  "rsync_user"          : string  — OS user under which rsync will run
-    │                                   (via su -c). Useful when the user
-    │                                   running the script differs from the
-    │                                   user with access to the destination.
-    │                                   If equal to the current user, su is skipped.
-    │                                   Example: "rsync_user": "root"
+    │  "rsync_user"          : string  — Usuário do sistema operacional sob o
+    │                                   qual o rsync será executado (via su -c).
+    │                                   Útil quando o usuário que roda o script
+    │                                   é diferente do usuário com acesso ao
+    │                                   diretório de destino.
+    │                                   Se igual ao usuário atual, su não é usado.
+    │                                   Exemplo: "rsync_user": "root"
+    │                                            "rsync_user": "backup_svc"
     │
-    │  "rsync_flags"         : list    — Flags passed directly to rsync.
-    │                                   Replaces the default set entirely.
-    │                                   Flags already added by the script
-    │                                   (do not include here):
+    │  "rsync_flags"         : lista   — Flags passadas diretamente ao rsync.
+    │                                   Substitui o conjunto padrão inteiramente.
+    │                                   Flags obrigatórias já adicionadas pelo
+    │                                   script (não precisam estar aqui):
     │                                     --bwlimit, --backup, --backup-dir,
     │                                     --log-file, --exclude-from
-    │                                   Recommended default flags:
+    │                                   Flags padrão recomendadas:
     │                                     "-ahx"           → archive + human-readable
-    │                                                        + no filesystem crossing
-    │                                     "--acls"         → preserve ACLs
-    │                                     "--xattrs"       → preserve extended attributes
-    │                                     "--numeric-ids"  → do not map UID/GID by name
-    │                                     "--chmod=ugo+r"  → ensure file readability
-    │                                     "--ignore-errors"→ do not abort on read errors
-    │                                     "--force"        → force directory replacement
-    │                                     "--delete"       → remove at destination what
-    │                                                        was deleted at source
-    │                                     "--info=del,name,stats2" → detailed logging
+    │                                                        + não cruzar filesystems
+    │                                     "--acls"         → preserva ACLs
+    │                                     "--xattrs"       → preserva atributos estendidos
+    │                                     "--numeric-ids"  → não mapeia UID/GID por nome
+    │                                     "--chmod=ugo+r"  → garante leitura nos arquivos
+    │                                     "--ignore-errors"→ não aborta em erros de leitura
+    │                                     "--force"        → força substituição de dirs
+    │                                     "--delete"       → remove no destino o que foi
+    │                                                        excluído na origem
+    │                                     "--info=del,name,stats2" → log detalhado
     │
-    │  ┌─ SUBSECTION: "retention_policy"\033[0m
+    │  ┌─ SUBSEÇÃO: "retention_policy"\033[0m
     │  │
-    │  │  "keep_logs_count"              : integer — Maximum number of log files
-    │  │                                             to keep for this job.
-    │  │                                             Logs are sorted by modification
-    │  │                                             date; oldest beyond this limit
-    │  │                                             are deleted.
-    │  │                                             Example: 31  → keeps the 31 most
-    │  │                                             recent logs (≈ 1 daily month)
+    │  │  "keep_logs_count"              : inteiro — Quantidade máxima de arquivos
+    │  │                                             de log a manter para este job.
+    │  │                                             Os logs são ordenados por data de
+    │  │                                             modificação; os mais antigos além
+    │  │                                             deste limite são excluídos.
+    │  │                                             Exemplo: 31  → guarda os 31 logs
+    │  │                                             mais recentes (≈ 1 mês diário)
     │  │
-    │  │  "keep_full_backups_days"       : integer — How many days a Full .tar.zst
-    │  │                                             file is considered valid.
-    │  │                                             Full files older than this are
-    │  │                                             deleted. If no Full exists within
-    │  │                                             this window, a new one is created.
-    │  │                                             Example: 30 → keeps Fulls from
-    │  │                                             last 30 days; creates new Full
-    │  │                                             if most recent is > 30 days old.
+    │  │  "keep_full_backups_days"       : inteiro — Quantos dias um arquivo Full
+    │  │                                             .tar.zst é considerado válido.
+    │  │                                             Arquivos Full mais antigos que
+    │  │                                             este valor são excluídos.
+    │  │                                             Se não existir nenhum Full dentro
+    │  │                                             deste prazo, um novo é gerado.
+    │  │                                             Exemplo: 30 → mantém Fulls dos
+    │  │                                             últimos 30 dias; gera novo Full
+    │  │                                             se o mais recente tiver > 30 dias.
     │  │
-    │  │  "keep_differential_files_days" : integer — Maximum retention for files in
-    │  │                                             the Differential folder.
-    │  │                                             Files with mtime older than this
-    │  │                                             value (in days) are deleted.
-    │  │                                             Example: 240 → keeps version
-    │  │                                             history for 8 months.
+    │  │  "keep_differential_files_days" : inteiro — Tempo máximo de retenção dos
+    │  │                                             arquivos na pasta Differential.
+    │  │                                             Arquivos com mtime maior que este
+    │  │                                             valor (em dias) são apagados.
+    │  │                                             Exemplo: 240 → mantém histórico
+    │  │                                             de versões anteriores por 8 meses.
     │  │
-    │  │  "cleanup_empty_dirs"           : bool    — If true, empty subdirectories
-    │  │                                             remaining in Differential after
-    │  │                                             expired file cleanup are
-    │  │                                             automatically removed.
-    │  │                                             Recommended: true
+    │  │  "cleanup_empty_dirs"           : bool    — Se true, subdiretórios vazios
+    │  │                                             que ficaram em Differential após
+    │  │                                             a limpeza de arquivos expirados
+    │  │                                             são removidos automaticamente.
+    │  │                                             Recomendado: true
     │  └──────────────────────────────────────────────────────────────
 
-    │  ┌─ SUBSECTION: "split"\033[0m
-    │  │  Splits the Full .tar.zst into smaller parts after compression.
-    │  │  Useful for storage on media with file size limits
-    │  │  (FAT32: 4 GB, some cloud backups, tapes, etc.).
+    │  ┌─ SUBSEÇÃO: "split"\033[0m
+    │  │  Divide o arquivo Full .tar.zst em partes menores após a compressão.
+    │  │  Útil para armazenamento em mídias com limite de tamanho de arquivo
+    │  │  (FAT32: 4 GB, alguns backups em nuvem, fitas, etc.).
     │  │
-    │  │  "enabled"                  : bool   — Enables or disables split.
-    │  │                                        false → .tar.zst is not split.
-    │  │                                        true  → splits immediately after
-    │  │                                        successful compression.
+    │  │  "enabled"                  : bool   — Ativa ou desativa o split.
+    │  │                                        false → o .tar.zst não é fragmentado.
+    │  │                                        true  → fragmenta imediatamente após
+    │  │                                        a compressão bem-sucedida.
+    │  │                                        Exemplo: "enabled": false
     │  │
-    │  │  "chunk_size"               : string — Maximum size of each part.
-    │  │                                        Accepted units (case-insensitive):
+    │  │  "chunk_size"               : string — Tamanho máximo de cada fragmento.
+    │  │                                        Unidades aceitas (case-insensitive):
     │  │                                          "mb" → megabytes
     │  │                                          "gb" → gigabytes
     │  │                                          "tb" → terabytes
-    │  │                                        Examples:
-    │  │                                          "4gb"   → parts up to 4 GB
-    │  │                                          "500mb" → parts up to 500 MB
-    │  │                                        Parts are named:
+    │  │                                        Exemplos:
+    │  │                                          "4gb"   → fragmentos de até 4 GB
+    │  │                                          "500mb" → fragmentos de até 500 MB
+    │  │                                          "1tb"   → fragmentos de até 1 TB
+    │  │                                        Os fragmentos são nomeados:
     │  │                                          Full_<timestamp>.tar.zst.part_001
     │  │                                          Full_<timestamp>.tar.zst.part_002
     │  │                                          …
-    │  │                                        Suffix digit count is calculated
-    │  │                                        automatically (minimum 3).
-    │  │                                        Split has up to 3 retries with
-    │  │                                        integrity validation (sum of part
-    │  │                                        sizes must equal the original).
+    │  │                                        O número de dígitos no sufixo é
+    │  │                                        calculado automaticamente (mínimo 3).
+    │  │                                        O split tem até 3 tentativas com
+    │  │                                        validação de integridade (soma dos
+    │  │                                        fragmentos deve igualar o original).
     │  │
-    │  │  "keep_original_after_split" : bool   — Whether to keep or remove the
-    │  │                                         original .tar.zst after successful
-    │  │                                         part creation.
-    │  │                                         true  → keeps the .tar.zst intact
-    │  │                                                  (more disk space, but allows
-    │  │                                                  direct restore without joining
-    │  │                                                  parts).
-    │  │                                         false → removes .tar.zst after split
-    │  │                                                  (saves disk space).
+    │  │  "keep_original_after_split" : bool   — Define se o .tar.zst original é
+    │  │                                         mantido ou removido após a criação
+    │  │                                         bem-sucedida dos fragmentos.
+    │  │                                         true  → mantém o .tar.zst intacto
+    │  │                                                  (ocupa mais espaço, mas
+    │  │                                                  permite restaurar diretamente
+    │  │                                                  sem concatenar fragmentos).
+    │  │                                         false → remove o .tar.zst após o
+    │  │                                                  split (economiza espaço).
+    │  │                                         Exemplo: "keep_original_after_split": true
     │  └──────────────────────────────────────────────────────────────
 
-    \033[1m┌─ SECTION: "excludes"\033[0m
-    │  List of file/directory patterns to be ignored by rsync.
-    │  Uses rsync pattern syntax (--exclude-from).
-    │  Useful to skip temp files, caches and Windows junk.
+    \033[1m┌─ SEÇÃO: "excludes"\033[0m
+    │  Lista de padrões de arquivos/diretórios que devem ser ignorados pelo
+    │  rsync. Usa a sintaxe de padrões do rsync (--exclude-from).
+    │  Útil para evitar arquivos temporários, caches e lixo do Windows.
     │
-    │  Common pattern examples:
-    │    "*.tmp"          → any temporary file
-    │    "Thumbs.db"      → Windows Explorer thumbnail cache
-    │    "desktop.ini"    → Windows folder configuration file
-    │    "~$*"            → open/locked Office files
-    │    "*.log"          → remote application log files
-    │    ".Trash*"        → system trash
-    │    "pagefile.sys"   → Windows virtual memory (huge, useless in backup)
-    │    "hiberfil.sys"   → Windows hibernation file
+    │  Exemplos de padrões comuns:
+    │    "*.tmp"          → arquivos temporários de qualquer nome
+    │    "Thumbs.db"      → cache de miniaturas do Windows Explorer
+    │    "desktop.ini"    → arquivo de configuração de pasta do Windows
+    │    "~$*"            → arquivos abertos/travados do Office
+    │    "*.log"          → arquivos de log da aplicação remota
+    │    ".Trash*"        → lixeira do sistema
+    │    "pagefile.sys"   → memória virtual do Windows (enorme, inútil no backup)
+    │    "hiberfil.sys"   → arquivo de hibernação do Windows
     │
-    │  Full example:
+    │  Exemplo completo:
     │    "excludes": ["*.tmp", "Thumbs.db", "desktop.ini", "~$*", "*.log"]
     └──────────────────────────────────────────────────────────────────
 
-    \033[1m┌─ SECTION: "hooks"\033[0m
-    │  Optional shell commands executed automatically at the end of
-    │  specific job steps. Each field accepts any valid bash command
-    │  (including pipes, redirections and environment variables).
-    │  Missing or empty-string fields are ignored.
+    \033[1m┌─ SEÇÃO: "hooks"\033[0m
+    │  Comandos shell opcionais executados automaticamente ao término de
+    │  etapas específicas do job. Cada campo aceita qualquer comando
+    │  válido em bash (incluindo pipes, redirecionamentos e variáveis
+    │  de ambiente). Campos ausentes ou com string vazia são ignorados.
     │
-    │  Hooks are dispatched via "bash -c '<command>'" and their output
-    │  is captured and logged (stdout + stderr). The job logs the hook's
-    │  exit code and continues regardless of the result.
+    │  Os hooks são disparados via "bash -c '<comando>'" de forma
+    │  assíncrona (fire-and-forget): o script não aguarda conclusão,
+    │  não verifica o código de retorno e não trata erros. O job
+    │  prossegue normalmente independente do resultado do hook.
     │
-    │  "after_rsync"  : string — Executed after rsync (incremental)
-    │                            completes, with success or warning (code 23).
-    │                            Example: "after_rsync": "echo rsync done >> /var/log/hooks.log"
+    │  "after_rsync"  : string — Executado após o rsync (incremental)
+    │                            concluir, com sucesso ou aviso (code 23).
+    │                            Exemplo: "after_rsync": "touch ~/rsync_done.sh"
     │
-    │  "after_full"   : string — Executed after run_full_backup() completes,
-    │                            regardless of whether a new Full was created
-    │                            or skipped because a valid one existed.
-    │                            Example: "after_full": "touch ~/full_done.flag"
+    │  "after_full"   : string — Executado após run_full_backup() concluir,
+    │                            independente de ter gerado um novo Full ou
+    │                            pulado por já existir um válido.
+    │                            Exemplo: "after_full": "touch ~/full_done.sh"
     │
-    │  "after_split"  : string — Executed after split completes successfully.
-    │                            Only fired when split.enabled = true and
-    │                            the split was performed in this run.
-    │                            Example: "after_split": "touch ~/split_done.flag"
+    │  "after_split"  : string — Executado após o split concluir com sucesso.
+    │                            Só disparado quando split.enabled = true e
+    │                            o split foi realizado nesta execução.
+    │                            Exemplo: "after_split": "touch ~/split_done.sh"
+    │
+    │  Exemplo completo:
+    │    "hooks": {
+    │        "after_rsync": "echo 'rsync ok' >> /var/log/hooks.log",
+    │        "after_full":  "touch ~/full_done.sh",
+    │        "after_split": ""
+    │    }
     └──────────────────────────────────────────────────────────────────
 
     ════════════════════════════════════════════════════════════════════
-    \033[1mFULL JSON EXAMPLE\033[0m
+    \033[1mEXEMPLO COMPLETO DE ARQUIVO JSON\033[0m
     ════════════════════════════════════════════════════════════════════
 
     {
-        "description": "File server backup — Sales dept",
+        "description": "Backup do servidor de arquivos Vendas — sede SP",
 
         "credentials": {
             "username": "svc_backup",
-            "password": "Str0ngP@ss!",
+            "password": "S3nh@Fort3!",
             "domain":   "CORP"
         },
 
         "paths": {
-            "remote_share": "//192.168.10.5/Sales",
-            "mount_point":  "/mnt/Remote/Sales",
+            "remote_share": "//192.168.10.5/Vendas",
+            "mount_point":  "/mnt/Remote/Vendas",
             "backup_root":  "/mnt/Backup",
-            "log_dir":      "/var/log/prisma"
+            "log_dir":      "/var/log/rsync"
         },
 
         "settings": {
@@ -426,55 +440,51 @@ HELP_TEXT = textwrap.dedent("""
         "excludes": ["*.tmp", "Thumbs.db", "desktop.ini", "~$*"],
 
         "hooks": {
-            "after_rsync": "echo rsync done >> /var/log/prisma_hooks.log",
-            "after_full":  "touch ~/full_done.flag",
+            "after_rsync": "touch ~/rsync_done.sh",
+            "after_full":  "touch ~/full_done.sh",
             "after_split": ""
         }
     }
 
     ════════════════════════════════════════════════════════════════════
-    \033[1mSYSTEM DEPENDENCIES\033[0m
+    \033[1mDEPENDÊNCIAS DO SISTEMA\033[0m
     ════════════════════════════════════════════════════════════════════
-    Required tools (automatically checked during pre-flight):
+    Ferramentas obrigatórias (verificadas automaticamente no pré-voo):
       rsync, mount, umount, find, du, df, cp, tar, zstd, pv, ionice,
       nice, su
 
-    Optional tool (required only if split.enabled = true):
+    Ferramenta opcional (exigida somente se split.enabled = true):
       split
 
-    Installation on Debian/Ubuntu:
+    Instalação em Debian/Ubuntu:
       apt install rsync cifs-utils tar zstd pv util-linux
 
     ════════════════════════════════════════════════════════════════════
-    \033[1mSECURITY\033[0m
+    \033[1mSEGURANÇA\033[0m
     ════════════════════════════════════════════════════════════════════
-    • The JSON file contains credentials — keep it with chmod 600.
-      The script displays a SECURITY WARNING if permissions are open
-      to group or other users.
-    • Credentials never appear in logs, even with --debug.
-      The values of username, password and domain are replaced by "***"
-      in any diagnostic output.
-    • Use "mount_options": "ro" to mount the source read-only,
-      protecting original data from accidental modification.
-    • A lock file prevents concurrent executions of the same job,
-      avoiding data corruption if cron fires the job twice.
+    • O arquivo JSON contém credenciais — mantenha-o com chmod 600.
+      O script exibe um AVISO DE SEGURANÇA se as permissões estiverem
+      abertas para grupo ou outros usuários.
+    • Credenciais nunca aparecem nos logs, mesmo com --debug.
+      O valor de username, password e domain é substituído por "***"
+      em qualquer saída de diagnóstico.
+    • Use "mount_options": "ro" para montar a origem somente-leitura,
+      protegendo os dados originais de modificações acidentais.
 """)
 
-# ---------------------------------------------------------------------------
-# Default Configuration Template
-# ---------------------------------------------------------------------------
+# --- Configuração Padrão ---
 DEFAULT_JSON_CONFIG = {
-    "description": "Configuration Template",
+    "description": "Template de Configuração",
     "credentials": {
-        "username": "user",
-        "password": "password",
-        "domain": "domain.local"
+        "username": "usuario",
+        "password": "senha",
+        "domain": "dominio.local"
     },
     "paths": {
-        "remote_share": "//192.168.0.100/Data/Share",
+        "remote_share": "//192.168.0.100/Dados/Share",
         "mount_point": "/mnt/Remote/MountPoint",
         "backup_root": "/mnt/Backup",
-        "log_dir": "/var/log/prisma"
+        "log_dir": "/var/log/rsync"
     },
     "settings": {
         "mount_options": "ro",
@@ -510,44 +520,39 @@ DEFAULT_JSON_CONFIG = {
 }
 
 
-# ---------------------------------------------------------------------------
-# BackupJob
-# ---------------------------------------------------------------------------
-
 class BackupJob:
-    def __init__(self, config_path: str, debug: bool = False):
+    def __init__(self, config_path, debug=False):
         self.config_path = config_path
-        self.debug       = debug
-        self.config      = self._load_config()
-        self.date_str    = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        self._lock_fh    = None   # file handle for the exclusive lock
+        self.debug = debug
+        self.config = self._load_config()
+        self.date_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         self.setup_paths()
         self.setup_logging()
 
     # ------------------------------------------------------------------
-    # JSON loading and validation
+    # Carregamento e validação do JSON
     # ------------------------------------------------------------------
 
-    def _load_config(self) -> dict:
+    def _load_config(self):
         try:
             with open(self.config_path, 'r') as f:
                 return json.load(f)
-        except Exception as exc:
-            print(f"[\033[91mERROR\033[0m] Failed to load JSON config: {exc}")
+        except Exception as e:
+            print(f"[\033[91mERRO\033[0m] Erro no JSON: {e}")
             sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Path setup
+    # Configuração de caminhos
     # ------------------------------------------------------------------
 
     def setup_paths(self):
         paths = self.config['paths']
-        root  = paths['backup_root']
+        root = paths['backup_root']
 
         self.orig_dir = paths['mount_point']
 
-        remote_path   = paths['remote_share']
-        rel           = remote_path.lstrip('/')          # Remove leading slashes
+        remote_path = paths['remote_share']
+        rel = remote_path[2:]                          # Remove prefixo "//"
         rel_sanitized = rel.replace('.', '_')
 
         self.client_root = os.path.join(root, rel_sanitized)
@@ -557,7 +562,7 @@ class BackupJob:
 
         self.safe_name = rel_sanitized.replace('/', '_').replace('\\', '_')
 
-        log_name      = f"backup_{self.safe_name}_{self.date_str}.log"
+        log_name     = f"backup_{self.safe_name}_{self.date_str}.log"
         self.log_file = os.path.join(paths['log_dir'], log_name)
 
     # ------------------------------------------------------------------
@@ -576,23 +581,24 @@ class BackupJob:
                 ]
             )
             self.logger = logging.getLogger()
-        except Exception as exc:
-            print(f"[\033[91mERROR\033[0m] Failed to initialize logging: {exc}")
+        except Exception as e:
+            print(f"[\033[91mERRO\033[0m] Erro no Log: {e}")
             sys.exit(1)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
+    # Padrões de opções de mount que contêm credenciais e devem ser ocultados.
     _SENSITIVE_MOUNT_KEYS = {"username", "password", "domain"}
 
     @staticmethod
     def _redact_mount_opts(opts_str: str) -> str:
         """
-        Receives the mount options string (e.g. 'ro,username=foo,password=bar')
-        and replaces the VALUE of each sensitive key with '***'.
+        Recebe a string de opções do mount (ex: 'ro,username=foo,password=bar')
+        e substitui o VALOR de cada chave sensível por '***'.
         """
-        parts    = opts_str.split(',')
+        parts = opts_str.split(',')
         redacted = []
         for part in parts:
             if '=' in part:
@@ -605,86 +611,47 @@ class BackupJob:
 
     def _redact_cmd(self, cmd: list) -> str:
         """
-        Converts the command argument list to a loggable string,
-        masking the value of the '-o' argument when it contains
-        mount credentials (username/password/domain).
+        Converte a lista de argumentos do comando em string para log,
+        ocultando o valor do argumento '-o' quando ele contiver credenciais
+        de mount (username/password/domain).
         """
-        parts      = [str(x) for x in cmd]
-        result     = []
-        skip_next  = False
+        parts = [str(x) for x in cmd]
+        result = []
+        skip_next = False
         for i, part in enumerate(parts):
             if skip_next:
                 result.append(self._redact_mount_opts(part))
                 skip_next = False
             elif part == '-o' and i + 1 < len(parts):
                 result.append(part)
-                skip_next = True   # next token is the -o value
+                skip_next = True   # próximo token é o valor de -o
             else:
                 result.append(part)
         return ' '.join(result)
 
-    def _run_cmd(self, cmd: list, check: bool = True, **kwargs):
-        """Wrapper around subprocess.run with optional debug logging."""
+    def _run_cmd(self, cmd, check=True, **kwargs):
         if self.debug:
             self.logger.debug(
-                f"[\033[36mDEBUG\033[0m] Running: {self._redact_cmd(cmd)}"
+                f"[\033[36mDEBUG\033[0m] Executando: {self._redact_cmd(cmd)}"
             )
         return subprocess.run(cmd, check=check, **kwargs)
 
     def _check_config_file_permissions(self):
         """
-        Warns if the configuration file (which contains credentials)
-        has open permissions (group or world readable/writable).
+        FIX 1 — Alerta se o arquivo de configuração (que contém credenciais)
+        estiver com permissões abertas (leitura/escrita por grupo ou outros).
         """
         file_stat = os.stat(self.config_path)
-        mode      = file_stat.st_mode
+        mode = file_stat.st_mode
         if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
             self.logger.warning(
-                f"SECURITY WARNING: '{self.config_path}' contains credentials and is "
-                f"accessible by group/others (mode {oct(mode & 0o777)}). "
-                f"Run: chmod 600 {self.config_path}"
+                f"AVISO DE SEGURANÇA: '{self.config_path}' contém credenciais e está "
+                f"acessível por grupo/outros (modo {oct(mode & 0o777)}). "
+                f"Execute: chmod 600 {self.config_path}"
             )
 
     # ------------------------------------------------------------------
-    # Exclusive lock — prevents concurrent runs of the same job
-    # ------------------------------------------------------------------
-
-    def _acquire_lock(self):
-        """
-        Creates and locks a .lock file derived from the config file path.
-        Uses fcntl.LOCK_EX | fcntl.LOCK_NB so a second instance fails
-        immediately instead of waiting silently.
-
-        Raises RuntimeError if another instance is already running.
-        """
-        lock_path = self.config_path + ".lock"
-        self._lock_fh = open(lock_path, 'w')
-        try:
-            fcntl.flock(self._lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self._lock_fh.write(str(os.getpid()))
-            self._lock_fh.flush()
-            self.logger.info(f"Lock acquired: {lock_path}")
-        except OSError:
-            self._lock_fh.close()
-            self._lock_fh = None
-            raise RuntimeError(
-                f"Another instance of this job is already running "
-                f"(lock file: {lock_path}). Aborting."
-            )
-
-    def _release_lock(self):
-        """Releases the exclusive lock and closes the lock file handle."""
-        if self._lock_fh is not None:
-            try:
-                fcntl.flock(self._lock_fh, fcntl.LOCK_UN)
-                self._lock_fh.close()
-            except OSError as exc:
-                self.logger.warning(f"Failed to release lock: {exc}")
-            finally:
-                self._lock_fh = None
-
-    # ------------------------------------------------------------------
-    # Dependency check
+    # Verificação de dependências
     # ------------------------------------------------------------------
 
     REQUIRED_TOOLS = [
@@ -694,30 +661,30 @@ class BackupJob:
 
     def check_dependencies(self):
         """
-        Verifies that all required external tools are available in PATH
-        before any operation begins. Exits with a clear error listing
-        what is missing so the administrator can install the packages
-        before retrying.
+        Verifica se todas as ferramentas externas necessárias estão disponíveis
+        no PATH antes de iniciar qualquer operação. Encerra com erro listando
+        claramente o que está faltando, para que o administrador possa instalar
+        os pacotes necessários antes de tentar novamente.
 
-        'split' is checked separately only if it is enabled in the JSON,
-        as it is an optional dependency.
+        'split' é verificado separadamente apenas se estiver habilitado no JSON,
+        pois é uma dependência opcional.
         """
         missing = [tool for tool in self.REQUIRED_TOOLS if not shutil.which(tool)]
 
+        # Verifica 'split' somente se o recurso estiver ativo no JSON
         split_cfg = self.config.get('settings', {}).get('split', {})
         if split_cfg.get('enabled', False) and not shutil.which('split'):
             missing.append('split')
 
         if missing:
             self.logger.error(
-                "Required tools not found in PATH: %s. "
-                "Install the corresponding packages and try again.",
+                "Ferramentas obrigatórias não encontradas no PATH: %s. "
+                "Instale os pacotes correspondentes e tente novamente.",
                 ", ".join(missing)
             )
             sys.exit(1)
-
         self.logger.info(
-            "Dependencies OK: all required tools found in PATH."
+            "Dependências OK: todas as ferramentas necessárias foram encontradas."
         )
 
     # ------------------------------------------------------------------
@@ -725,16 +692,12 @@ class BackupJob:
     # ------------------------------------------------------------------
 
     def check_pre_flight(self):
-        # 1. Check dependencies — abort immediately if anything is missing
+        # Dependências primeiro — aborta imediatamente se algo faltar
         self.check_dependencies()
 
-        # 2. Warn about insecure config file permissions
+        # FIX 1 — verifica permissões do arquivo de config
         self._check_config_file_permissions()
 
-        # 3. Acquire exclusive lock to prevent concurrent runs
-        self._acquire_lock()
-
-        # 4. Check available disk space at the backup root
         req_mb    = self.config['settings']['min_space_mb']
         req_bytes = req_mb * 1024 * 1024
 
@@ -748,26 +711,22 @@ class BackupJob:
 
         total, used, free = shutil.disk_usage(check_path)
         if free < req_bytes:
-            raise Exception(
-                f"Insufficient disk space. Free: {free / 1024 / 1024:.2f} MB, "
-                f"required: {req_mb} MB"
-            )
+            raise Exception(f"Espaço insuficiente. Livre: {free/1024/1024:.2f} MB")
 
-        self.logger.info(f"Disk OK. Free: {free / 1024 / 1024:.2f} MB")
+        self.logger.info(f"Disco OK. Livre: {free/1024/1024:.2f} MB")
 
-        # 5. Create backup subdirectories (NOT the mount point — must be pre-created)
-        for d in [self.incr_dir, self.diff_dir, self.full_dir]:
+        for d in [self.orig_dir, self.incr_dir, self.diff_dir, self.full_dir]:
             if not os.path.exists(d):
-                self.logger.info(f"Creating directory: {d}")
+                self.logger.info(f"Criando: {d}")
                 os.makedirs(d, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # CIFS mount
+    # Montagem CIFS
     # ------------------------------------------------------------------
 
-    def mount_share(self) -> bool:
+    def mount_share(self):
         if os.path.ismount(self.orig_dir):
-            self.logger.info("Share is already mounted. Skipping mount.")
+            self.logger.info("Já montado. Pulando.")
             return False
 
         creds    = self.config.get('credentials', {})
@@ -779,9 +738,9 @@ class BackupJob:
         opts   = self.config['settings'].get('mount_options', 'ro')
 
         if not user or not password:
-            raise ValueError("Incomplete credentials in JSON config.")
+            raise ValueError("Credenciais incompletas no JSON.")
 
-        self.logger.info(f"Mounting {remote} ...")
+        self.logger.info(f"Montando {remote}...")
 
         auth_opts  = f"username={user},password={password}"
         if domain:
@@ -792,54 +751,23 @@ class BackupJob:
         try:
             self._run_cmd(cmd, check=True)
             return True
-        except subprocess.CalledProcessError as exc:
-            raise Exception(f"Mount failed (exit code {exc.returncode})")
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"Erro no mount (Exit Code {e.returncode})")
 
     # ------------------------------------------------------------------
-    # Hooks — output is captured and logged; exit code is recorded
+    # Hooks
     # ------------------------------------------------------------------
 
     def _run_hook(self, name: str):
         """
-        Executes the shell command associated with hook 'name', if defined
-        in the JSON. Unlike the original fire-and-forget approach, this
-        implementation:
-          - Waits for the hook to complete
-          - Captures stdout and stderr and writes them to the log
-          - Logs the exit code and issues a WARNING if non-zero
-
-        The job continues regardless of the hook's result.
+        Executa o comando shell associado ao hook 'name', se definido no JSON.
+        Fire-and-forget: nenhum erro é capturado ou propagado.
         """
         cmd = self.config.get('hooks', {}).get(name, '').strip()
         if not cmd:
             return
-
         self.logger.info(f"Hook '{name}': {cmd}")
-        try:
-            result = subprocess.run(
-                ["bash", "-c", cmd],
-                capture_output=True,
-                text=True,
-                timeout=300   # 5-minute safety timeout per hook
-            )
-            if result.stdout.strip():
-                self.logger.info(f"Hook '{name}' stdout: {result.stdout.strip()}")
-            if result.stderr.strip():
-                self.logger.warning(f"Hook '{name}' stderr: {result.stderr.strip()}")
-            if result.returncode != 0:
-                self.logger.warning(
-                    f"Hook '{name}' exited with code {result.returncode}. "
-                    "Job continues."
-                )
-            else:
-                self.logger.info(f"Hook '{name}' completed successfully.")
-        except subprocess.TimeoutExpired:
-            self.logger.warning(
-                f"Hook '{name}' timed out after 300 seconds and was killed. "
-                "Job continues."
-            )
-        except Exception as exc:
-            self.logger.warning(f"Hook '{name}' raised an unexpected error: {exc}")
+        subprocess.Popen(["bash", "-c", cmd])
 
     # ------------------------------------------------------------------
     # Rsync
@@ -847,19 +775,16 @@ class BackupJob:
 
     def run_rsync(self):
         """
-        Runs rsync under the user configured in 'rsync_user' using 'su -c'.
+        FIX 3 — O rsync é executado sob o usuário configurado em 'rsync_user'
+        utilizando 'su -c', replicando o comportamento do script shell original.
 
-        SECURITY: When building the 'su -c' command string, all individual
-        rsync arguments are properly shell-quoted using shlex.quote(), which
-        prevents shell injection through crafted paths or flags.
-
-        GRACEFUL SHUTDOWN: On SIGINT (Ctrl+C), the signal is forwarded to
-        the rsync child process and the script waits for it to finish before
-        proceeding with unmounting. This avoids 'Broken pipe' and ensures
-        rsync closes its file descriptors and releases the mountpoint cleanly.
+        GRACEFUL SHUTDOWN — Ao receber SIGINT (Ctrl+C), o sinal é encaminhado ao
+        processo rsync filho e o script aguarda ele terminar antes de prosseguir
+        com a desmontagem. Isso evita o 'Broken pipe' e garante que o rsync feche
+        seus descritores e libere o mountpoint corretamente.
         """
-        bw_kb      = int(self.config['settings']['bandwidth_limit_mb'] * 1024)
-        rsync_user = self.config['settings'].get('rsync_user', 'root')
+        bw_kb       = int(self.config['settings']['bandwidth_limit_mb'] * 1024)
+        rsync_user  = self.config['settings'].get('rsync_user', 'root')
 
         default_flags = [
             "-ahx", "--acls", "--xattrs", "--numeric-ids",
@@ -873,14 +798,13 @@ class BackupJob:
                 tmp.write('\n'.join(self.config['excludes']))
             tmp_exclude = tmp.name
 
-        # Grant read access to the user running rsync
+        # Permissão de leitura para o usuário que executa o rsync
         os.chmod(tmp_exclude, 0o644)
 
-        proc        = None
+        proc = None
         interrupted = False
 
         try:
-            # Ensure source path ends with '/' so rsync copies contents, not the dir itself
             src = self.orig_dir if self.orig_dir.endswith('/') else self.orig_dir + '/'
 
             rsync_parts = [
@@ -892,69 +816,71 @@ class BackupJob:
                 f"--backup-dir={self.diff_dir}",
                 f"--log-file={self.log_file}",
                 src,
-                self.incr_dir,
+                self.incr_dir
             ]
 
-            # Build the command, using 'su -c' when rsync_user differs from the current user.
-            # Each rsync argument is individually shell-quoted via shlex.quote() to prevent
-            # shell injection — this is the correct POSIX-safe approach (unlike list2cmdline
-            # which uses Windows-style quoting).
+            # Monta o comando su -c "<cmd>" se o usuário for diferente do atual
             current_user = os.environ.get('USER') or os.environ.get('LOGNAME') or 'root'
             if rsync_user != current_user:
-                cmd_str = ' '.join(shlex.quote(p) for p in rsync_parts)
+                cmd_str = ' '.join(
+                    subprocess.list2cmdline([p]) if ' ' in p else p
+                    for p in rsync_parts
+                )
                 cmd = ["su", "-", rsync_user, "-c", cmd_str]
-                self.logger.info(f"Running rsync as user '{rsync_user}' ...")
+                self.logger.info(f"Executando Rsync como usuário '{rsync_user}'...")
             else:
                 cmd = rsync_parts
-                self.logger.info("Running rsync ...")
+                self.logger.info("Executando Rsync...")
 
             if self.debug:
                 self.logger.debug("CMD: " + ' '.join(str(x) for x in cmd))
 
-            # Use Popen to keep a reference to the child process so we can
-            # forward signals in a controlled manner.
+            # Usa Popen para manter referência ao processo filho e poder
+            # encaminhar sinais de forma controlada.
             proc = subprocess.Popen(cmd)
 
-            # Capture SIGINT while rsync is running.
-            # Instead of raising KeyboardInterrupt immediately, forward the signal
-            # to the child and wait for it to finish — avoiding broken pipes and
-            # umount with a busy mountpoint.
+            # Captura SIGINT enquanto o rsync está rodando.
+            # Em vez de lançar KeyboardInterrupt imediatamente, encaminha o sinal
+            # ao filho e aguarda ele finalizar — evitando broken pipe e umount
+            # com mountpoint ocupado.
             original_sigint = signal.getsignal(signal.SIGINT)
 
             def _handle_sigint(signum, frame):
                 nonlocal interrupted
                 interrupted = True
                 self.logger.warning(
-                    "Interrupt received (Ctrl+C). Waiting for rsync to finish "
-                    "gracefully before unmounting ..."
+                    "Interrupção recebida (Ctrl+C). Aguardando rsync finalizar "
+                    "graciosamente antes de desmontar..."
                 )
                 if proc and proc.poll() is None:
-                    proc.send_signal(signal.SIGINT)  # Forward to rsync child
+                    proc.send_signal(signal.SIGINT)  # Encaminha ao rsync filho
 
             signal.signal(signal.SIGINT, _handle_sigint)
 
             try:
-                proc.wait()  # Block until rsync finishes (including after SIGINT)
+                proc.wait()  # Bloqueia até o rsync terminar (inclusive após SIGINT)
             finally:
-                # Always restore the original handler
+                # Restaura o handler original independente do que acontecer
                 signal.signal(signal.SIGINT, original_sigint)
 
             returncode = proc.returncode
 
             if interrupted:
-                # rsync received SIGINT and exited with code 20 — expected exit
+                # Rsync recebeu SIGINT e saiu com code 20 — saída esperada
                 self.logger.warning(
-                    f"Rsync interrupted by user (code {returncode}). "
-                    "Proceeding to safe unmount."
+                    f"Rsync interrompido pelo usuário (code {returncode}). "
+                    "Prosseguindo para desmontagem segura."
                 )
+                # Propaga KeyboardInterrupt para o fluxo principal (finally do main
+                # garante a desmontagem)
                 raise KeyboardInterrupt
             elif returncode == 0:
-                self.logger.info("Rsync completed successfully.")
+                self.logger.info("Rsync: Sucesso.")
                 self._run_hook("after_rsync")
             elif returncode == 23:
                 self.logger.warning(
-                    "Rsync warning (code 23) — partial transfer "
-                    "(e.g. permission denied on some files). Continuing."
+                    "Rsync: Aviso (Code 23) — transferência parcial "
+                    "(ex: permissão negada). Continuando."
                 )
                 self._run_hook("after_rsync")
             else:
@@ -965,22 +891,22 @@ class BackupJob:
                 os.remove(tmp_exclude)
 
     # ------------------------------------------------------------------
-    # Differential cleanup
+    # Limpeza diferencial
     # ------------------------------------------------------------------
 
     def cleanup_differential(self):
         policy = self.config['settings'].get('retention_policy', {})
         days   = policy.get('keep_differential_files_days', 240)
 
-        self.logger.info(f"Cleaning Differential files older than {days} day(s) ...")
+        self.logger.info(f"Limpando Diff > {days} dias...")
         self._run_cmd(
             ["find", self.diff_dir, "-type", "f", "-mtime", f"+{days}", "-delete"],
             check=False
         )
 
         if policy.get('cleanup_empty_dirs', True):
-            # "-mindepth 1" protects the root directory from being removed
-            # when it becomes empty — only orphaned subdirectories are deleted.
+            # "-mindepth 1" protege o próprio diretório raiz de ser removido
+            # quando ele fica vazio — apenas subdiretórios órfãos são deletados.
             self._run_cmd(
                 [
                     "find", self.diff_dir,
@@ -993,22 +919,22 @@ class BackupJob:
             )
 
     # ------------------------------------------------------------------
-    # Full backup
+    # Full Backup
     # ------------------------------------------------------------------
 
     def run_full_backup(self):
         policy    = self.config['settings'].get('retention_policy', {})
         retention = policy.get('keep_full_backups_days', 30)
 
-        self.logger.info(f"Removing Full backups older than {retention} day(s) ...")
+        self.logger.info(f"Verificando Fulls antigos (> {retention} dias)...")
         self._run_cmd(
             ["find", self.full_dir, "-type", "f", "-name", "Full_*.tar.zst",
              "-mtime", f"+{retention}", "-delete"],
             check=False
         )
 
-        # Check whether a valid Full exists (within the retention window)
-        self.logger.info(f"Checking for a valid Full backup (< {retention} day(s) old) ...")
+        # Verifica se existe um Full válido (dentro do período de retenção)
+        self.logger.info(f"Verificando validade do Full atual (< {retention} dias)...")
         cmd_check = [
             "find", self.full_dir,
             "-type", "f",
@@ -1020,22 +946,23 @@ class BackupJob:
         if res.stdout and res.stdout.strip():
             recent_file = res.stdout.strip()
             self.logger.info(
-                f"Valid Full backup found ({recent_file}). Keeping current structure."
+                f"Backup Full válido encontrado ({recent_file}). Mantendo estrutura atual."
             )
             self._run_hook("after_full")
             return
 
         # ------------------------------------------------------------------
-        # Dynamic space check based on actual INCR_DIR size + 10% margin
+        # FIX 8 — Verifica espaço dinamicamente com base no tamanho real do INCR_DIR
+        # Replica: INCR_SIZE=$(du -s --block-size=1K "$INCR_DIR") + 10% de margem
         # ------------------------------------------------------------------
-        self.logger.info("Calculating space needed for Full (INCR_DIR size + 10%) ...")
+        self.logger.info("Calculando espaço necessário para o Full (INCR_DIR + 10%)...")
         du_res = self._run_cmd(
             ["du", "-s", "--block-size=1K", self.incr_dir],
             check=True, capture_output=True, text=True
         )
         incr_size_kb = int(du_res.stdout.split()[0])
-        min_space_kb = incr_size_kb + incr_size_kb // 10   # +10% margin
-        min_space_mb = min_space_kb / 1024
+        min_space_kb  = incr_size_kb + incr_size_kb // 10   # +10% de margem
+        min_space_mb  = min_space_kb / 1024
 
         df_res = self._run_cmd(
             ["df", "--output=avail", self.full_dir],
@@ -1044,44 +971,42 @@ class BackupJob:
         avail_kb = int(df_res.stdout.strip().splitlines()[-1])
 
         self.logger.info(
-            f"INCR_DIR: {incr_size_kb} KB | Required (+10%): {min_space_kb} KB "
-            f"| Available in FULL_DIR: {avail_kb} KB"
+            f"INCR_DIR: {incr_size_kb} KB | Necessário (+ 10%): {min_space_kb} KB "
+            f"| Disponível em FULL_DIR: {avail_kb} KB"
         )
 
         if avail_kb < min_space_kb:
             raise Exception(
-                f"Insufficient space in {self.full_dir}. "
-                f"Required: {min_space_mb:.1f} MB, "
-                f"Available: {avail_kb / 1024:.1f} MB"
+                f"Espaço insuficiente em {self.full_dir}. "
+                f"Necessário: {min_space_mb:.1f} MB, "
+                f"Disponível: {avail_kb/1024:.1f} MB"
             )
 
-        # Reflink snapshot (Copy-on-Write), fallback to regular copy
+        # Reflink / cp do snapshot
         persistent_full_dir = os.path.join(self.full_dir, "Full")
         if os.path.exists(persistent_full_dir):
-            self.logger.info(
-                f"Removing old snapshot '{persistent_full_dir}' before update ..."
-            )
+            self.logger.info(f"Removendo '{persistent_full_dir}' antigo para atualização...")
             shutil.rmtree(persistent_full_dir)
 
-        self.logger.info("Creating new snapshot 'Full' (Reflink / CoW) ...")
+        self.logger.info("Criando novo Snapshot 'Full' (Reflink)...")
         try:
             self._run_cmd(
                 ["cp", "-a", "--reflink=always", self.incr_dir, persistent_full_dir],
                 check=True, stderr=subprocess.PIPE
             )
         except subprocess.CalledProcessError:
-            self.logger.warning("Reflink not supported on this filesystem. Falling back to cp -a.")
+            self.logger.warning("Reflink falhou. Usando cp -a (cópia completa).")
             self._run_cmd(["cp", "-a", self.incr_dir, persistent_full_dir], check=True)
 
-        # Compression pipeline: tar | pv | zstd
+        # Compressão
         filename  = f"Full_{self.date_str}.tar.zst"
         zst_path  = os.path.join(self.full_dir, filename)
 
-        ionice_class  = str(self.config['settings']['ionice_class'])
-        nice_priority = str(self.config['settings']['nice_priority'])
-        transfer_rate = self.config['settings'].get('transfer_rate_pv', '10m')
+        ionice_class   = str(self.config['settings']['ionice_class'])
+        nice_priority  = str(self.config['settings']['nice_priority'])
+        transfer_rate  = self.config['settings'].get('transfer_rate_pv', '10m')
 
-        self.logger.info(f"Compressing: {filename}")
+        self.logger.info(f"Compactando: {filename}")
 
         cmd_tar  = [
             "ionice", "-c", ionice_class,
@@ -1090,7 +1015,7 @@ class BackupJob:
             "-C", self.full_dir,
             "Full"
         ]
-        cmd_pv   = ["pv", "-q", "-L", transfer_rate]
+        cmd_pv   = ["pv", "-q", "-L", transfer_rate]  # FIX 2 — restaura controle de taxa via pv
         cmd_zstd = ["zstd", "--threads=2"]
 
         if self.debug:
@@ -1099,15 +1024,15 @@ class BackupJob:
                 f"| {' '.join(cmd_zstd)} > {zst_path}"
             )
 
-        # Verify exit codes of ALL pipeline processes (equivalent to bash 'pipefail')
+        # FIX 4 — verifica exit code de TODOS os processos do pipeline (equivale a pipefail)
         try:
-            p_tar  = subprocess.Popen(cmd_tar, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            p_pv   = subprocess.Popen(cmd_pv,  stdin=p_tar.stdout, stdout=subprocess.PIPE)
-            p_tar.stdout.close()   # Allows p_tar to receive SIGPIPE if p_pv exits
+            p_tar  = subprocess.Popen(cmd_tar,  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            p_pv   = subprocess.Popen(cmd_pv,   stdin=p_tar.stdout,  stdout=subprocess.PIPE)
+            p_tar.stdout.close()   # Permite que p_tar receba SIGPIPE se p_pv sair
 
             with open(zst_path, "wb") as f_out:
                 p_zstd = subprocess.Popen(cmd_zstd, stdin=p_pv.stdout, stdout=f_out)
-            p_pv.stdout.close()    # Allows p_pv to receive SIGPIPE if p_zstd exits
+            p_pv.stdout.close()    # Permite que p_pv receba SIGPIPE se p_zstd sair
 
             p_zstd.wait()
             p_pv.wait()
@@ -1119,7 +1044,7 @@ class BackupJob:
             if p_zstd.returncode != 0: errors.append(f"zstd (code {p_zstd.returncode})")
 
             if errors:
-                raise Exception(f"Compression pipeline failed: {', '.join(errors)}")
+                raise Exception(f"Falha no pipeline de compressão: {', '.join(errors)}")
 
             zst_size_kb = int(
                 self._run_cmd(
@@ -1128,19 +1053,21 @@ class BackupJob:
                 ).stdout.split()[0]
             )
             self.logger.info(
-                f"Full backup complete. File: {zst_path} ({zst_size_kb} KB). "
-                f"Snapshot directory 'Full' kept on disk."
+                f"Full Backup concluído. Arquivo: {zst_path} ({zst_size_kb} KB). "
+                f"Diretório 'Full' mantido no disco."
             )
 
-        except Exception as exc:
-            # Remove partial file on error
+        except Exception as e:
+            # Remove arquivo parcial em caso de erro
             if os.path.exists(zst_path):
                 os.remove(zst_path)
-                self.logger.warning(f"Partial file '{zst_path}' removed.")
-            self.logger.error(f"Compression error: {exc}")
+                self.logger.warning(f"Arquivo parcial '{zst_path}' removido.")
+            self.logger.error(f"Erro na compactação: {e}")
             raise
 
-        # Run split immediately after compression if enabled
+        # ------------------------------------------------------------------
+        # Split — executado logo após a compressão, se habilitado no JSON
+        # ------------------------------------------------------------------
         split_cfg = self.config['settings'].get('split', {})
         if split_cfg.get('enabled', False):
             self._run_split(zst_path, split_cfg)
@@ -1149,17 +1076,17 @@ class BackupJob:
         self._run_hook("after_full")
 
     # ------------------------------------------------------------------
-    # Split of the compressed Full file
+    # Split do arquivo Full compactado
     # ------------------------------------------------------------------
 
     def _parse_chunk_size(self, chunk_size_str: str) -> tuple:
         """
-        Converts a chunk size string (e.g. '4gb', '500mb', '2tb')
-        into (bytes: int, split_unit: str).
+        Converte uma string de tamanho de chunk (ex: '4gb', '500mb', '2tb')
+        em (bytes: int, split_unit: str).
 
-        split_unit is the suffix accepted by the split command: 'M', 'G' or 'T'.
-        Accepted units: mb, gb, tb (case-insensitive).
-        Raises ValueError with a clear message for any invalid value.
+        split_unit é o sufixo aceito pelo comando split: 'M', 'G' ou 'T'.
+        Unidades aceitas: mb, gb, tb (case-insensitive).
+        Lança ValueError com mensagem clara para qualquer valor inválido.
         """
         UNITS = {
             'mb': (1024 ** 2, 'M'),
@@ -1167,6 +1094,7 @@ class BackupJob:
             'tb': (1024 ** 4, 'T'),
         }
         raw = str(chunk_size_str).strip().lower()
+        # Separa número de unidade (ex: '4gb' → '4', 'gb')
         for suffix, (multiplier, split_letter) in UNITS.items():
             if raw.endswith(suffix):
                 num_str = raw[: -len(suffix)].strip()
@@ -1174,115 +1102,115 @@ class BackupJob:
                     num = float(num_str)
                 except ValueError:
                     raise ValueError(
-                        f"Invalid numeric value in chunk_size: '{chunk_size_str}'. "
-                        f"Expected e.g.: '4gb', '500mb', '2tb'."
+                        f"Valor numérico inválido em chunk_size: '{chunk_size_str}'. "
+                        f"Esperado ex: '4gb', '500mb', '2tb'."
                     )
                 if num <= 0:
                     raise ValueError(
-                        f"chunk_size must be greater than zero, got: '{chunk_size_str}'."
+                        f"chunk_size deve ser maior que zero, recebido: '{chunk_size_str}'."
                     )
                 chunk_bytes = int(num * multiplier)
-                num_clean   = int(num) if num == int(num) else num
-                split_str   = f"{num_clean}{split_letter}"
+                # Reconstrói a string para o split (ex: '4G', '500M')
+                num_clean = int(num) if num == int(num) else num
+                split_str  = f"{num_clean}{split_letter}"
                 return chunk_bytes, split_str
-
         raise ValueError(
-            f"Unknown unit in chunk_size: '{chunk_size_str}'. "
-            f"Use 'mb', 'gb' or 'tb' (e.g. '4gb', '500mb')."
+            f"Unidade desconhecida em chunk_size: '{chunk_size_str}'. "
+            f"Use 'mb', 'gb' ou 'tb' (ex: '4gb', '500mb')."
         )
 
     def _run_split(self, zst_path: str, split_cfg: dict):
         """
-        Splits the .tar.zst file into parts as configured in chunk_size.
+        Divide o arquivo .tar.zst em partes conforme chunk_size definido no JSON.
 
-        Automatically calculated parameters:
-          - num_parts  = ceil(file_size / chunk_bytes)
-          - suffix -a  = max(3, len(str(num_parts)))  → minimum 3 digits
-          - --numeric-suffixes=1                       → always starts at 001
+        Parâmetros calculados automaticamente:
+          - num_partes  = ceil(tamanho / chunk_bytes)
+          - sufixo -a   = max(3, len(str(num_partes)))  → mínimo 3 dígitos
+          - --numeric-suffixes=1                         → sempre começa em 001
 
-        Retry: up to 3 attempts. The splitted/ directory is cleaned before
-        each attempt.
-        Validation: sum of part sizes must equal the original .tar.zst size.
+        Retry: até 3 tentativas. A cada tentativa o diretório splitted/ é limpo.
+        Validação: soma dos fragmentos deve ser igual ao tamanho do .tar.zst original.
         """
         MAX_RETRIES   = 3
         keep_original = split_cfg.get('keep_original_after_split', True)
 
-        # Parse and validate chunk_size before any operation.
-        # No silent fallback — a missing field is an explicit error to prevent
-        # running split with an unexpected default value.
+        # Parseia e valida chunk_size antes de qualquer operação.
+        # Sem fallback — a ausência do campo é um erro explícito para não
+        # executar o split silenciosamente com um valor padrão inesperado.
         if 'chunk_size' not in split_cfg:
             raise Exception(
-                "Invalid split configuration: 'chunk_size' field missing in JSON. "
-                "Example: \"chunk_size\": \"4gb\""
+                "Configuração de split inválida: campo 'chunk_size' ausente no JSON. "
+                "Exemplo: \"chunk_size\": \"4gb\""
             )
         chunk_size_raw = split_cfg['chunk_size']
         try:
             chunk_bytes, chunk_str = self._parse_chunk_size(chunk_size_raw)
-        except ValueError as exc:
-            raise Exception(f"Invalid split configuration: {exc}")
+        except ValueError as e:
+            raise Exception(f"Configuração de split inválida: {e}")
 
         zst_size   = os.path.getsize(zst_path)
-        num_parts  = math.ceil(zst_size / chunk_bytes)
-        suffix_len = max(3, len(str(num_parts)))
+        num_partes = math.ceil(zst_size / chunk_bytes)
+        suffix_len = max(3, len(str(num_partes)))
 
-        split_dir = os.path.join(self.full_dir, "splitted")
-        prefix    = os.path.join(split_dir, os.path.basename(zst_path) + ".part_")
+        split_dir      = os.path.join(self.full_dir, "splitted")
+        # O prefixo preserva o nome original do arquivo + separador de parte
+        prefix         = os.path.join(split_dir, os.path.basename(zst_path) + ".part_")
 
         self.logger.info(
-            f"Split enabled. File: {os.path.basename(zst_path)} "
-            f"({zst_size / 1024 ** 3:.2f} GB) → {num_parts} part(s) of "
-            f"{chunk_size_raw.upper()} (suffix: {suffix_len} digit(s))."
+            f"Split habilitado. Arquivo: {os.path.basename(zst_path)} "
+            f"({zst_size / 1024**3:.2f} GB) → {num_partes} parte(s) de {chunk_size_raw.upper()} "
+            f"(sufixo -{suffix_len} dígitos)."
         )
 
         def _prepare_split_dir():
-            """Creates or cleans the splitted/ directory before each attempt."""
+            """Cria ou limpa o diretório splitted/ antes de cada tentativa."""
             if os.path.exists(split_dir):
-                self.logger.info(f"Cleaning '{split_dir}' before split ...")
+                self.logger.info(f"Limpando '{split_dir}' antes do split...")
                 for entry in os.scandir(split_dir):
                     try:
                         os.remove(entry.path)
-                    except OSError as exc:
-                        self.logger.warning(f"Could not remove '{entry.path}': {exc}")
+                    except OSError as e:
+                        self.logger.warning(f"Não foi possível remover '{entry.path}': {e}")
             else:
-                self.logger.info(f"Creating '{split_dir}' ...")
+                self.logger.info(f"Criando '{split_dir}'...")
                 os.makedirs(split_dir, exist_ok=True)
 
         def _validate_parts() -> bool:
-            """Compares the sum of part sizes to the original file size."""
+            """Compara a soma dos tamanhos dos fragmentos com o arquivo original."""
             try:
                 parts = sorted(
                     entry.path for entry in os.scandir(split_dir)
                     if entry.is_file()
                 )
                 if not parts:
-                    self.logger.warning("Validation: no parts found.")
+                    self.logger.warning("Validação: nenhum fragmento encontrado.")
                     return False
                 total = sum(os.path.getsize(p) for p in parts)
                 if total != zst_size:
                     self.logger.warning(
-                        f"Validation failed: sum of parts ({total} bytes) "
+                        f"Validação falhou: soma dos fragmentos ({total} bytes) "
                         f"≠ original ({zst_size} bytes)."
                     )
                     return False
                 self.logger.info(
-                    f"Validation OK: {len(parts)} part(s), "
-                    f"{total / 1024 ** 3:.2f} GB total."
+                    f"Validação OK: {len(parts)} fragmento(s), "
+                    f"{total / 1024**3:.2f} GB totais."
                 )
                 return True
-            except Exception as exc:
-                self.logger.warning(f"Error during validation: {exc}")
+            except Exception as e:
+                self.logger.warning(f"Erro durante validação: {e}")
                 return False
 
         success = False
         for attempt in range(1, MAX_RETRIES + 1):
-            self.logger.info(f"Split — attempt {attempt}/{MAX_RETRIES} ...")
+            self.logger.info(f"Split — tentativa {attempt}/{MAX_RETRIES}...")
             _prepare_split_dir()
 
             cmd = [
                 "split",
                 f"--bytes={chunk_str}",
-                "--numeric-suffixes=1",
-                "-a", str(suffix_len),
+                f"--numeric-suffixes=1",
+                f"-a", str(suffix_len),
                 "--verbose",
                 zst_path,
                 prefix,
@@ -1290,59 +1218,56 @@ class BackupJob:
 
             try:
                 self._run_cmd(cmd, check=True)
-            except subprocess.CalledProcessError as exc:
-                self.logger.warning(
-                    f"Split returned error (code {exc.returncode}) on attempt {attempt}."
-                )
-                continue   # process failed → next attempt
+            except subprocess.CalledProcessError as e:
+                self.logger.warning(f"Split retornou erro (code {e.returncode}) na tentativa {attempt}.")
+                continue   # processo falhou → próxima tentativa
 
-            # Process exited with 0 — validate part integrity
+            # Processo saiu com 0 — valida integridade dos fragmentos
             if _validate_parts():
                 success = True
                 break
-            # Validation failed → next attempt (split_dir will be cleaned at loop start)
+            # Validação falhou → próxima tentativa (split_dir será limpo no início do loop)
 
         if not success:
-            # Exhausted retries — clean up corrupted parts and preserve the .tar.zst
+            # Esgotou as tentativas — limpa fragmentos corrompidos e mantém o .tar.zst intacto
             self.logger.error(
-                f"Split failed after {MAX_RETRIES} attempts. "
-                f"Parts removed. Original file '{os.path.basename(zst_path)}' preserved."
+                f"Split falhou após {MAX_RETRIES} tentativas. "
+                f"Fragmentos removidos. Arquivo original '{os.path.basename(zst_path)}' preservado."
             )
-            _prepare_split_dir()   # leave directory empty but existing
-            raise Exception(
-                f"Split of '{zst_path}' did not complete after {MAX_RETRIES} attempts."
-            )
+            _prepare_split_dir()   # deixa o diretório vazio mas existente
+            raise Exception(f"Split de '{zst_path}' não concluído após {MAX_RETRIES} tentativas.")
 
         # ------------------------------------------------------------------
-        # Post-split — decide whether to keep or remove the original
+        # Pós-split bem-sucedido — decide se mantém ou remove o original
         # ------------------------------------------------------------------
         if not keep_original:
             self.logger.info(
-                f"keep_original_after_split=false — removing '{os.path.basename(zst_path)}' ..."
+                f"keep_original_after_split=false — removendo '{os.path.basename(zst_path)}'..."
             )
             try:
                 os.remove(zst_path)
-                self.logger.info("Original file removed.")
-            except OSError as exc:
-                self.logger.warning(f"Could not remove original file: {exc}")
+                self.logger.info("Arquivo original removido.")
+            except OSError as e:
+                self.logger.warning(f"Não foi possível remover o original: {e}")
         else:
             self.logger.info(
-                f"keep_original_after_split=true — '{os.path.basename(zst_path)}' kept."
+                f"keep_original_after_split=true — '{os.path.basename(zst_path)}' mantido."
             )
-
-    # ------------------------------------------------------------------
-    # Log cleanup — retention by count (keep_logs_count)
+    # FIX 5 — retenção por CONTAGEM (keep_logs_count) em vez de só por data,
+    # replicando o `tail -n +32` do script shell original.
     # ------------------------------------------------------------------
 
     def cleanup_logs(self):
-        policy     = self.config['settings'].get('retention_policy', {})
+        policy    = self.config['settings'].get('retention_policy', {})
         keep_count = policy.get('keep_logs_count', 31)
-        log_dir    = self.config['paths']['log_dir']
+        log_dir   = self.config['paths']['log_dir']
 
+        log_pattern = f"backup_{self.safe_name}_*.log"
         self.logger.info(
-            f"Cleaning logs for job '{self.safe_name}', keeping the {keep_count} most recent ..."
+            f"Limpando logs de '{self.safe_name}', mantendo os {keep_count} mais recentes..."
         )
 
+        # Lista todos os logs correspondentes, ordenados do mais novo ao mais velho
         try:
             all_logs = sorted(
                 [
@@ -1354,74 +1279,51 @@ class BackupJob:
                 reverse=True
             )
         except FileNotFoundError:
-            self.logger.warning(f"Log directory '{log_dir}' not found. Skipping cleanup.")
+            self.logger.warning(f"Diretório de log '{log_dir}' não encontrado. Pulando limpeza.")
             return
 
-        # Exclude the current log file from deletion candidates to avoid
-        # removing the active log in edge-case timing scenarios.
-        candidates = [p for p in all_logs if os.path.abspath(p) != os.path.abspath(self.log_file)]
-        logs_to_delete = candidates[keep_count:]
-
+        logs_to_delete = all_logs[keep_count:]
         for log_path in logs_to_delete:
             try:
                 os.remove(log_path)
-                self.logger.info(f"Log removed: {log_path}")
-            except OSError as exc:
-                self.logger.warning(f"Could not remove '{log_path}': {exc}")
+                self.logger.info(f"Log removido: {log_path}")
+            except OSError as e:
+                self.logger.warning(f"Não foi possível remover '{log_path}': {e}")
 
     # ------------------------------------------------------------------
-    # Final cleanup
+    # Cleanup final
     # ------------------------------------------------------------------
 
-    def cleanup(self, did_mount: bool):
-        """Unmounts the share (if mounted by this run) and releases the lock."""
+    def cleanup(self, did_mount):
         if did_mount:
-            self.logger.info("Unmounting share ...")
-            result = self._run_cmd(["umount", self.orig_dir], check=False)
-            if result.returncode != 0:
-                self.logger.warning(
-                    f"umount exited with code {result.returncode}. "
-                    "The share may still be mounted — verify manually."
-                )
-            else:
-                self.logger.info("Share unmounted successfully.")
-
-        self._release_lock()
+            self.logger.info("Desmontando...")
+            self._run_cmd(["umount", self.orig_dir], check=False)
 
 
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Corporate Backup Manager (CIFS → Local)",
+        description="Gerenciador de Backup Corporativo",
         epilog=HELP_TEXT,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "config_file", nargs="?",
-        help="Path to the JSON configuration file"
-    )
-    parser.add_argument(
-        "--init", action="store_true",
-        help="Create a default configuration template"
-    )
-    parser.add_argument(
-        "--debug", action="store_true",
-        help="Print executed commands to the log for diagnostics"
-    )
+    parser.add_argument("config_file", nargs="?",  help="Caminho do arquivo JSON de configuração")
+    parser.add_argument("--init",      action="store_true", help="Cria um modelo de configuração padrão")
+    parser.add_argument("--debug",     action="store_true", help="Exibe os comandos executados para depuração")
     args = parser.parse_args()
 
     if args.init:
-        target = args.config_file if args.config_file else "config_template.json"
+        target = args.config_file if args.config_file else "config_modelo.json"
         if os.path.exists(target):
-            print(f"[\033[93mWARNING\033[0m] '{target}' already exists. Aborting to avoid overwrite.")
+            print(f"[\033[93mAVISO\033[0m] '{target}' já existe. Abortando para não sobrescrever.")
             sys.exit(1)
         with open(target, 'w') as f:
             json.dump(DEFAULT_JSON_CONFIG, f, indent=4)
-        os.chmod(target, 0o600)
-        print(f"Template created: {target} (chmod 600 applied)")
+        os.chmod(target, 0o600)   # Proteção imediata das credenciais
+        print(f"Modelo criado: {target} (chmod 600 aplicado)")
         sys.exit(0)
 
     if not args.config_file:
@@ -1429,21 +1331,21 @@ def main():
         sys.exit(1)
 
     if not os.path.exists(args.config_file):
-        print(f"[\033[93mWARNING\033[0m] '{args.config_file}' not found.")
-        print("Creating default template ...")
+        print(f"[\033[93mAVISO\033[0m] '{args.config_file}' não encontrado.")
+        print("Criando modelo padrão...")
         with open(args.config_file, 'w') as f:
             json.dump(DEFAULT_JSON_CONFIG, f, indent=4)
         os.chmod(args.config_file, 0o600)
-        print("File created (chmod 600). Edit it and try again.")
+        print("Arquivo criado (chmod 600). Edite-o e tente novamente.")
         sys.exit(0)
 
-    job       = None
+    job = None
     did_mount = False
     try:
         job = BackupJob(args.config_file, debug=args.debug)
-        job.logger.info(f"=== Job started: {args.config_file} ===")
+        job.logger.info(f"=== Job Iniciado: {args.config_file} ===")
         if args.debug:
-            job.logger.info("DEBUG MODE ENABLED")
+            job.logger.info("MODO DEBUG ATIVADO")
 
         job.check_pre_flight()
         did_mount = job.mount_share()
@@ -1453,19 +1355,19 @@ def main():
         job.run_full_backup()
         job.cleanup_logs()
 
-        job.logger.info("=== Job completed successfully ===")
+        job.logger.info("=== Sucesso ===")
 
     except KeyboardInterrupt:
         if job:
-            job.logger.warning("=== Job interrupted by user (Ctrl+C) ===")
+            job.logger.warning("=== Job interrompido pelo usuário (Ctrl+C) ===")
         else:
-            print("\n[WARNING] Interrupted by user.")
+            print("\n[AVISO] Interrompido pelo usuário.")
         sys.exit(130)
-    except Exception as exc:
+    except Exception as e:
         if job:
-            job.logger.error(f"FAILURE: {exc}")
+            job.logger.error(f"FALHA: {e}")
         else:
-            print(f"ERROR: {exc}")
+            print(f"ERRO: {e}")
         sys.exit(1)
     finally:
         if job:
