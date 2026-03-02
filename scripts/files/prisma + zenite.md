@@ -66,7 +66,7 @@ No arquivo de configuração do **Prisma**, adicione o campo `after_split` apont
 Após o download das partes no destino, execute:
 
 ```bash
-cat *.part_* | pv -L 50M | ionice -c 3 nice -n 19 tar -I zstd -xvf - > happy.log 2>&1
+screen -d -m -S rebuilding_backup bash -c "cat *.part_* | pv -L 50M | ionice -c 3 nice -n 19 tar -I zstd -xvf - > happy.log 2>&1"
 ```
 
 > Este comando também é salvo automaticamente em `reconstruir.txt` dentro do diretório de partes.
