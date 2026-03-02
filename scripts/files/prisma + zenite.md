@@ -42,7 +42,7 @@ cat > /root/.services/scheduled/post_split.sh << 'EOF'
 echo 'cd /mnt/Local/Container/A/Backup/172_30_100_22/hsugisawa/Full/splitted && screen -d -m -S rebuilding_backup bash -c "cat *.part_* | pv -L 50M | ionice -c 3 nice -n 19 tar -I zstd -xvf - > happy.log 2>&1"' \
     > /mnt/Local/Container/A/Backup/172_30_100_22/hsugisawa/Full/splitted/reconstruir.txt
 
-screen -d -m -S zenite_hsugisawa /usr/bin/python3 /root/.services/scheduled/Zenite.py \
+screen -d -m -S zenite_hsugisawa /usr/bin/python3 /root/.services/scheduled/zenite.py \
     --sync /mnt/Local/Container/A/Backup/172_30_100_22/hsugisawa/Full/splitted \
     "Backup/HS-STG-02/Full/hsugisawa/splitted" \
     --mirror --speed 8mb --yes
