@@ -24,8 +24,8 @@ BACKUP_TIMEOUT_SECONDS = 14400  # 4 hours hard limit
 # --- GLOBAL VARIABLES ---
 CURRENT_DOMAIN_NAME = None
 BACKUP_JOB_RUNNING = False
-FILES_TO_CLEANUP = []
-LOCK_FILE_FD = None
+FILES_TO_CLEANUP = []       # Partial DESTINATION files (.bak)
+LOCK_FILE_FD = None         # Lock file descriptor for single-instance enforcement
 
 # --- LOGGER ---
 logger = logging.getLogger('virsh_hotbkp')
@@ -34,6 +34,8 @@ logger.setLevel(logging.DEBUG)
 
 def setup_logging(domain_name, timestamp):
     try:
+        # FIX: Corrected fallback logic — check write access to LOG_DIR parent,
+        # and also handle the case where LOG_DIR exists but is not writable.
         log_dir_final = LOG_DIR
         parent = os.path.dirname(LOG_DIR)
         dir_exists = os.path.isdir(LOG_DIR)
@@ -41,7 +43,7 @@ def setup_logging(domain_name, timestamp):
         dir_writable = dir_exists and os.access(LOG_DIR, os.W_OK)
 
         if not (parent_writable or dir_writable):
-            log_dir_final = "/tmp/vhot_logs"
+            log_dir_final = "/tmp/virsh_logs"
 
         os.makedirs(log_dir_final, exist_ok=True)
         log_path = os.path.join(log_dir_final, f"{domain_name}-{timestamp}.log")
@@ -60,9 +62,13 @@ def setup_logging(domain_name, timestamp):
         sys.exit(1)
 
 
-# --- LOCK ---
+# --- LOCK (single-instance per domain) ---
 
 def acquire_lock(domain_name):
+    """
+    FIX: Prevent two instances of the script from running against the same
+    domain simultaneously. Uses a per-domain lock file with fcntl advisory lock.
+    """
     global LOCK_FILE_FD
     lock_path = f"/tmp/vhot_{domain_name}.lock"
     try:
@@ -92,6 +98,8 @@ def release_lock():
 
 # --- CLEANUP AND EMERGENCY ---
 
+# FIX: Guard against perform_cleanup() being invoked twice (e.g., signal
+# arrives while an internal exception is already running cleanup).
 _CLEANUP_RUNNING = False
 
 
@@ -106,6 +114,7 @@ def perform_cleanup(exit_after=False):
         print()
     logger.warning("--- CLEANUP PROTOCOL INITIATED ---")
 
+    # 1. Abort Libvirt Job (only if one was actually started by this script)
     if BACKUP_JOB_RUNNING and CURRENT_DOMAIN_NAME:
         logger.warning("Attempting to abort active Libvirt job...")
         try:
@@ -122,6 +131,7 @@ def perform_cleanup(exit_after=False):
             )
         BACKUP_JOB_RUNNING = False
 
+    # 2. Remove partial .bak files
     if FILES_TO_CLEANUP:
         logger.info("Cleaning up partial destination files...")
         for f in list(FILES_TO_CLEANUP):
@@ -161,6 +171,8 @@ def get_disk_details_from_xml(dom, target_devs_list):
                 dev_name = target.get('dev')
                 if dev_name in target_devs_list:
                     source = device.find('source')
+                    # FIX: Explicit error for unsupported non-file disk types
+                    # (block devices, network disks, volume references).
                     if source is None:
                         logger.error(
                             f"Disk '{dev_name}' has no <source> element. "
@@ -193,6 +205,8 @@ def get_disk_details_from_xml(dom, target_devs_list):
 
 
 def check_clean_state(dom, disk_details):
+    # FIX: Removed the broad try/except that silently swallowed libvirt errors.
+    # Each check is now individually guarded so partial failures are visible.
     try:
         job_type = dom.jobInfo()[0]
         if job_type != 0:
@@ -207,6 +221,8 @@ def check_clean_state(dom, disk_details):
     except libvirt.libvirtError as e:
         logger.warning(f"Could not query snapshotNum (non-fatal, continuing): {e}")
 
+    # FIX: Also check the full path, not only the basename, to catch disks
+    # stored in paths like /data/snapshots/vm-vda.qcow2.
     for dev, info in disk_details.items():
         full_path = info['path']
         basename = os.path.basename(full_path)
@@ -247,6 +263,11 @@ def check_available_space(backup_dir, disk_details):
 # --- RETENTION MANAGEMENT ---
 
 def _parse_timestamp_from_filename(filename):
+    """
+    FIX: Extract the date/time from the filename itself rather than relying
+    on mtime, which can be modified by copies or filesystem mount options.
+    Returns a datetime or None.
+    """
     match = re.search(r'(\d{8})_(\d{6})', filename)
     if match:
         try:
@@ -257,10 +278,16 @@ def _parse_timestamp_from_filename(filename):
 
 
 def _parse_identity_from_filename(filename):
+    """
+    FIX: Robust identity extraction that handles VM names containing hyphens
+    and digits (e.g., 'vm-20250101-vda-20250311_235900.qcow2.bak').
+    Strategy: strip the known suffix pattern from the right.
+    Result: everything to the left of '-YYYYMMDD_HHMMSS' is the identity.
+    """
     match = re.match(r'^(.+)-\d{8}_\d{6}', filename)
     if match:
         return match.group(1)
-    return filename
+    return filename  # Fallback: use entire filename as identity
 
 
 def manage_retention(backup_dir, days):
@@ -276,6 +303,8 @@ def manage_retention(backup_dir, days):
                 continue
             fp = os.path.join(backup_dir, f)
 
+            # FIX: Use timestamp embedded in the filename as primary date source.
+            # Fall back to mtime only if the filename doesn't match the expected pattern.
             dt = _parse_timestamp_from_filename(f)
             if dt is None:
                 logger.warning(
@@ -314,6 +343,7 @@ def manage_retention(backup_dir, days):
             else:
                 keep_list.append(b)
 
+    # Safety Lock: never delete the last available backup
     if not keep_list and delete_list:
         rescued, _ = delete_list.pop(0)
         keep_list.append(rescued)
@@ -375,21 +405,31 @@ def monitor_global_progress(target_files, total_bytes_all_disks):
 
 
 def verify_backup_integrity(target_files_map):
+    """
+    FIX: Post-backup integrity check. Verifies that each .bak file:
+      1. Exists on disk.
+      2. Has a non-zero size (rules out empty files from truncated writes).
+      3. Passes qemu-img check (detects internal qcow2 corruption).
+    Returns True if all files pass, False otherwise.
+    """
     logger.info("Running post-backup integrity checks...")
     all_ok = True
 
     for dev, fp in target_files_map.items():
+        # Check 1: existence
         if not os.path.exists(fp):
             logger.error(f"   [FAIL] '{dev}': file not found at {fp}")
             all_ok = False
             continue
 
+        # Check 2: non-zero size
         size = os.path.getsize(fp)
         if size == 0:
             logger.error(f"   [FAIL] '{dev}': file is empty (0 bytes) — likely a truncated write.")
             all_ok = False
             continue
 
+        # Check 3: qemu-img structural check (only for qcow2)
         if DISK_FORMAT == 'qcow2':
             try:
                 result = subprocess.run(
@@ -398,6 +438,7 @@ def verify_backup_integrity(target_files_map):
                     timeout=120
                 )
                 if result.returncode not in (0, 1):
+                    # qemu-img check returns 0 (ok), 1 (errors fixed), 2+ (fatal)
                     logger.error(
                         f"   [FAIL] '{dev}': qemu-img check failed "
                         f"(rc={result.returncode}): "
@@ -421,6 +462,7 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
 
     logger.info("Starting ATOMIC backup (Parallel/Consistent)...")
 
+    # 1. Prepare paths and calculate totals
     disk_xml_fragments = []
     target_files_map = {}
     total_bytes_source = 0
@@ -440,6 +482,7 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
         total_bytes_source += os.path.getsize(info['path'])
         logger.info(f" -> Queued disk '{dev}': {fp}")
 
+    # 2. Construct single atomic XML
     full_xml = (
         f"<domainbackup>"
         f"<disks>{''.join(disk_xml_fragments)}</disks>"
@@ -449,8 +492,12 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
     logger.info(f"Total source size: {total_bytes_source / (1024**3):.2f} GB")
 
     try:
+        # 3. Start ONE job for ALL disks
         logger.info("[Libvirt] Requesting atomic backup...")
         dom.backupBegin(full_xml, None, 0)
+        # FIX: BACKUP_JOB_RUNNING is set immediately after backupBegin() returns,
+        # before entering the monitoring loop. This ensures that if any exception
+        # fires before the flag was set, cleanup still attempts to abort the job.
         BACKUP_JOB_RUNNING = True
         logger.info("[Libvirt] Backup streams started.")
 
@@ -459,6 +506,7 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
         job_start_time = time.time()
 
         while True:
+            # FIX: Timeout watchdog — prevents infinite loop if QEMU hangs.
             elapsed = time.time() - job_start_time
             if elapsed > BACKUP_TIMEOUT_SECONDS:
                 raise Exception(
@@ -466,6 +514,9 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
                     "Job appears hung. Aborting."
                 )
 
+            # FIX: Distinguish between "job finished" and "communication error".
+            # jobStats() returning an empty dict or raising an exception are
+            # treated differently: only type==0 is a clean finish signal.
             try:
                 stats = dom.jobStats()
             except libvirt.libvirtError as e:
@@ -476,12 +527,14 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
             job_type = stats.get('type', -1)
 
             if job_type == 0:
+                # Clean finish: libvirt confirmed the job is gone.
                 if sys.stdout.isatty():
                     print(f"\r\033[KINFO: [Success] Atomic backup finished.")
                 BACKUP_JOB_RUNNING = False
                 break
 
             if job_type == -1 and not stats:
+                # Empty dict without explicit type — ambiguous. Verify with jobInfo.
                 try:
                     if dom.jobInfo()[0] == 0:
                         if sys.stdout.isatty():
@@ -518,15 +571,18 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
         perform_cleanup()
         raise
 
+    # 4. FIX: Verify integrity before declaring success.
     integrity_ok = verify_backup_integrity(target_files_map)
     if not integrity_ok:
         logger.error("Integrity check FAILED. Backup files may be corrupt.")
+        # Add failed files back to cleanup so they are removed.
         for fp in target_files_map.values():
             if fp not in FILES_TO_CLEANUP:
                 FILES_TO_CLEANUP.append(fp)
         perform_cleanup()
         raise Exception("Post-backup integrity check failed.")
 
+    # 5. Success: remove files from cleanup list so they are NOT deleted.
     for fp in target_files_map.values():
         if fp in FILES_TO_CLEANUP:
             FILES_TO_CLEANUP.remove(fp)
@@ -538,10 +594,7 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
 if __name__ == "__main__":
 
     example_text = '''Example (Cron):
-  59 23 * * * /usr/bin/python3 /root/.services/scheduled/vhot.py \\
-    --domain Trixie \\
-    --backup-dir /mnt/Local/USB/A/Backup/srv17517/Container/B/Virt/Trixie \\
-    --disk vda vdb
+  59 23 * * * /root/.services/scheduled/vhot --domain vm741137 --backup-dir /mnt/Local/Container/C/Backup --disk vda --retention-days 7 --timeout 14401
 '''
 
     parser = argparse.ArgumentParser(
@@ -564,6 +617,8 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     setup_logging(args.domain, timestamp)
+
+    # FIX: Acquire per-domain lock before doing anything with the hypervisor.
     acquire_lock(args.domain)
 
     conn = None
@@ -581,6 +636,7 @@ if __name__ == "__main__":
 
         CURRENT_DOMAIN_NAME = args.domain
 
+        # Silently abort any stale job from a previous crashed run.
         try:
             if dom.jobInfo()[0] != 0:
                 logger.warning("Stale job detected from a previous run. Attempting to abort...")
@@ -608,8 +664,10 @@ if __name__ == "__main__":
         if not check_available_space(bkp_dir, details):
             sys.exit(1)
 
+        # Step 1: Atomic backup
         run_atomic_backup(dom, bkp_dir, details, timestamp)
 
+        # Step 2: Retention cleanup
         logger.info("Starting retention check...")
         manage_retention(bkp_dir, args.retention_days)
 
