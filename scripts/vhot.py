@@ -593,8 +593,8 @@ def run_atomic_backup(dom, backup_dir, disk_details, timestamp):
 # --- MAIN ---
 if __name__ == "__main__":
 
-    example_text = '''Example (Cron):
-  59 23 * * * /root/.services/scheduled/vhot --domain vm741137 --backup-dir /mnt/Local/Container/C/Backup --disk vda --retention-days 7 --timeout 14401
+    example_text = '''Example:
+  vhot --domain vm741137 --backup-dir /mnt/Local/Container/C/Backup --disk vda --retention-days 7 --timeout 14401
 '''
 
     parser = argparse.ArgumentParser(
